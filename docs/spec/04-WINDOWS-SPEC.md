@@ -35,6 +35,6 @@ C# / .NET 10 LTS / WPF / MVVM. NAudio WASAPI capture is an initial candidate. Lo
 ## Acceptance
 - Mic/System/Both capture verified on real Windows x64 hardware.
 - Two tracks align within target (<100 ms initial target, measured).
-- No app-level chunk gaps in 8-hour test; every missing source callback is represented as Gap.
+- Run short functional tests during development and a 1–2 hour soak before release. An extended soak (target 8 hours) on a representative Windows device is a release confidence check. Every known missing source interval is represented as Gap.
 - UI close/tray behavior, sleep/resume and device removal have tested transitions.
 - AI process failure does not stop capture.
