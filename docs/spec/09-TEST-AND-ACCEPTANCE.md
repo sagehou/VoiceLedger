@@ -2,6 +2,14 @@
 
 All thresholds are provisional until measured. Record device model, OS/build, ABI, available RAM, storage, model/runtime/hash, language corpus hash, configuration, duration and evidence path.
 
+## GitHub Actions is the authoritative build gate
+- Every compile/build/test validation must run in GitHub Actions; local compile output is not acceptance evidence.
+- CI should build Windows WPF on a Windows runner, Android Kotlin/Gradle on a Linux runner with the pinned JDK/Android SDK, and the shared Rust core for Windows x64 plus Android arm64-v8a.
+- Run Rust unit tests, C# tests, Kotlin tests, FFI smoke tests, format/lint/static analysis and package smoke tests in Actions.
+- Shared-core or contract changes must trigger both Windows and Android integration jobs.
+- Upload build logs, test reports, benchmark metadata and package artifacts. Do not upload real user audio, transcripts, voice embeddings, credentials or recovery keys.
+- Hardware-in-the-loop acceptance is separate: Actions cannot prove microphone capture, screen-off Android recording, battery drain, thermal behavior or 8-hour stability. Those tests require real devices and evidence linked from issues.
+
 ## Gate G0 — Build and architecture
 - Windows WPF builds from clean checkout.
 - Android Kotlin app builds from clean checkout.
