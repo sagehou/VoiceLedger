@@ -78,6 +78,8 @@ int32_t vl_domain_validate_v1(const uint8_t *data, uint32_t length);
 /* Borrowed UTF-8 directory and device measurement JSON, up to 128 KiB and 16 KiB respectively. */
 int32_t vl_device_profile_save_v1(const uint8_t *directory, uint32_t directory_length,
     const uint8_t *measurement, uint32_t measurement_length);
+/* Read-only catalog preview for an app-private profile directory. Returns bytes written. */
+int32_t vl_model_preview_v1(const uint8_t *directory, uint32_t directory_length, uint8_t *output, uint32_t capacity);
 vl_session_handle_v1 vl_session_create_v1(void);
 int32_t vl_session_transition_v1(vl_session_handle_v1 handle, int32_t command, int64_t at_ns);
 int32_t vl_session_cancel_v1(vl_session_handle_v1 handle);
