@@ -10,6 +10,7 @@ The [CI workflow](../../.github/workflows/ci.yml) runs on pull requests to `main
 | G0 native FFI | `windows-client` runs the WPF P/Invoke smoke test. `android-client` runs a Kotlin JVM integration test against the Linux-host JNI library and checks the arm64 library in the APK | Windows smoke log, Android JUnit reports and [shared ABI fixture](../../contracts/fixtures/ffi-v1.tsv) |
 | Evidence format | `contracts` runs `python scripts/validate_evidence.py` against the JSON Schema and synthetic fixture | `contracts-report` |
 | Domain v1 schema and client conformance | `contracts` runs `python scripts/validate_domain.py artifacts/domain-fixtures-v1`. The Windows and Android jobs each verify every case digest and run the same generated inputs through the native ABI | `contracts-report`, `domain-fixtures-v1`, Windows smoke log and Android JUnit reports |
+| Windows WASAPI capture | `windows-client` exercises independent tracks, QPC mapping, loopback idle, endpoint loss, pause, reconnect, suspend and sealed WAV outputs using a synthetic endpoint source | `windows-client` smoke log and the [physical-device evidence procedure](WINDOWS-WASAPI-VERIFICATION.md) |
 | Static validation | `security-static` runs actionlint, a secret scan and OSV Scanner against the committed dependency locks and pinned Python requirements | Dependency vulnerability and license report in `security-static-report`, job log and check annotations |
 
 Exact SDK and dependency pins are in `global.json`, `rust-toolchain.toml`, `android/app/build.gradle.kts`, the Gradle Wrapper and the workflow. `minSdk` 26 and the NDK API 26 build are bootstrap choices pending the physical-device matrix. CI evidence should include the run URL, commit SHA, job results and non-sensitive artifact links.
@@ -25,4 +26,4 @@ Commit the generated lock and verify a fresh run without `--write-locks`.
 
 ## Open acceptance gates
 
-- [#5](https://github.com/sagehou/VoiceLedger/issues/5) and [#7](https://github.com/sagehou/VoiceLedger/issues/7) require Windows WASAPI and Android foreground-service tests on physical devices. The hardware-only checks are **BLOCKED** pending devices and recording prototypes. The [evidence schema](../../contracts/test-evidence-v1.schema.json) uses `blocked` for this state.
+- [#5](https://github.com/sagehou/VoiceLedger/issues/5) requires physical Windows WASAPI endpoint and alignment evidence. [#7](https://github.com/sagehou/VoiceLedger/issues/7) requires Android foreground-service evidence. The hardware-only checks are **BLOCKED** pending device testing. The [evidence schema](../../contracts/test-evidence-v1.schema.json) uses `blocked` for this state.

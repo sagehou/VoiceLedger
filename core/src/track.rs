@@ -1,15 +1,16 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[repr(i32)]
 #[serde(rename_all = "snake_case")]
 pub enum TrackState {
-    Preparing,
-    Recording,
-    Paused,
-    Disconnected,
-    Stopping,
-    Completed,
-    Interrupted,
+    Preparing = 0,
+    Recording = 1,
+    Paused = 2,
+    Disconnected = 3,
+    Stopping = 4,
+    Completed = 5,
+    Interrupted = 6,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -33,17 +34,17 @@ pub enum TrackTransitionError {
     EpochOverflow,
 }
 
-pub struct TrackMachine<'a> {
-    endpoint_id: &'a str,
+pub struct TrackMachine {
+    endpoint_id: String,
     state: TrackState,
     source_epoch: u32,
     last_change_ns: u64,
 }
 
-impl<'a> TrackMachine<'a> {
-    pub fn new(endpoint_id: &'a str) -> Self {
+impl TrackMachine {
+    pub fn new(endpoint_id: impl Into<String>) -> Self {
         Self {
-            endpoint_id,
+            endpoint_id: endpoint_id.into(),
             state: TrackState::Preparing,
             source_epoch: 0,
             last_change_ns: 0,
@@ -87,7 +88,7 @@ impl<'a> TrackMachine<'a> {
             return Err(TrackTransitionError::TimeWentBackwards);
         }
         if command == ReconnectConfirmed {
-            if confirmed_endpoint != Some(self.endpoint_id) {
+            if confirmed_endpoint != Some(self.endpoint_id.as_str()) {
                 return Err(TrackTransitionError::InvalidConfirmation);
             }
             self.source_epoch = self

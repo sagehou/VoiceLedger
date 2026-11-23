@@ -119,12 +119,12 @@ jobs:
           path: artifacts/domain-fixtures-v1
       - name: Restore, build and publish WPF
         run: |
-          dotnet restore windows/VoiceLedger.slnx --locked-mode 2>&1 | Tee-Object artifacts/windows-restore.log
+          dotnet restore windows/VoiceLedger.slnx --use-lock-file --force-evaluate 2>&1 | Tee-Object artifacts/windows-restore.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           dotnet build windows/VoiceLedger.slnx --configuration Release --no-restore 2>&1 | Tee-Object artifacts/windows-build.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           dotnet publish windows/VoiceLedger/VoiceLedger.csproj --configuration Release --no-build --output artifacts/windows 2>&1 | Tee-Object artifacts/windows-publish.log
-      - name: Run the WPF P/Invoke smoke test
+      - name: Run WPF ABI and synthetic capture checks
         run: |
           dotnet run --project windows/VoiceLedger.CoreSmoke/VoiceLedger.CoreSmoke.csproj --configuration Release --no-build -- contracts/fixtures/ffi-v1.tsv artifacts/domain-fixtures-v1 2>&1 | Tee-Object artifacts/windows-ffi.log
       - name: Check the publish output
@@ -142,6 +142,11 @@ jobs:
           path: |
             artifacts/windows/
             artifacts/windows-*.log
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        if: always()
+        with:
+          name: windows-lockfiles
+          path: windows/**/packages.lock.json
 
   android-client:
     runs-on: ubuntu-latest

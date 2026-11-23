@@ -3,12 +3,14 @@ use std::panic::{UnwindSafe, catch_unwind};
 use std::sync::{Mutex, MutexGuard};
 
 use voiceledger_core::contracts::DomainBatch;
+use voiceledger_core::track::TrackMachine;
 use voiceledger_core::{
     Compatibility, RecommendationInput, Session, SessionCommand, TransitionError,
 };
 
 #[cfg(any(target_os = "android", target_os = "linux"))]
 mod jni;
+mod track;
 
 const MAX_DOMAIN_BATCH_BYTES: usize = 16 * 1024 * 1024;
 
@@ -31,12 +33,21 @@ struct OwnedSession {
 struct Handles {
     last_id: i64,
     sessions: BTreeMap<i64, OwnedSession>,
+    tracks: BTreeMap<i64, TrackMachine>,
 }
 
 static HANDLES: Mutex<Handles> = Mutex::new(Handles {
     last_id: 0,
     sessions: BTreeMap::new(),
+    tracks: BTreeMap::new(),
 });
+
+impl Handles {
+    fn next_id(&mut self) -> Result<i64, Error> {
+        self.last_id = self.last_id.checked_add(1).ok_or(Error::Internal)?;
+        Ok(self.last_id)
+    }
+}
 
 fn handles() -> Result<MutexGuard<'static, Handles>, Error> {
     HANDLES.lock().map_err(|_| Error::Internal)
@@ -114,9 +125,8 @@ pub unsafe extern "C" fn vl_domain_validate_v1(data: *const u8, length: u32) -> 
 pub extern "C" fn vl_session_create_v1() -> i64 {
     guard(|| {
         let mut handles = handles()?;
-        let id = handles.last_id.checked_add(1).ok_or(Error::Internal)?;
+        let id = handles.next_id()?;
         handles.sessions.insert(id, OwnedSession::default());
-        handles.last_id = id;
         Ok(id)
     })
 }
