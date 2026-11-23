@@ -32,6 +32,10 @@
 - Do not silently broaden scope into summaries, cloud AI, team collaboration, or generic call recording.
 
 ## Delivery
+- **All authoritative compile/build validation runs in GitHub Actions.** Coding agents must not use local builds as acceptance evidence or spend time compiling locally; push focused commits and inspect the Actions result. Local editing, formatting, static reasoning, and non-build unit-test design are allowed, but build/test results must come from Actions.
+- CI must cover Windows WPF/.NET, Android Kotlin/Gradle, shared Rust core host and Android targets, native FFI integration, lint/static checks, unit tests, and packaging smoke tests as those components are introduced.
+- Keep workflows path-aware where practical, but a PR affecting shared contracts/core must run both platform integration jobs.
+- Hardware-only tests (WASAPI endpoints, Android microphone foreground service, thermal/battery, long-duration recording) cannot be claimed as passed by GitHub-hosted runners. Run them on real devices and attach structured evidence to the corresponding GitHub issue; CI should validate their test harnesses and schemas where possible.
 - Build and test both clients independently.
 - Provide reproducible commands, dependency locks, tests, and evidence.
 - Mark real-device tests as BLOCKED when hardware is unavailable; continue unrelated work.
