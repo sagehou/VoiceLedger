@@ -34,10 +34,17 @@ kotlin {
     jvmToolchain(17)
 }
 
+val nativeTestLibraries = layout.projectDirectory.dir("native-test")
+val ffiFixture = rootProject.file("../contracts/fixtures/ffi-v1.tsv")
+val domainFixtures = rootProject.file("../artifacts/domain-fixtures-v1")
+
 tasks.withType<Test>().configureEach {
-    systemProperty("java.library.path", layout.projectDirectory.dir("native-test").asFile.absolutePath)
-    systemProperty("voiceledger.ffi.fixture", rootProject.file("../contracts/fixtures/ffi-v1.tsv").absolutePath)
-    systemProperty("voiceledger.domain.fixtures", rootProject.file("../artifacts/domain-fixtures-v1").absolutePath)
+    inputs.dir(nativeTestLibraries)
+    inputs.file(ffiFixture)
+    inputs.dir(domainFixtures)
+    systemProperty("java.library.path", nativeTestLibraries.asFile.absolutePath)
+    systemProperty("voiceledger.ffi.fixture", ffiFixture.absolutePath)
+    systemProperty("voiceledger.domain.fixtures", domainFixtures.absolutePath)
     testLogging.showStandardStreams = true
 }
 

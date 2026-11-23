@@ -33,12 +33,6 @@ jobs:
         with:
           persist-credentials: false
       - run: cargo fmt --all --check
-      - run: cargo generate-lockfile
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
-        with:
-          name: rust-lockfile
-          path: core/Cargo.lock
-          if-no-files-found: error
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Test the shared core
         run: |
@@ -67,7 +61,6 @@ jobs:
         with:
           persist-credentials: false
       - run: rustup target add x86_64-pc-windows-msvc
-      - run: cargo generate-lockfile
       - run: cargo build --workspace --release --locked --target x86_64-pc-windows-msvc
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
@@ -95,7 +88,6 @@ jobs:
           cmdline-tools-version: ${{ env.ANDROID_CMDLINE_TOOLS_VERSION }}
           packages: ndk;${{ env.ANDROID_NDK_VERSION }}
       - run: rustup target add aarch64-linux-android
-      - run: cargo generate-lockfile
       - name: Build for Android arm64 at API 26
         run: |
           export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang"

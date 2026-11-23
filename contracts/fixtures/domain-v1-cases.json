@@ -266,5 +266,17 @@
       {"path": "/sync_events/1/entity_kind", "value": "session"},
       {"path": "/sync_events/1/entity_id", "value": "00000017-0000-4000-8000-000000000017"}
     ]
+  },
+  {
+    "name": "reconnected_chunk_cannot_use_old_epoch",
+    "expected_status": -15,
+    "schema_valid": true,
+    "changes": [{"path": "/audio_chunks/3/source_epoch", "value": 0}]
+  },
+  {
+    "name": "range_cannot_straddle_source_epochs",
+    "expected_status": -15,
+    "schema_valid": true,
+    "changes": [{"path": "/gaps/3/range/end_ns", "value": 701}, {"path": "/audio_chunks/3/range/start_ns", "value": 710}]
   }
 ]

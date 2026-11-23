@@ -97,7 +97,7 @@ impl DomainBatch {
             devices: index(&self.device_capability_profiles, |item| &item.id),
         };
         self.validate_lifecycle(&indexes)?;
-        self.validate_audio_timeline(&indexes)?;
+        self.validate_audio_timeline()?;
         self.validate_revisions(&indexes)?;
         self.validate_people(&indexes)?;
         self.validate_devices(&indexes)?;
@@ -224,11 +224,29 @@ impl DomainBatch {
         Ok(())
     }
 
-    fn validate_audio_timeline(&self, indexes: &Indexes<'_>) -> Result<(), ContractError> {
+    fn validate_audio_timeline(&self) -> Result<(), ContractError> {
+        let epoch_changes: BTreeMap<_, Vec<_>> = self
+            .tracks
+            .iter()
+            .map(|track| {
+                let changes = track
+                    .transitions
+                    .iter()
+                    .filter(|step| step.command == TrackCommand::ReconnectConfirmed)
+                    .map(|step| step.at_ns)
+                    .collect();
+                (&track.id, changes)
+            })
+            .collect();
         let mut last_chunk: BTreeMap<&StableId, &AudioChunk> = BTreeMap::new();
         let mut spans = Vec::new();
         for chunk in &self.audio_chunks {
-            validate_span(indexes, &chunk.track_id, chunk.source_epoch, chunk.range)?;
+            validate_span(
+                &epoch_changes,
+                &chunk.track_id,
+                chunk.source_epoch,
+                chunk.range,
+            )?;
             require(!chunk.codec.is_empty(), ContractError::InvalidMetadata)?;
             require(
                 chunk.commit_state != AudioCommitState::Committed || chunk.is_saved(),
@@ -256,7 +274,7 @@ impl DomainBatch {
                     .map(|silence| (&silence.track_id, silence.source_epoch, silence.range)),
             )
         {
-            validate_span(indexes, track_id, epoch, range)?;
+            validate_span(&epoch_changes, track_id, epoch, range)?;
             spans.push((track_id, range));
         }
         spans.sort_unstable_by_key(|(track, range)| (*track, range.start_ns));
@@ -526,17 +544,19 @@ fn require_ordered(times: impl IntoIterator<Item = Count>) -> Result<(), Contrac
 }
 
 fn validate_span(
-    indexes: &Indexes<'_>,
+    epoch_changes: &BTreeMap<&StableId, Vec<Count>>,
     track_id: &StableId,
     epoch: u32,
     range: TimeRange,
 ) -> Result<(), ContractError> {
-    let track = indexes
-        .tracks
+    let changes = epoch_changes
         .get(track_id)
         .ok_or(ContractError::InvalidReference)?;
+    let epoch = epoch as usize;
     require(
-        epoch <= track.source_epoch && range.is_nonempty(),
+        range.is_nonempty()
+            && changes.partition_point(|time| *time <= range.start_ns) == epoch
+            && changes.partition_point(|time| *time < range.end_ns) == epoch,
         ContractError::InvalidTimeline,
     )
 }
@@ -602,6 +622,16 @@ mod tests {
         let mut batch = DomainBatch::decode(FIXTURE).unwrap();
         batch.sessions[0].ai_state = AiState::Completed;
         batch.sessions[0].sync_state = SyncState::Idle;
+        assert_eq!(
+            batch
+                .audio_chunks
+                .iter()
+                .map(AudioChunk::is_saved)
+                .collect::<Vec<_>>(),
+            [true, true, false, false]
+        );
+        batch.sessions[0].ai_state = AiState::Failed;
+        batch.sessions[0].sync_state = SyncState::Syncing;
         assert_eq!(
             batch
                 .audio_chunks
