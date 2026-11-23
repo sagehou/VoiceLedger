@@ -35,7 +35,7 @@ Requirements:
 - WorkManager is for deferred sync/maintenance, not microphone capture.
 - Handle permission revocation, audio focus changes, route changes, storage exhaustion, thermal pressure, low memory, and process death.
 - No boot auto-start, hidden recording, or promise to bypass vendor battery management.
-- Real-device 8-hour test is a release gate.
+- Run a short functional recording test during development and a longer soak before release. An 8-hour test on at least one representative supported device is a release confidence check, not a requirement for every phone model.
 
 ## 4. Audio durability
 - One logical track per source.
