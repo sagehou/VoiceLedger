@@ -4,9 +4,12 @@ internal enum class SessionCommand(val code: Int) {
     Prepare(1), Start(2), Pause(3), Resume(4), Stop(5), Finish(6), Interrupt(7)
 }
 
-internal enum class SessionState { Idle, Preparing, Recording, Paused, Stopping, Completed, Interrupted }
-internal enum class Compatibility { Unknown, Incompatible, Compatible }
-internal enum class Recommendation { RecordingOnly, CandidateForBenchmark }
+internal enum class SessionState(val code: Int) {
+    Idle(0), Preparing(1), Recording(2), Paused(3), Stopping(4), Completed(5), Interrupted(6)
+}
+
+internal enum class Compatibility(val code: Int) { Unknown(0), Incompatible(1), Compatible(2) }
+internal enum class Recommendation(val code: Int) { RecordingOnly(0), CandidateForBenchmark(1) }
 
 internal class CoreException(val code: Int) : IllegalStateException("Shared core error $code.")
 
@@ -49,8 +52,10 @@ internal object NativeCore {
         return result
     }
 
-    fun transition(handle: Long, command: SessionCommand, atNs: Long): SessionState =
-        SessionState.entries[requireSuccess(nativeTransition(handle, command.code, atNs))]
+    fun transition(handle: Long, command: SessionCommand, atNs: Long): SessionState {
+        val result = requireSuccess(nativeTransition(handle, command.code, atNs))
+        return SessionState.entries.single { it.code == result }
+    }
 
     fun cancel(handle: Long) {
         requireSuccess(nativeCancel(handle))
@@ -60,8 +65,10 @@ internal object NativeCore {
         requireSuccess(nativeRelease(handle))
     }
 
-    fun recommend(compatibility: Compatibility, budgetBytes: Long?, peakBytes: Long?): Recommendation =
-        Recommendation.entries[requireSuccess(nativeRecommend(compatibility.ordinal, budgetBytes ?: -1L, peakBytes ?: -1L))]
+    fun recommend(compatibility: Compatibility, budgetBytes: Long?, peakBytes: Long?): Recommendation {
+        val result = requireSuccess(nativeRecommend(compatibility.code, budgetBytes ?: -1L, peakBytes ?: -1L))
+        return Recommendation.entries.single { it.code == result }
+    }
 
     private fun requireSuccess(result: Int): Int {
         if (result < 0) throw CoreException(result)

@@ -3,10 +3,30 @@ using System.Runtime.InteropServices;
 
 namespace VoiceLedger.Core;
 
-internal enum SessionCommand { Prepare = 1, Start, Pause, Resume, Stop, Finish, Interrupt }
-internal enum SessionState { Idle, Preparing, Recording, Paused, Stopping, Completed, Interrupted }
-internal enum Compatibility { Unknown, Incompatible, Compatible }
-internal enum Recommendation { RecordingOnly, CandidateForBenchmark }
+internal enum SessionCommand
+{
+    Prepare = 1,
+    Start = 2,
+    Pause = 3,
+    Resume = 4,
+    Stop = 5,
+    Finish = 6,
+    Interrupt = 7
+}
+
+internal enum SessionState
+{
+    Idle = 0,
+    Preparing = 1,
+    Recording = 2,
+    Paused = 3,
+    Stopping = 4,
+    Completed = 5,
+    Interrupted = 6
+}
+
+internal enum Compatibility { Unknown = 0, Incompatible = 1, Compatible = 2 }
+internal enum Recommendation { RecordingOnly = 0, CandidateForBenchmark = 1 }
 
 internal sealed class CoreException(int code) : InvalidOperationException($"Shared core error {code}.")
 {

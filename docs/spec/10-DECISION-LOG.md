@@ -14,10 +14,10 @@
 - No required VoiceLedger server.
 - Optional WebDAV/S3 client-encrypted sync.
 - Device hardware detection and model recommendation.
+- Rust shared core with C ABI and JNI after the [vertical-slice decision](../adr/0001-retain-rust-shared-core.md).
 - Recording-only mode must always remain available.
 
 ## Proposed, must validate
-- Rust shared core with C ABI/JNI bridge.
 - .NET 10 LTS, WPF, NAudio version.
 - Kotlin/Compose, minSdk and target SDK.
 - Audio chunk duration/codec/bitrate.

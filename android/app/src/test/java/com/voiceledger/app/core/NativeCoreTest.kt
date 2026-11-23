@@ -21,12 +21,12 @@ class NativeCoreTest {
                             "session" -> sessions.getOrPut(fields[1]) { CoreSession() }.apply(
                                 SessionCommand.entries.single { it.code == fields[2].toInt() },
                                 fields[3].toLong(),
-                            ).ordinal
+                            ).code
                             "recommend" -> NativeCore.recommend(
-                                Compatibility.entries[fields[1].toInt()],
+                                Compatibility.entries.single { it.code == fields[1].toInt() },
                                 memory(fields[2]),
                                 memory(fields[3]),
-                            ).ordinal
+                            ).code
                             else -> error("Unknown golden fixture operation ${fields[0]}.")
                         }
                     }
@@ -53,7 +53,7 @@ class NativeCoreTest {
                 assertEquals(SessionState.Preparing, session.apply(SessionCommand.Prepare, 10))
                 session.cancel()
                 session.cancel()
-                assertEquals(-4, outcome { session.apply(SessionCommand.Start, 20).ordinal })
+                assertEquals(-4, outcome { session.apply(SessionCommand.Start, 20).code })
             }
         }
         println("JNI passed $cycles ownership cycles.")
