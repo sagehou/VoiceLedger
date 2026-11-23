@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::panic::{UnwindSafe, catch_unwind};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use voiceledger_core::contracts::DomainBatch;
 use voiceledger_core::track::TrackMachine;
@@ -8,6 +8,7 @@ use voiceledger_core::{
     Compatibility, RecommendationInput, Session, SessionCommand, TransitionError,
 };
 
+mod audio;
 #[cfg(any(target_os = "android", target_os = "linux"))]
 mod jni;
 mod track;
@@ -22,6 +23,11 @@ enum Error {
     InvalidTransition = -3,
     Cancelled = -4,
     Internal = -5,
+    AudioStore = -20,
+    AudioLocked = -21,
+    AudioUnavailable = -22,
+    AudioMedia = -23,
+    AudioSchema = -24,
 }
 
 #[derive(Default)]
@@ -34,12 +40,14 @@ struct Handles {
     last_id: i64,
     sessions: BTreeMap<i64, OwnedSession>,
     tracks: BTreeMap<i64, TrackMachine>,
+    stores: BTreeMap<i64, Arc<voiceledger_audio::Store>>,
 }
 
 static HANDLES: Mutex<Handles> = Mutex::new(Handles {
     last_id: 0,
     sessions: BTreeMap::new(),
     tracks: BTreeMap::new(),
+    stores: BTreeMap::new(),
 });
 
 impl Handles {

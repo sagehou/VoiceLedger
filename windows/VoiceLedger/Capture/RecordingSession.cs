@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using VoiceLedger.Core;
@@ -19,9 +18,9 @@ internal sealed class RecordingTrack : IDisposable
     internal string? FormatSignature;
     internal bool HadLoss;
 
-    internal RecordingTrack(string directory, CaptureEndpoint endpoint)
+    internal RecordingTrack(AudioStore store, CaptureEndpoint endpoint)
     {
-        Files = new TrackFiles(directory, endpoint);
+        Files = new TrackFiles(store, endpoint);
         Core = new CoreTrack(endpoint.Id);
     }
 
@@ -32,6 +31,7 @@ internal sealed class RecordingSession : IAsyncDisposable
 {
     private readonly CaptureClock clock = new();
     private readonly CoreSession core = new();
+    private readonly AudioStore store;
     private readonly SemaphoreSlim operations = new(1, 1);
     private readonly List<RecordingTrack> tracks = new();
     private readonly List<SessionChange> transitions = new();
@@ -40,19 +40,24 @@ internal sealed class RecordingSession : IAsyncDisposable
     private long endedAtNs;
     private bool disposed;
 
-    private RecordingSession(string root, IReadOnlyList<CaptureEndpoint> endpoints, OpenCaptureInput open)
+    private RecordingSession(AudioStore store, IReadOnlyList<CaptureEndpoint> endpoints, OpenCaptureInput open)
     {
+        this.store = store;
         this.open = open;
         Id = Guid.NewGuid();
-        OutputDirectory = Path.Combine(root, Id.ToString("D"));
+        OutputDirectory = store.SessionDirectory(Id);
         try
         {
-            TrackFiles.CheckReserve(OutputDirectory);
+            TrackFiles.CheckReserve(store.Root);
             Directory.CreateDirectory(OutputDirectory);
             foreach (CaptureEndpoint endpoint in endpoints)
             {
-                tracks.Add(new RecordingTrack(OutputDirectory, endpoint));
+                tracks.Add(new RecordingTrack(store, endpoint));
             }
+            store.Write(new { op = "create_session", id = Id, createdAtMs = created.ToUnixTimeMilliseconds(),
+                clock = "windows_qpc", clockOrigin = clock.OriginQpc100ns,
+                tracks = tracks.Select(track => new { id = track.Files.Id, endpointId = track.Files.Endpoint.Id,
+                    source = track.Files.Endpoint.Source == CaptureSource.Mic ? "mic" : "system_loopback" }).ToArray() });
         }
         catch
         {
@@ -71,7 +76,7 @@ internal sealed class RecordingSession : IAsyncDisposable
     internal long ElapsedNs => Active ? clock.NowNs : endedAtNs;
     internal bool JournalError { get; private set; }
 
-    internal static async Task<RecordingSession> StartAsync(string root, IReadOnlyList<CaptureEndpoint> endpoints, OpenCaptureInput? open = null)
+    internal static async Task<RecordingSession> StartAsync(AudioStore store, IReadOnlyList<CaptureEndpoint> endpoints, OpenCaptureInput? open = null)
     {
         if (endpoints.Count == 0 || endpoints.Any(endpoint => !endpoint.IsAvailable)
             || endpoints.Select(endpoint => endpoint.Source).Distinct().Count() != endpoints.Count)
@@ -79,7 +84,7 @@ internal sealed class RecordingSession : IAsyncDisposable
             throw new InvalidOperationException("Select one available endpoint for each requested source.");
         }
 
-        var session = await Task.Run(() => new RecordingSession(root, endpoints, open ?? WasapiInput.Open));
+        var session = await Task.Run(() => new RecordingSession(store, endpoints, open ?? WasapiInput.Open));
         try
         {
             session.Move(SessionCommand.Prepare, "user_request");
@@ -274,8 +279,7 @@ internal sealed class RecordingSession : IAsyncDisposable
                 {
                     await Task.Run(() => track.Files.AddInterval(gap.Epoch, new CaptureInterval("gap", gap.StartNs, end, gap.Cause)));
                 }
-                catch (IOException) { JournalError = true; }
-                catch (UnauthorizedAccessException) { JournalError = true; }
+                catch (Exception failure) when (failure is IOException or UnauthorizedAccessException or CoreException) { JournalError = true; }
                 track.Gap = null;
             }
             if (track.Core.State is not (TrackState.Completed or TrackState.Interrupted))
@@ -305,8 +309,7 @@ internal sealed class RecordingSession : IAsyncDisposable
 
     private async Task SaveSessionAsync(bool required = false)
     {
-        string path = Path.Combine(OutputDirectory, "session.json");
-        var record = new { schema_version = 1, kind = "windows_wasapi_prototype", session_id = Id, created_at_utc = created,
+        var record = new { schema_version = 1, kind = "windows_wasapi_recording", session_id = Id, created_at_utc = created,
             source_clock = "windows_qpc", qpc_origin_100ns = clock.OriginQpc100ns, elapsed_ns = ElapsedNs,
             state = State.ToString(), transitions = transitions.ToArray(),
             tracks = tracks.Select(track => new { id = track.Files.Id, source = track.Files.Endpoint.Source.ToString(),
@@ -314,18 +317,10 @@ internal sealed class RecordingSession : IAsyncDisposable
                 sealed_segments = track.Files.SealedSegments, saved_through_ns = track.Files.SavedThroughNs }).ToArray() };
         try
         {
-            await Task.Run(() =>
-            {
-                using (var file = new FileStream(path + ".partial", FileMode.Create, FileAccess.Write, FileShare.None))
-                {
-                    JsonSerializer.Serialize(file, record);
-                    file.Flush(flushToDisk: true);
-                }
-                File.Move(path + ".partial", path, overwrite: true);
-            });
+            await Task.Run(() => store.Write(new { op = "session_state", id = Id, state = (int)State,
+                elapsedNs = record.elapsed_ns, snapshot = record }));
         }
-        catch (IOException) when (!required) { JournalError = true; }
-        catch (UnauthorizedAccessException) when (!required) { JournalError = true; }
+        catch (Exception failure) when (!required && failure is (IOException or UnauthorizedAccessException or CoreException)) { JournalError = true; }
     }
 
     private async Task ExclusiveAsync(Func<Task> action)

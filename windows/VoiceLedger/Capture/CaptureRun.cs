@@ -6,12 +6,13 @@ using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
 using NAudio.CoreAudioApi;
+using VoiceLedger.Core;
 
 namespace VoiceLedger.Capture;
 
 internal sealed class CaptureRun
 {
-    private const int QueuePackets = 32;
+    internal const int QueuePackets = 32;
     private const int MaxPacketBytes = 1024 * 1024;
     private readonly CaptureClock clock;
     private readonly TrackFiles files;
@@ -42,6 +43,7 @@ internal sealed class CaptureRun
 
     internal Task<EpochStart> Started => started.Task;
     internal Task<EpochResult> Completion { get; }
+    internal int QueuedPackets => queue.Reader.Count;
     private CaptureStop? StopRequest => Volatile.Read(ref stop);
 
     internal void RequestStop(CaptureEnd reason)
@@ -69,6 +71,12 @@ internal sealed class CaptureRun
             if (format.BlockAlign <= 0 || format.SampleRate <= 0 || input.BufferFrames <= 0)
             {
                 throw new IOException("Invalid endpoint format.");
+            }
+            try { _ = ChunkPcm.SampleFormat(format); }
+            catch (InvalidDataException)
+            {
+                RequestStop(CaptureEnd.UnsupportedFormat);
+                return;
             }
             if (expectedFormat is not null && CaptureFormat.Signature(format) != expectedFormat)
             {
@@ -170,8 +178,9 @@ internal sealed class CaptureRun
 
     private async Task<EpochResult> WriteAsync(Task producer)
     {
-        TrackFiles.WaveSegment? segment = null;
+        TrackFiles.Segment? segment = null;
         CaptureInterval? pendingInterval = null;
+        bool opened = false;
         try
         {
             EpochStart start;
@@ -182,6 +191,7 @@ internal sealed class CaptureRun
                 return new EpochResult(failed.Reason, failed.AtNs, files.SavedThroughNs, false);
             }
             files.BeginEpoch(epoch, start, prefix);
+            opened = true;
             var timeline = new PacketTimeline(files.Endpoint.Source, start.Format.SampleRate, start.AtNs);
             await foreach (CapturedPacket packet in queue.Reader.ReadAllAsync().ConfigureAwait(false))
             {
@@ -207,11 +217,11 @@ internal sealed class CaptureRun
                     else
                     {
                         FlushInterval();
-                        if (segment is not null && !segment.CanAdd(packet.Stamp.Frames))
+                        if (segment is not null && !segment.CanAdd(packet, placed))
                         {
                             SealSegment();
                         }
-                        segment ??= files.StartSegment(epoch, start.Format);
+                        segment ??= files.StartSegment(epoch, start.Format, placed);
                         segment.Write(packet, placed);
                     }
                 }
@@ -242,7 +252,13 @@ internal sealed class CaptureRun
         catch (Exception)
         {
             RequestStop(CaptureEnd.StorageFailure);
-            return new EpochResult(CaptureEnd.StorageFailure, clock.NowNs, files.SavedThroughNs, Started.IsCompletedSuccessfully);
+            var result = new EpochResult(CaptureEnd.StorageFailure, clock.NowNs, files.AccountedThroughNs, opened);
+            if (opened)
+            {
+                try { files.EndEpoch(epoch, result); }
+                catch (Exception failure) when (failure is IOException or CoreException) { }
+            }
+            return result;
         }
         finally
         {

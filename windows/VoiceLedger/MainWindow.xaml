@@ -1,7 +1,7 @@
 <Window x:Class="VoiceLedger.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="VoiceLedger" Width="800" Height="560" MinWidth="640" MinHeight="490"
+        Title="VoiceLedger" Width="800" Height="600" MinWidth="640" MinHeight="530"
         WindowStartupLocation="CenterScreen">
   <Grid Margin="24">
     <Grid.RowDefinitions>
@@ -9,6 +9,7 @@
       <RowDefinition Height="Auto" />
       <RowDefinition Height="Auto" />
       <RowDefinition Height="*" />
+      <RowDefinition Height="Auto" />
       <RowDefinition Height="Auto" />
     </Grid.RowDefinitions>
 
@@ -73,7 +74,25 @@
       </ItemsControl>
     </ScrollViewer>
 
-    <DockPanel Grid.Row="4" Margin="0,10,0,0">
+    <Grid Grid.Row="4" Margin="0,10,0,0">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="132" />
+        <ColumnDefinition Width="*" />
+        <ColumnDefinition Width="Auto" />
+      </Grid.ColumnDefinitions>
+      <Label Content="Saved _track" Target="{Binding ElementName=SavedTrackSelector}" />
+      <ComboBox x:Name="SavedTrackSelector" Grid.Column="1" ItemsSource="{Binding History}"
+                DisplayMemberPath="Display" SelectedItem="{Binding HistorySelection}" IsEnabled="{Binding CanChooseHistory}" />
+      <StackPanel Grid.Column="2" Orientation="Horizontal" Margin="8,0,0,0">
+        <Label Content="_Time (s)" Target="{Binding ElementName=SeekTimeBox}" />
+        <TextBox x:Name="SeekTimeBox" Width="65" Text="{Binding SeekTime, UpdateSourceTrigger=PropertyChanged}"
+                 IsEnabled="{Binding CanChooseHistory}" />
+        <Button Content="Play from time" Padding="8,4" Margin="8,0,0,0" IsEnabled="{Binding CanPlay}" Click="PlaySavedAudio" />
+        <Button Content="Stop playback" Padding="8,4" Margin="6,0,0,0" IsEnabled="{Binding CanStopPlayback}" Click="StopPlayback" />
+      </StackPanel>
+    </Grid>
+
+    <DockPanel Grid.Row="5" Margin="0,10,0,0">
       <Button DockPanel.Dock="Right" Content="Open recording folder" IsEnabled="{Binding HasOutput}"
               Padding="10,4" Margin="12,0,0,0" Click="OpenRecordingFolder" />
       <TextBlock Text="{Binding Status}" TextWrapping="Wrap" VerticalAlignment="Center"

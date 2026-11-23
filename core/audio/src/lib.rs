@@ -1,4 +1,7 @@
 mod opus;
+mod store;
+
+pub use store::{Command, NewTrack, Response, Store};
 
 pub const RATE: usize = 48_000;
 pub const MAX_CHANNELS: usize = 32;
@@ -12,6 +15,7 @@ pub enum Error {
     Unavailable,
     Locked,
     UnsupportedSchema,
+    Internal,
     Io(std::io::Error),
     Sql(rusqlite::Error),
     Json(serde_json::Error),

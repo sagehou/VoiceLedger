@@ -21,7 +21,12 @@ enum vl_error_v1 {
     VL_INVALID_DOMAIN_TIMELINE = -15,
     VL_INVALID_AUDIO_DURABILITY = -16,
     VL_INVALID_DOMAIN_REVISION = -17,
-    VL_INVALID_DOMAIN_METADATA = -18
+    VL_INVALID_DOMAIN_METADATA = -18,
+    VL_AUDIO_STORE_ERROR = -20,
+    VL_AUDIO_STORE_LOCKED = -21,
+    VL_AUDIO_UNAVAILABLE = -22,
+    VL_INVALID_AUDIO_MEDIA = -23,
+    VL_UNSUPPORTED_AUDIO_SCHEMA = -24
 };
 
 enum vl_session_command_v1 {
@@ -57,6 +62,12 @@ enum vl_recommendation_v1 {
 
 typedef int64_t vl_session_handle_v1;
 typedef int64_t vl_track_handle_v1;
+typedef int64_t vl_audio_handle_v1;
+
+typedef struct {
+    uint8_t *data;
+    uint32_t length;
+} vl_audio_buffer_v1;
 
 enum vl_track_command_v1 {
     VL_TRACK_START = 1, VL_TRACK_PAUSE = 2, VL_TRACK_RESUME = 3,
@@ -85,6 +96,15 @@ int32_t vl_track_transition_v1(vl_track_handle_v1 handle, int32_t command, int64
     const uint8_t *confirmed_endpoint, uint32_t length);
 int64_t vl_track_source_epoch_v1(vl_track_handle_v1 handle);
 int32_t vl_track_release_v1(vl_track_handle_v1 handle);
+
+/* UTF-8 device-local directory. Opening reconciles the manifest before returning. */
+vl_audio_handle_v1 vl_audio_open_v1(const uint8_t *path, uint32_t length);
+/* Borrowed JSON command and optional bounded interleaved float32 PCM at 48 kHz.
+   The caller releases any non-null result once with the original length. */
+int32_t vl_audio_request_v1(vl_audio_handle_v1 handle, const uint8_t *command, uint32_t length,
+    const float *pcm, uint32_t samples, vl_audio_buffer_v1 *result);
+void vl_audio_buffer_release_v1(uint8_t *data, uint32_t length);
+int32_t vl_audio_release_v1(vl_audio_handle_v1 handle);
 
 /* Supply -1 for an unknown memory value. Memory values are measured in bytes. */
 int32_t vl_recommend_v1(int32_t compatibility, int64_t budget_bytes, int64_t peak_bytes);
