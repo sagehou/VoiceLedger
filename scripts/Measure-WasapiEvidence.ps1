@@ -5,7 +5,9 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$binNs = 5000000
+$binNs = [long]5000000
+$gapCauses = 'endpoint_lost', 'source_discontinuity', 'format_changed', 'system_suspend',
+    'queue_overflow', 'writer_failure', 'paused', 'unknown_capture'
 
 function Read-WasapiTrack($Directory, $Source) {
     $tracks = @(Get-ChildItem -LiteralPath $Directory -Directory -Filter "$Source-*")
@@ -15,17 +17,25 @@ function Read-WasapiTrack($Directory, $Source) {
     [pscustomobject]@{ Directory = $tracks[0].FullName; Rows = @($rows) }
 }
 
+function Stop-WasapiAnalysis([string]$Message) {
+    $failure = [IO.InvalidDataException]::new($Message)
+    $failure.Data['VoiceLedgerEvidence'] = $true
+    throw $failure
+}
+
 function Read-WaveFormat([IO.BinaryReader]$Reader) {
-    if ($Reader.ReadUInt32() -ne 0x46464952) { throw '需要 RIFF WAV 格式。' }
+    if ($Reader.BaseStream.Length -lt 12 -or $Reader.ReadUInt32() -ne 0x46464952) {
+        Stop-WasapiAnalysis '需要完整的 RIFF WAV 文件。'
+    }
     $null = $Reader.ReadUInt32()
-    if ($Reader.ReadUInt32() -ne 0x45564157) { throw '需要 RIFF WAV 格式。' }
+    if ($Reader.ReadUInt32() -ne 0x45564157) { Stop-WasapiAnalysis '文件头未标记为 RIFF WAV。' }
     $stream = $Reader.BaseStream
     $format = $null
     while ($stream.Position + 8 -le $stream.Length) {
         $chunk = [Text.Encoding]::ASCII.GetString($Reader.ReadBytes(4))
         $size = $Reader.ReadUInt32()
         $next = $stream.Position + $size + ($size % 2)
-        if ($stream.Position + $size -gt $stream.Length) { throw 'WAV 分段尚未完整保存。' }
+        if ($stream.Position + $size -gt $stream.Length) { Stop-WasapiAnalysis 'WAV 分段尚未完整保存。' }
         if ($chunk -eq 'fmt ' -and $size -ge 16) {
             $format = $Reader.ReadBytes([int][math]::Min($size, 40))
         }
@@ -44,7 +54,7 @@ function Read-WaveFormat([IO.BinaryReader]$Reader) {
             $block = [int][BitConverter]::ToUInt16($format, 12)
             if ($channels -le 0 -or $rate -le 0 -or $block -ne $channels * $bits / 8 -or
                 (($encoding -ne 1 -or $bits -notin 8,16,24,32) -and ($encoding -ne 3 -or $bits -ne 32))) {
-                throw '当前 WAV 格式无法自动匹配提示音。'
+                Stop-WasapiAnalysis ("暂无法自动匹配该 WAV 格式（编码 {0}，{1} 位，{2} 声道，{3} Hz）。" -f $encoding, $bits, $channels, $rate)
             }
             return [pscustomobject]@{
                 Encoding = $encoding; Bits = $bits; Channels = $channels; Rate = $rate
@@ -53,7 +63,7 @@ function Read-WaveFormat([IO.BinaryReader]$Reader) {
         }
         $stream.Position = $next
     }
-    throw 'WAV 缺少音频数据或格式。'
+    Stop-WasapiAnalysis 'WAV 缺少音频数据或格式。'
 }
 
 function Get-WasapiEnvelope($Track, [long]$Begin, [int]$Count) {
@@ -69,8 +79,12 @@ function Get-WasapiEnvelope($Track, [long]$Begin, [int]$Count) {
             for ($bin = $first; $bin -lt $last; $bin++) { $known[$bin] = $true }
         }
         if ($row.kind -ne 'wav_segment' -or $row.start_ns -ge $end -or $row.end_ns -le $Begin) { continue }
-        if ($row.filename -notmatch '^\d+-[0-9a-f-]{36}\.wav$') { throw '日志中的 WAV 文件名无效。' }
-        $reader = [IO.BinaryReader]::new([IO.File]::OpenRead((Join-Path $Track.Directory $row.filename)))
+        if ($row.filename -notmatch '^\d+-[0-9a-f-]{36}\.wav$') { Stop-WasapiAnalysis '日志中的 WAV 文件名无效。' }
+        $wavePath = Join-Path $Track.Directory $row.filename
+        if (-not (Test-Path -LiteralPath $wavePath -PathType Leaf)) {
+            Stop-WasapiAnalysis '找不到日志登记的 WAV。请使用同时包含日志和 WAV 的完整会话目录。'
+        }
+        $reader = [IO.BinaryReader]::new([IO.File]::OpenRead($wavePath))
         try {
             $format = Read-WaveFormat $reader
             $stride = [int][math]::Max(1, [math]::Floor($format.Rate / 8000))
@@ -81,7 +95,7 @@ function Get-WasapiEnvelope($Track, [long]$Begin, [int]$Count) {
                 $length = [int]($packet.frames * $format.Block)
                 if ($length -le 0 -or $length -gt 1048576 -or $packet.pcm_offset_bytes -lt 0 -or
                     $packet.pcm_offset_bytes + $length -gt $format.Length) {
-                    throw 'WAV 包索引超出已保存的音频范围。'
+                    Stop-WasapiAnalysis 'WAV 包索引超出已保存的音频范围。'
                 }
                 $reader.BaseStream.Position = $format.Start + $packet.pcm_offset_bytes
                 $bytes = $reader.ReadBytes($length)
@@ -125,11 +139,12 @@ function Get-WasapiEnvelope($Track, [long]$Begin, [int]$Count) {
 function Measure-BothAlignment($MicTrack, $SystemTrack) {
     $firstAudio = $SystemTrack.Rows | Where-Object { $_.kind -eq 'wav_segment' } | Select-Object -First 1
     if ($null -eq $firstAudio) { return }
-    $begin = [long][math]::Max(0, $firstAudio.start_ns - 750000000)
-    $end = $firstAudio.start_ns + [long]4000000000
+    $firstAudioNs = [long]$firstAudio.start_ns
+    $begin = [math]::Max([long]0, ($firstAudioNs - [long]750000000))
+    $end = $firstAudioNs + [long]4000000000
     # The test cue is played before disconnecting either endpoint.
     foreach ($row in ($MicTrack.Rows + $SystemTrack.Rows)) {
-        if ($row.kind -eq 'stream_ended') { $end = [math]::Min($end, $row.end_ns) }
+        if ($row.kind -eq 'stream_ended') { $end = [math]::Min($end, [long]$row.end_ns) }
     }
     $count = [int][math]::Floor(($end - $begin) / $binNs)
     if ($count -lt 40) { return }
@@ -200,14 +215,18 @@ if (-not [string]::IsNullOrWhiteSpace($SystemDirectory)) {
 }
 
 $silence = @($silenceTrack.Rows | Where-Object { $_.kind -eq 'silence' })
-$gapCount = @($silenceTrack.Rows | Where-Object { $_.kind -eq 'gap' }).Count
+$systemGaps = @($silenceTrack.Rows | Where-Object { $_.kind -eq 'gap' })
 $lines = @(
     '## Issue #5 Windows x64 真机日志摘要'
     ''
     '- 构建提交 ___ / Windows OS build ___'
-    ('- {0} / Silence {1} 条 / 全轨 Gap {2} 条' -f $silenceLabel, $silence.Count, $gapCount)
+    ('- {0} / Silence {1} 条 / 全轨 Gap {2} 条' -f $silenceLabel, $silence.Count, $systemGaps.Count)
 )
 foreach ($row in $silence) { $lines += ('  - Silence ' + (Format-WasapiInterval $row)) }
+foreach ($row in $systemGaps) {
+    $cause = if ($row.cause -cin $gapCauses) { $row.cause } else { '未识别原因' }
+    $lines += ('  - Gap `{0}` / {1}' -f $cause, (Format-WasapiInterval $row))
+}
 
 $tracks = [ordered]@{ 'Mic-A' = $mic; 'Out-A' = $loopback }
 foreach ($trackAlias in $tracks.Keys) {
@@ -225,7 +244,12 @@ try {
         $lines += ('- Both 对齐估算 `Mic - System` = {0} ms / 5 ms 分辨率 / 相关系数 {1:F2} / 含估算包时间戳 {2}' -f $alignment.DeltaMs, $alignment.Score, $alignment.Estimated)
     }
 } catch {
-    $lines += '- Both 对齐待核对。对应的 WAV 或包索引无法读取。'
+    $failure = $_.Exception
+    if ($failure.Data.Contains('VoiceLedgerEvidence')) {
+        $lines += ('- Both 对齐待核对。' + $failure.Message)
+    } else {
+        $lines += ('- Both 对齐待核对。分析异常（{0}，脚本第 {1} 行）。' -f $failure.GetType().Name, $_.InvocationInfo.ScriptLineNumber)
+    }
 }
 $lines += '- 现场观察与验收状态 ___'
 $lines -join [Environment]::NewLine

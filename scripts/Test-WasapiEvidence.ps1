@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 $tool = Join-Path $PSScriptRoot 'Measure-WasapiEvidence.ps1'
 $root = Join-Path ([IO.Path]::GetTempPath()) ('wasapi-evidence-' + [guid]::NewGuid())
 
@@ -52,7 +52,8 @@ function Write-TestTrack($Directory, [int]$Rate, [long]$StartNs, [bool]$LoseEndp
     $endNs = $StartNs + 1000000000
     $rows = @(
         @{ kind = 'track'; endpoint_name = 'PRIVATE_TEST_ENDPOINT' }
-        @{ kind = 'stream_started'; source_epoch = 0; start_ns = $StartNs }
+        @{ kind = 'stream_started'; source_epoch = 0; start_ns = 659333000 }
+        @{ kind = 'silence'; source_epoch = 0; start_ns = 659333000; end_ns = $StartNs }
         @{ kind = 'wav_segment'; start_ns = $StartNs; end_ns = $endNs; filename = $filename; packets = @(
                 @{ start_ns = $StartNs; end_ns = $endNs; pcm_offset_bytes = 0; frames = $Rate; estimated_timestamp = $LoseEndpoint }
             ) }
@@ -74,17 +75,19 @@ try {
     '{}' | Set-Content -LiteralPath (Join-Path $both 'session.json')
     $systemTrack = Join-Path $system 'system-test'
     $null = New-Item -ItemType Directory -Path $systemTrack
-    '{"kind":"silence","source_epoch":0,"start_ns":1000000000,"end_ns":6000000000}' |
-        Set-Content -LiteralPath (Join-Path $systemTrack 'timeline.jsonl') -Encoding UTF8
+    @(
+        '{"kind":"silence","source_epoch":0,"start_ns":1000000000,"end_ns":6000000000}'
+        '{"kind":"gap","cause":"source_discontinuity","source_epoch":0,"start_ns":6000000000,"end_ns":6020000000}'
+    ) | Set-Content -LiteralPath (Join-Path $systemTrack 'timeline.jsonl') -Encoding UTF8
 
-    $micWav = Write-TestTrack (Join-Path $both 'mic-test') 16000 15000000 $true
-    $systemWav = Write-TestTrack (Join-Path $both 'system-test') 48000 50000000 $false
+    $micWav = Write-TestTrack (Join-Path $both 'mic-test') 16000 35715000000 $true
+    $systemWav = Write-TestTrack (Join-Path $both 'system-test') 48000 35750000000 $false
     Write-TestWave $micWav 16000 320 $true
     Write-TestWave $systemWav 48000 250 $false
     $report = & $tool -BothDirectory $both -SystemDirectory $system
     if ($report -notmatch ' = 35 ms' -or $report -notmatch 'True' -or
-        $report -notmatch 'Silence 1' -or $report -notmatch 'endpoint_lost') {
-        throw "Expected a 35 ms match with the estimated timestamp, Silence, and disconnect evidence.`n$report"
+        $report -notmatch 'Silence 1' -or $report -notmatch 'endpoint_lost' -or $report -notmatch 'source_discontinuity') {
+        throw "Expected a 35 ms match after 35 seconds of silence, and all interval causes.`n$report"
     }
     if ($report.Contains($root) -or $report.Contains([IO.Path]::GetFileName($micWav)) -or $report.Contains('PRIVATE_TEST_ENDPOINT')) {
         throw 'The summary exposes recording identifiers.'
@@ -94,7 +97,13 @@ try {
     if ($report -match ' = [+-]?\d+ ms' -or $report -notmatch 'Silence 1' -or $report -notmatch 'endpoint_lost') {
         throw 'An absent cue must leave the alignment pending and preserve the interval evidence.'
     }
-    'WASAPI evidence matched a 35 ms shift across PCM and extensible float recordings and preserved evidence when the cue was absent.'
+    Remove-Item -LiteralPath $micWav
+    $report = & $tool -BothDirectory $both -SystemDirectory $system
+    if ($report -notmatch '找不到日志登记的 WAV' -or $report.Contains($root) -or
+        $report -notmatch 'source_discontinuity' -or $report -notmatch 'endpoint_lost') {
+        throw "A missing WAV must be reported without a local path while preserving the intervals.`n$report"
+    }
+    'WASAPI evidence measured a 35 ms shift after 35 seconds of silence and reported interval causes, an absent cue, and a missing WAV.'
 } finally {
     if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force }
 }
