@@ -249,14 +249,15 @@ internal sealed class CaptureRun
             files.EndEpoch(epoch, result);
             return result;
         }
-        catch (Exception)
+        catch (Exception failure)
         {
-            RequestStop(CaptureEnd.StorageFailure);
-            var result = new EpochResult(CaptureEnd.StorageFailure, clock.NowNs, files.AccountedThroughNs, opened);
+            CaptureEnd reason = failure is StorageReserveException ? CaptureEnd.StorageExhausted : CaptureEnd.StorageFailure;
+            RequestStop(reason);
+            var result = new EpochResult(reason, clock.NowNs, files.AccountedThroughNs, opened);
             if (opened)
             {
                 try { files.EndEpoch(epoch, result); }
-                catch (Exception failure) when (failure is IOException or CoreException) { }
+                catch (Exception metadataFailure) when (metadataFailure is IOException or CoreException) { }
             }
             return result;
         }

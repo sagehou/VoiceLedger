@@ -9,6 +9,8 @@ namespace VoiceLedger.Capture;
 
 internal readonly record struct PendingGap(uint Epoch, long StartNs, string Cause);
 
+internal sealed class StorageReserveException() : IOException("The recording volume is below the 64 MiB reserve.") { }
+
 internal sealed class TrackFiles(AudioStore audioStore, CaptureEndpoint endpoint)
 {
     private const long CheckpointNs = 250_000_000;
@@ -63,7 +65,7 @@ internal sealed class TrackFiles(AudioStore audioStore, CaptureEndpoint endpoint
         string root = Path.GetPathRoot(Path.GetFullPath(path)) ?? throw new IOException("Recording volume is unavailable.");
         const long reserve = 64L * 1024 * 1024;
         if (new DriveInfo(root).AvailableFreeSpace < reserve)
-            throw new IOException("The recording volume is below the storage reserve.");
+            throw new StorageReserveException();
     }
 
     internal sealed class Segment(TrackFiles owner, Guid id, WaveFormat format, long start) : IDisposable

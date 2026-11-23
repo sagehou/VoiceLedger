@@ -19,6 +19,7 @@ internal sealed record HistoryTrack(Guid Id, Guid SessionId, string Source, long
         {
             string source = Source == "mic" ? "Microphone" : "System loopback";
             string evidence = InterruptedTail ? " · interrupted" : "";
+            if (LossIntervals > 0) evidence += $" · {LossIntervals} gaps";
             return $"{DateTimeOffset.FromUnixTimeMilliseconds(CreatedAtMs).LocalDateTime:g} · {source} · {CommittedChunks} segments{evidence}";
         }
     }
@@ -40,6 +41,9 @@ internal sealed class AudioStore : SafeHandle
     {
         _ = NativeCore.AbiVersion;
         Root = Path.GetFullPath(root);
+        string volume = Path.GetPathRoot(Root) ?? throw new IOException("Recording volume is unavailable.");
+        if (volume.StartsWith(@"\\", StringComparison.Ordinal) || new DriveInfo(volume).DriveType == DriveType.Network)
+            throw new IOException("The recording library requires a local volume.");
         byte[] path = Encoding.UTF8.GetBytes(Root);
         SetHandle(new IntPtr(NativeCore.RequireSuccess(Open(path, (uint)path.Length))));
     }

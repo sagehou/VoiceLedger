@@ -242,7 +242,7 @@ internal sealed class RecordingSession : IAsyncDisposable
                     track.Core.Apply(TrackCommand.Interrupt, result.EndNs);
                 }
                 track.Gap ??= new PendingGap(track.Core.Epoch,
-                    result.Reason == CaptureEnd.StorageFailure ? result.CoveredUntilNs : result.EndNs,
+                    result.Reason is CaptureEnd.StorageFailure or CaptureEnd.StorageExhausted ? result.CoveredUntilNs : result.EndNs,
                     CaptureReason.Code(result.Reason));
                 break;
         }

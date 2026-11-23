@@ -373,11 +373,24 @@ impl Store {
                     IntervalKind::Gap => "gap",
                     IntervalKind::Silence => "silence",
                 };
-                self.connection()?.execute(
-                    "INSERT INTO intervals(track_id,source_epoch,start_ns,end_ns,kind,cause)
-                     VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT DO NOTHING",
-                    params![String::from(track_id), epoch, start_ns, end_ns, kind, cause],
+                let track_id = String::from(track_id);
+                let db = self.connection()?;
+                let values = params![track_id, epoch, start_ns, end_ns, kind, cause];
+                let recorded = db.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM intervals
+                     WHERE track_id=?1 AND source_epoch=?2 AND start_ns=?3 AND end_ns=?4 AND kind=?5 AND cause IS ?6)",
+                    values,
+                    |row| row.get::<_, bool>(0),
                 )?;
+                if recorded {
+                    return Ok(Response::Empty);
+                }
+                changed(db.execute(
+                    "INSERT INTO intervals(track_id,source_epoch,start_ns,end_ns,kind,cause)
+                     SELECT ?1,?2,?3,?4,?5,?6 WHERE NOT EXISTS(
+                        SELECT 1 FROM audio_timeline WHERE track_id=?1 AND end_ns>?3 AND start_ns<?4)",
+                    values,
+                )?)?;
             }
             Command::History => return Response::json(self.history()?),
             Command::Recovery => return Response::json(&self.recovery),
@@ -538,7 +551,7 @@ impl Store {
               (SELECT COUNT(*) FROM audio_timeline a WHERE a.track_id=t.id AND a.kind='gap')
              FROM tracks t JOIN sessions s ON s.id=t.session_id
              LEFT JOIN chunks c ON c.track_id=t.id AND c.state='committed'
-             WHERE s.state IN (5,6) GROUP BY t.id ORDER BY s.created_at_ms DESC,t.source LIMIT 200",
+             WHERE s.state IN (5,6) GROUP BY t.id ORDER BY s.created_at_ms DESC,t.source",
         )?;
         let rows = statement.query_map([], |row| {
             Ok(HistoryTrack {
@@ -560,7 +573,7 @@ impl Store {
         let db = self.connection()?;
         let mut statement = db.prepare(
             "SELECT source_epoch,start_ns,end_ns,kind,cause FROM audio_timeline
-             WHERE track_id=?1 ORDER BY start_ns LIMIT 10000",
+             WHERE track_id=?1 ORDER BY start_ns",
         )?;
         let rows = statement.query_map([track], |row| {
             Ok(TimelineRow {
@@ -646,12 +659,11 @@ impl Store {
                     }
                     tracked.insert(final_path);
                 }
-                Payload::Absent
-                    if chunk.state == "pending"
-                        && matches!(inspect(&partial, &chunk)?, Payload::Valid(_)) =>
-                {
+                Payload::Absent if matches!(inspect(&partial, &chunk)?, Payload::Valid(_)) => {
                     install(&partial, &final_path)?;
-                    self.publish(&chunk.id, &mut |_| {})?;
+                    if chunk.state == "pending" {
+                        self.publish(&chunk.id, &mut |_| {})?;
+                    }
                     report.restored_chunks += 1;
                     tracked.insert(final_path);
                 }
@@ -782,8 +794,38 @@ fn install(source: &Path, destination: &Path) -> Result<()> {
     if source.parent() != destination.parent() || destination.try_exists()? {
         return Err(Error::Invalid);
     }
+    #[cfg(windows)]
+    move_file_write_through(source, destination)?;
+    #[cfg(not(windows))]
     fs::rename(source, destination)?;
     #[cfg(unix)]
     File::open(destination.parent().ok_or(Error::Invalid)?)?.sync_all()?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn move_file_write_through(source: &Path, destination: &Path) -> Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn MoveFileExW(source: *const u16, destination: *const u16, flags: u32) -> i32;
+    }
+
+    let parent = fs::canonicalize(source.parent().ok_or(Error::Invalid)?)?;
+    let absolute = |path: &Path| -> Result<Vec<u16>> {
+        Ok(parent
+            .join(path.file_name().ok_or(Error::Invalid)?)
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect())
+    };
+    let source = absolute(source)?;
+    let destination = absolute(destination)?;
+    // MOVEFILE_WRITE_THROUGH performs the same-directory rename without replacing a file.
+    if unsafe { MoveFileExW(source.as_ptr(), destination.as_ptr(), 0x8) } == 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
     Ok(())
 }

@@ -137,7 +137,9 @@ internal sealed class RecordingViewModel : INotifyPropertyChanged, IAsyncDisposa
                     || report.CorruptChunks > 0 || report.UncommittedChunks > 0 || report.QuarantinedFiles > 0)
                 {
                     int gaps = report.MissingChunks + report.CorruptChunks + report.UncommittedChunks;
-                    recoveryStatus = $"Recovery · {report.InterruptedSessions} interrupted sessions · {report.RestoredChunks} restored · {gaps} unavailable segments · {report.QuarantinedFiles} quarantined files";
+                    recoveryStatus = $"Recovery · {report.ElapsedMs} ms · {report.InterruptedSessions} interrupted sessions · "
+                        + $"{report.RestoredChunks} restored · {gaps} unavailable segments · "
+                        + $"known tail loss {report.KnownTailLossNs / 1_000_000d:F1} ms · {report.QuarantinedFiles} quarantined files";
                 }
                 await RefreshHistoryAsync();
             }, "The recording library could not be recovered. Check available storage.");
@@ -173,7 +175,13 @@ internal sealed class RecordingViewModel : INotifyPropertyChanged, IAsyncDisposa
             await session.DisposeAsync();
             Volatile.Write(ref session, null);
         }
-        RecordingSession recording = await RecordingSession.StartAsync(library, endpoints);
+        RecordingSession recording;
+        try { recording = await RecordingSession.StartAsync(library, endpoints); }
+        catch (StorageReserveException)
+        {
+            error = "Free 64 MiB on the recording volume to start.";
+            return;
+        }
         Volatile.Write(ref session, recording);
         if (!recording.Active) await RefreshHistoryAsync();
     }, "Recording could not start. Check the selected endpoints, microphone access and storage.");
@@ -320,6 +328,7 @@ internal sealed class RecordingViewModel : INotifyPropertyChanged, IAsyncDisposa
         CaptureEnd.SystemSuspend => "System suspended",
         CaptureEnd.QueueOverflow => "Writer queue full",
         CaptureEnd.StorageFailure => "Storage write failed",
+        CaptureEnd.StorageExhausted => "Storage is below the 64 MiB reserve",
         CaptureEnd.UnsupportedFormat => "Endpoint PCM format unsupported",
         _ => "Audio source failed"
     };

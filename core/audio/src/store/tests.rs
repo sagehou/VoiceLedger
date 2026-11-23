@@ -200,6 +200,20 @@ fn seeks_by_track_time_and_detects_missing_and_corrupt_files() {
     store
         .seal(FIRST, END, &[packet(0)], &pcm(), |_| {})
         .unwrap();
+    assert!(matches!(
+        store.execute(
+            Command::Interval {
+                track_id: stable(TRACK),
+                epoch: 0,
+                start_ns: END / 2,
+                end_ns: END,
+                kind: IntervalKind::Silence,
+                cause: None,
+            },
+            &[]
+        ),
+        Err(Error::Invalid)
+    ));
     store
         .execute(
             Command::Interval {
