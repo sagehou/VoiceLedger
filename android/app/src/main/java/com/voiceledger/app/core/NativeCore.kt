@@ -71,6 +71,12 @@ internal object NativeCore {
         requireSuccess(nativeSaveDeviceProfileV1(directory.encodeToByteArray(), measurement))
     }
 
+    fun modelPreview(directory: String): ByteArray {
+        val output = ByteArray(16 * 1024)
+        val length = requireSuccess(nativeModelPreviewV1(directory.encodeToByteArray(), output))
+        return output.copyOf(length)
+    }
+
     fun recommend(compatibility: Compatibility, budgetBytes: Long?, peakBytes: Long?): Recommendation {
         val result = requireSuccess(nativeRecommend(compatibility.code, budgetBytes ?: -1L, peakBytes ?: -1L))
         return Recommendation.entries.single { it.code == result }
@@ -84,6 +90,7 @@ internal object NativeCore {
     private external fun nativeAbiVersion(): Int
     private external fun nativeValidateDomain(data: ByteArray): Int
     private external fun nativeSaveDeviceProfileV1(directory: ByteArray, measurement: ByteArray): Int
+    private external fun nativeModelPreviewV1(directory: ByteArray, output: ByteArray): Int
     private external fun nativeCreate(): Long
     private external fun nativeTransition(handle: Long, command: Int, atNs: Long): Int
     private external fun nativeCancel(handle: Long): Int

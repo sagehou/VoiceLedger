@@ -11,6 +11,7 @@ use voiceledger_core::{
 mod device_profile;
 #[cfg(any(target_os = "android", target_os = "linux"))]
 mod jni;
+mod model_preview;
 mod track;
 
 const MAX_DOMAIN_BATCH_BYTES: usize = 16 * 1024 * 1024;

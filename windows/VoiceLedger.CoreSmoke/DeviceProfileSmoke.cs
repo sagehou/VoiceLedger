@@ -26,7 +26,15 @@ internal static class DeviceProfileSmoke
                 "stable local identity");
             Require(second.RootElement.GetProperty("id").GetGuid() != profile.GetProperty("id").GetGuid(),
                 "new observation identity");
+            using var preview = JsonDocument.Parse(NativeCore.ModelPreview(directory));
+            Require(preview.RootElement.GetProperty("mode").GetString() == "recording_only", "catalog fallback");
+            var models = preview.RootElement.GetProperty("candidates");
+            Require(models.GetArrayLength() == 2, "bundled candidates");
+            Require(models[0].GetProperty("download_bytes").GetInt64() == 32152673, "Whisper download size");
+            Require(models[1].GetProperty("model").GetProperty("peak_ram_estimate").ValueKind == JsonValueKind.Null,
+                "unknown SenseVoice peak RAM");
             Console.WriteLine("Windows device profiler passed native queries and local profile refresh on the hosted runner.");
+            Console.WriteLine("Windows P/Invoke passed the bundled model preview.");
         }
         finally
         {

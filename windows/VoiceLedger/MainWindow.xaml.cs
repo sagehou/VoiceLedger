@@ -46,6 +46,7 @@ public partial class MainWindow : Window
     private async void ResumeRecording(object sender, RoutedEventArgs e) => await viewModel.ResumeAsync();
     private async void StopRecording(object sender, RoutedEventArgs e) => await viewModel.StopAsync();
     private void OpenRecordingFolder(object sender, RoutedEventArgs e) => viewModel.OpenFolder();
+    private void OpenModels(object sender, RoutedEventArgs e) => new ModelsWindow { Owner = this }.ShowDialog();
 
     private async void ReconnectEndpoint(object sender, RoutedEventArgs e)
     {

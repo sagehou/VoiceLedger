@@ -40,7 +40,7 @@ fn write_profile(directory: &Path, mut profile: DeviceCapabilityProfile) -> io::
     lock.lock()?;
 
     let path = directory.join(PROFILE_FILE);
-    if let Some(previous) = read_profile(&path)?
+    if let Some(previous) = load(directory)?
         && previous.platform == profile.platform
     {
         profile.device_id = previous.device_id;
@@ -55,8 +55,8 @@ fn write_profile(directory: &Path, mut profile: DeviceCapabilityProfile) -> io::
     fs::rename(temporary, path)
 }
 
-fn read_profile(path: &Path) -> io::Result<Option<DeviceCapabilityProfile>> {
-    let file = match File::open(path) {
+pub fn load(directory: &Path) -> io::Result<Option<DeviceCapabilityProfile>> {
+    let file = match File::open(directory.join(PROFILE_FILE)) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),
