@@ -188,12 +188,12 @@ impl Chunk {
             session_id: row.get(2)?,
             start_ns: row.get(3)?,
             end_ns: row.get(4)?,
-            channels: row.get(5)?,
+            channels: row.get::<_, u32>(5)? as usize,
             rate: row.get(6)?,
-            frames: row.get(7)?,
+            frames: row.get::<_, Option<u32>>(7)?.map(|frames| frames as usize),
             state: row.get(8)?,
             sha256: row.get(9)?,
-            byte_size: row.get(10)?,
+            byte_size: row.get::<_, Option<i64>>(10)?.map(|bytes| bytes as u64),
         })
     }
 }
@@ -489,8 +489,8 @@ impl Store {
              WHERE id=?1 AND state='pending' AND sha256 IS NULL",
             params![
                 id,
-                frames,
-                bytes.len(),
+                frames as i64,
+                bytes.len() as i64,
                 digest,
                 serde_json::to_string(packets)?
             ],
