@@ -223,6 +223,9 @@ jobs:
           required = {"RECORD_AUDIO", "FOREGROUND_SERVICE", "FOREGROUND_SERVICE_MICROPHONE", "POST_NOTIFICATIONS"}
           assert {"android.permission." + name for name in required} <= permissions, permissions
           assert "android.permission.RECEIVE_BOOT_COMPLETED" not in permissions
+          application = manifest.find("application")
+          assert application.get(ns + "allowBackup") == "false"
+          assert application.get(ns + "dataExtractionRules")
           service, = (
               item for item in manifest.findall("application/service")
               if item.get(ns + "name", "").endswith(".recording.RecordingService")

@@ -8,6 +8,8 @@ The capture thread passes 20 ms batches through a pool of 24 PCM buffers. The wr
 
 Opening the app after process death or reboot reconciles the manifest and reports saved segments, gaps and any known tail loss. Android can stop the recording process without running service cleanup. The service is non-sticky, and starting again requires the visible Start action. On a write failure, the writer checkpoints the observed tail if SQLite remains writable.
 
+Android backup and device-transfer rules exclude the recording library. [Android Auto Backup](https://developer.android.com/identity/data/autobackup)
+
 Android battery management, including vendor-specific restrictions, can suspend or terminate a foreground service. The prototype relies on the platform microphone service without a partial wake lock. Screen-off reliability, timing and power use remain subject to measurement on representative phones.
 
 ## Acceptance
