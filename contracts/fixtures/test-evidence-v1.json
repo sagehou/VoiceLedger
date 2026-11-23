@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "test_id": "fixture.android.screen-off",
+  "status": "blocked",
+  "build_commit": "0000000000000000000000000000000000000000",
+  "environment": { "kind": "synthetic fixture" },
+  "input_corpus_sha256": null,
+  "steps": ["Start recording on a physical Android device and turn off the screen."],
+  "expected": "Recording continues while the screen is off.",
+  "actual": null,
+  "metrics": {},
+  "evidence_path": null,
+  "unresolved_risks": ["No physical Android device was used for this fixture."]
+}

@@ -20,4 +20,6 @@ Read [AGENTS.md](AGENTS.md) first, then the product and technical specifications
 
 All authoritative compile/build/test validation is performed in GitHub Actions. Real-device recording, thermal, battery and long-run behavior require physical-device evidence attached to the relevant issue.
 
+See [CI and test traceability](docs/engineering/CI.md) for the build entry points, artifacts and acceptance gates.
+
 Hardware compatibility, model accuracy/performance and cryptographic interoperability remain validation items until supported by test evidence.

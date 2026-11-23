@@ -1,0 +1,12 @@
+artifacts/
+**/bin/
+**/obj/
+**/target/
+**/.gradle/
+**/.kotlin/
+android/**/build/
+android/local.properties
+.idea/
+.vs/
+*.user
+__pycache__/

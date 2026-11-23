@@ -1,0 +1,221 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches-ignore: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ANDROID_CMDLINE_TOOLS_VERSION: '12266719'
+  ANDROID_NDK_VERSION: '28.2.13676358'
+  JAVA_VERSION: '17.0.18+8'
+
+jobs:
+  rust-core:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: core
+        shell: bash
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - run: cargo fmt --all --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Test the shared core
+        run: |
+          mkdir -p artifacts
+          cargo test --locked 2>&1 | tee artifacts/rust-core.log
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        if: always()
+        with:
+          name: rust-core-report
+          path: core/artifacts/rust-core.log
+
+  rust-windows:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: core
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - run: rustup target add x86_64-pc-windows-msvc
+      - run: cargo build --release --locked --target x86_64-pc-windows-msvc
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: voiceledger-core-windows-x64
+          path: core/target/x86_64-pc-windows-msvc/release/voiceledger_core.dll
+          if-no-files-found: error
+
+  rust-android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: core
+        shell: bash
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+        with:
+          cmdline-tools-version: ${{ env.ANDROID_CMDLINE_TOOLS_VERSION }}
+          packages: ndk;${{ env.ANDROID_NDK_VERSION }}
+      - run: rustup target add aarch64-linux-android
+      - name: Build for Android arm64 at API 26
+        run: |
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang"
+          cargo build --release --locked --target aarch64-linux-android
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: voiceledger-core-android-arm64-v8a
+          path: core/target/aarch64-linux-android/release/libvoiceledger_core.so
+          if-no-files-found: error
+
+  windows-client:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: global.json
+      - name: Restore, build and publish WPF
+        run: |
+          New-Item -ItemType Directory -Path artifacts | Out-Null
+          dotnet restore windows/VoiceLedger.slnx --locked-mode 2>&1 | Tee-Object artifacts/windows-restore.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet build windows/VoiceLedger.slnx --configuration Release --no-restore 2>&1 | Tee-Object artifacts/windows-build.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet publish windows/VoiceLedger/VoiceLedger.csproj --configuration Release --no-build --output artifacts/windows 2>&1 | Tee-Object artifacts/windows-publish.log
+      - name: Check the publish output
+        run: |
+          foreach ($file in 'VoiceLedger.exe', 'VoiceLedger.dll', 'VoiceLedger.runtimeconfig.json') {
+            if (-not (Test-Path "artifacts/windows/$file" -PathType Leaf)) {
+              throw "Publish output is missing $file"
+            }
+          }
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        if: always()
+        with:
+          name: windows-client
+          path: |
+            artifacts/windows/
+            artifacts/windows-*.log
+
+  android-client:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: android
+        shell: bash
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: gradle
+          cache-dependency-path: |
+            android/**/*.gradle.kts
+            android/gradle/wrapper/gradle-wrapper.properties
+            android/**/gradle.lockfile
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+        with:
+          cmdline-tools-version: ${{ env.ANDROID_CMDLINE_TOOLS_VERSION }}
+          packages: platforms;android-36 build-tools;36.0.0
+      - name: Build and check the Android app
+        run: |
+          mkdir -p artifacts
+          ./gradlew --no-daemon --stacktrace :app:lintDebug :app:testDebugUnitTest :app:assembleDebug 2>&1 | tee artifacts/android-gradle.log
+      - name: Check the APK manifest
+        run: |
+          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging app/build/outputs/apk/debug/app-debug.apk > artifacts/android-apk.txt
+          grep -E "^package: name='com\.voiceledger\.app'" artifacts/android-apk.txt
+          grep -E "^launchable-activity: name='com\.voiceledger\.app\.MainActivity'" artifacts/android-apk.txt
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        if: always()
+        with:
+          name: android-client
+          path: |
+            android/artifacts/
+            android/app/build/reports/
+            android/app/build/outputs/apk/debug/app-debug.apk
+
+  contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Validate the test evidence contract
+        shell: bash
+        run: |
+          python3 -m venv "$RUNNER_TEMP/voiceledger-ci"
+          ci_python="$RUNNER_TEMP/voiceledger-ci/bin/python"
+          "$ci_python" -m pip install --only-binary=:all: -r scripts/requirements-ci.txt
+          mkdir -p artifacts
+          "$ci_python" scripts/validate_evidence.py 2>&1 | tee artifacts/contracts.log
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        if: always()
+        with:
+          name: contracts-report
+          path: artifacts/contracts.log
+
+  security-static:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Check workflow syntax and shell scripts
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.8
+      - name: Scan for secrets
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITLEAKS_ENABLE_COMMENTS: 'false'
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: 'false'
+      - name: Review dependency changes
+        if: github.event_name == 'pull_request'
+        uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4
+
+  gate:
+    name: CI gate
+    if: always()
+    needs: [rust-core, rust-windows, rust-android, windows-client, android-client, contracts, security-static]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require all validation jobs to pass
+        env:
+          CI_RESULTS: ${{ toJSON(needs) }}
+        run: jq -e 'all(.[]; .result == "success")' <<< "$CI_RESULTS"
