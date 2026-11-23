@@ -224,6 +224,7 @@ pub struct TrackChange {
 pub struct AudioFormat {
     pub sample_rate_hz: NonZeroU32,
     pub channels: NonZeroU32,
+    pub sample_format: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -233,6 +234,7 @@ pub struct TrackRecord {
     pub session_id: StableId,
     pub source: Source,
     pub endpoint_id: String,
+    pub source_clock: String,
     pub format: AudioFormat,
     pub source_epoch: u32,
     pub capture_state: TrackState,
@@ -372,6 +374,7 @@ pub struct TranslationRevision {
     pub id: StableId,
     pub translation_id: StableId,
     pub revision: NonZeroU32,
+    pub parent_revision_ids: Vec<StableId>,
     pub source_revision_id: StableId,
     pub target_language: Language,
     pub text: String,
@@ -541,6 +544,7 @@ pub struct SyncEvent {
     pub entity_kind: SyncEntity,
     pub entity_id: StableId,
     pub operation: SyncOperation,
+    pub restored_from_tombstone_id: Option<StableId>,
     pub revision_id: StableId,
     pub object_refs: Vec<StableId>,
     pub created_at_unix_ms: Count,

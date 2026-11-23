@@ -49,7 +49,7 @@
       "endpoint_id": "synthetic-mic",
       "capture_state": "recording",
       "source_epoch": 1,
-      "format": {"sample_rate_hz": 48000, "channels": 1},
+      "format": {"sample_rate_hz": 48000, "channels": 1, "sample_format": "pcm_s16le"},
       "transitions": [
         {"command": "start", "at_ns": 10, "reason": "source_ready"},
         {"command": "pause", "at_ns": 300, "reason": "user_request"},
@@ -61,7 +61,8 @@
           "reason": "user_request",
           "confirmed_endpoint_id": "synthetic-mic"
         }
-      ]
+      ],
+      "source_clock": "windows_qpc"
     },
     {
       "id": "0000000b-0000-4000-8000-00000000000b",
@@ -70,13 +71,14 @@
       "endpoint_id": "synthetic-loopback",
       "capture_state": "disconnected",
       "source_epoch": 0,
-      "format": {"sample_rate_hz": 48000, "channels": 2},
+      "format": {"sample_rate_hz": 48000, "channels": 2, "sample_format": "pcm_f32le"},
       "transitions": [
         {"command": "start", "at_ns": 10, "reason": "source_ready"},
         {"command": "pause", "at_ns": 300, "reason": "user_request"},
         {"command": "resume", "at_ns": 400, "reason": "user_request"},
         {"command": "disconnect", "at_ns": 600, "reason": "endpoint_lost"}
-      ]
+      ],
+      "source_clock": "windows_qpc"
     },
     {
       "id": "0000000c-0000-4000-8000-00000000000c",
@@ -85,13 +87,14 @@
       "endpoint_id": "synthetic-mic",
       "capture_state": "completed",
       "source_epoch": 0,
-      "format": {"sample_rate_hz": 48000, "channels": 1},
+      "format": {"sample_rate_hz": 48000, "channels": 1, "sample_format": "pcm_s16le"},
       "transitions": [
         {"command": "start", "at_ns": 20, "reason": "source_ready"},
         {"command": "stop", "at_ns": 130, "reason": "user_request"},
         {"command": "stop", "at_ns": 132, "reason": "user_request"},
         {"command": "finish", "at_ns": 140, "reason": "capture_drained"}
-      ]
+      ],
+      "source_clock": "windows_qpc"
     }
   ],
   "audio_chunks": [
@@ -102,7 +105,7 @@
       "sequence": 0,
       "range": {"start_ns": 10, "end_ns": 200},
       "codec": "opus",
-      "format": {"sample_rate_hz": 48000, "channels": 1},
+      "format": {"sample_rate_hz": 48000, "channels": 1, "sample_format": "pcm_s16le"},
       "byte_size": 64,
       "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "commit_state": "committed"
@@ -114,7 +117,7 @@
       "sequence": 0,
       "range": {"start_ns": 10, "end_ns": 100},
       "codec": "opus",
-      "format": {"sample_rate_hz": 48000, "channels": 2},
+      "format": {"sample_rate_hz": 48000, "channels": 2, "sample_format": "pcm_f32le"},
       "byte_size": 64,
       "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "commit_state": "committed"
@@ -126,7 +129,7 @@
       "sequence": 1,
       "range": {"start_ns": 200, "end_ns": 300},
       "codec": "opus",
-      "format": {"sample_rate_hz": 48000, "channels": 1},
+      "format": {"sample_rate_hz": 48000, "channels": 1, "sample_format": "pcm_s16le"},
       "byte_size": 64,
       "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "commit_state": "missing"
@@ -138,7 +141,7 @@
       "sequence": 2,
       "range": {"start_ns": 700, "end_ns": 800},
       "codec": "opus",
-      "format": {"sample_rate_hz": 48000, "channels": 1},
+      "format": {"sample_rate_hz": 48000, "channels": 1, "sample_format": "pcm_s16le"},
       "byte_size": 0,
       "sha256": null,
       "commit_state": "pending"
@@ -325,7 +328,8 @@
         "runtime_version": "0.1",
         "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
       },
-      "created_at_unix_ms": 1760000000001
+      "created_at_unix_ms": 1760000000001,
+      "parent_revision_ids": []
     },
     {
       "id": "0000003d-0000-4000-8000-00000000003d",
@@ -336,7 +340,8 @@
       "text": "人手で校正。",
       "authorship": "manual",
       "model": null,
-      "created_at_unix_ms": 1760000000002
+      "created_at_unix_ms": 1760000000002,
+      "parent_revision_ids": ["0000003c-0000-4000-8000-00000000003c"]
     }
   ],
   "speaker_assignments": [
@@ -504,6 +509,29 @@
       "revision_id": "00000002-0000-4000-8000-000000000002",
       "object_refs": ["000000ca-0000-4000-8000-0000000000ca"],
       "created_at_unix_ms": 1760000000020
+    },
+    {
+      "id": "00000067-0000-4000-8000-000000000067",
+      "device_id": "00000003-0000-4000-8000-000000000003",
+      "sequence": 2,
+      "entity_kind": "session",
+      "entity_id": "00000002-0000-4000-8000-000000000002",
+      "operation": "tombstone",
+      "revision_id": "000000cb-0000-4000-8000-0000000000cb",
+      "object_refs": [],
+      "created_at_unix_ms": 1760000000020
+    },
+    {
+      "id": "00000068-0000-4000-8000-000000000068",
+      "device_id": "00000003-0000-4000-8000-000000000003",
+      "sequence": 3,
+      "entity_kind": "session",
+      "entity_id": "00000005-0000-4000-8000-000000000005",
+      "operation": "restore",
+      "revision_id": "000000cc-0000-4000-8000-0000000000cc",
+      "object_refs": ["000000cd-0000-4000-8000-0000000000cd"],
+      "created_at_unix_ms": 1760000000020,
+      "restored_from_tombstone_id": "00000067-0000-4000-8000-000000000067"
     }
   ]
 }

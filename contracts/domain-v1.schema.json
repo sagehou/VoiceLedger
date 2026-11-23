@@ -99,10 +99,11 @@
     "AudioFormat": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["sample_rate_hz", "channels"],
+      "required": ["sample_rate_hz", "channels", "sample_format"],
       "properties": {
         "sample_rate_hz": {"type": "integer", "minimum": 1, "maximum": 4294967295},
-        "channels": {"type": "integer", "minimum": 1, "maximum": 4294967295}
+        "channels": {"type": "integer", "minimum": 1, "maximum": 4294967295},
+        "sample_format": {"type": "string", "minLength": 1}
       }
     },
     "Session": {
@@ -151,12 +152,23 @@
     "Track": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "session_id", "source", "endpoint_id", "format", "source_epoch", "capture_state", "transitions"],
+      "required": [
+        "id",
+        "session_id",
+        "source",
+        "endpoint_id",
+        "source_clock",
+        "format",
+        "source_epoch",
+        "capture_state",
+        "transitions"
+      ],
       "properties": {
         "id": {"$ref": "#/$defs/StableId"},
         "session_id": {"$ref": "#/$defs/StableId"},
         "source": {"enum": ["mic", "system_loopback"]},
         "endpoint_id": {"type": "string", "minLength": 1},
+        "source_clock": {"type": "string", "minLength": 1},
         "format": {"$ref": "#/$defs/AudioFormat"},
         "source_epoch": {"type": "integer", "minimum": 0, "maximum": 4294967295},
         "capture_state": {"enum": ["preparing", "recording", "paused", "disconnected", "stopping", "completed", "interrupted"]},
@@ -293,6 +305,7 @@
         "translation_id",
         "revision",
         "source_revision_id",
+        "parent_revision_ids",
         "target_language",
         "text",
         "authorship",
@@ -303,6 +316,7 @@
         "translation_id": {"$ref": "#/$defs/StableId"},
         "revision": {"type": "integer", "minimum": 1, "maximum": 4294967295},
         "source_revision_id": {"$ref": "#/$defs/StableId"},
+        "parent_revision_ids": {"type": "array", "items": {"$ref": "#/$defs/StableId"}, "uniqueItems": true},
         "target_language": {"$ref": "#/$defs/Language"},
         "text": {"type": "string"},
         "authorship": {"$ref": "#/$defs/Authorship"},
@@ -466,7 +480,13 @@
         "operation": {"enum": ["upsert", "tombstone", "restore"]},
         "revision_id": {"$ref": "#/$defs/StableId"},
         "object_refs": {"type": "array", "items": {"$ref": "#/$defs/StableId"}},
-        "created_at_unix_ms": {"$ref": "#/$defs/Count"}
+        "created_at_unix_ms": {"$ref": "#/$defs/Count"},
+        "restored_from_tombstone_id": {"anyOf": [{"$ref": "#/$defs/StableId"}, {"type": "null"}]}
+      },
+      "if": {"properties": {"operation": {"const": "restore"}}},
+      "then": {
+        "required": ["restored_from_tombstone_id"],
+        "properties": {"restored_from_tombstone_id": {"$ref": "#/$defs/StableId"}}
       }
     }
   }

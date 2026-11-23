@@ -146,7 +146,9 @@ impl DomainBatch {
                 ContractError::InvalidTransition,
             )?;
             require(
-                !track.endpoint_id.is_empty(),
+                !track.endpoint_id.is_empty()
+                    && !track.source_clock.is_empty()
+                    && !track.format.sample_format.is_empty(),
                 ContractError::InvalidMetadata,
             )?;
             let mut machine = TrackMachine::new(&track.endpoint_id);
@@ -247,7 +249,10 @@ impl DomainBatch {
                 chunk.source_epoch,
                 chunk.range,
             )?;
-            require(!chunk.codec.is_empty(), ContractError::InvalidMetadata)?;
+            require(
+                !chunk.codec.is_empty() && !chunk.format.sample_format.is_empty(),
+                ContractError::InvalidMetadata,
+            )?;
             require(
                 chunk.commit_state != AudioCommitState::Committed || chunk.is_saved(),
                 ContractError::InvalidDurability,
@@ -358,6 +363,7 @@ impl DomainBatch {
                 ContractError::InvalidRevision,
             )?;
         }
+        let translations = index(&self.translation_revisions, |revision| &revision.id);
         for revision in &self.translation_revisions {
             let source = indexes
                 .utterances
@@ -368,6 +374,24 @@ impl DomainBatch {
                 revision.authorship == Authorship::Machine,
                 revision.model.as_ref(),
             )?;
+            let mut parents = BTreeSet::new();
+            for parent_id in &revision.parent_revision_ids {
+                let parent = translations
+                    .get(parent_id)
+                    .ok_or(ContractError::InvalidReference)?;
+                let parent_source = indexes
+                    .utterances
+                    .get(&parent.source_revision_id)
+                    .ok_or(ContractError::InvalidReference)?;
+                require(
+                    parents.insert(parent_id)
+                        && parent.translation_id == revision.translation_id
+                        && parent.target_language == revision.target_language
+                        && parent_source.utterance_id == source.utterance_id
+                        && parent.revision < revision.revision,
+                    ContractError::InvalidRevision,
+                )?;
+            }
         }
         Ok(())
     }
@@ -498,9 +522,27 @@ impl DomainBatch {
 
     fn validate_sync(&self, indexes: &Indexes<'_>) -> Result<(), ContractError> {
         let mut sequences = BTreeMap::new();
+        let events = index(&self.sync_events, |event| &event.id);
         for event in &self.sync_events {
             if let Some(previous) = sequences.insert(&event.device_id, event.sequence) {
                 require(previous < event.sequence, ContractError::InvalidTimeline)?;
+            }
+            require(
+                (event.operation == SyncOperation::Restore)
+                    == event.restored_from_tombstone_id.is_some(),
+                ContractError::InvalidReference,
+            )?;
+            if let Some(tombstone) = event
+                .restored_from_tombstone_id
+                .as_ref()
+                .and_then(|id| events.get(id))
+            {
+                require(
+                    tombstone.operation == SyncOperation::Tombstone
+                        && event.entity_kind == tombstone.entity_kind
+                        && event.entity_id != tombstone.entity_id,
+                    ContractError::InvalidReference,
+                )?;
             }
             if indexes.utterances.contains_key(&event.entity_id) {
                 require(

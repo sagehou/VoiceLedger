@@ -278,5 +278,35 @@
     "expected_status": -15,
     "schema_valid": true,
     "changes": [{"path": "/gaps/3/range/end_ns", "value": 701}, {"path": "/audio_chunks/3/range/start_ns", "value": 710}]
+  },
+  {
+    "name": "track_requires_sample_representation",
+    "expected_status": -18,
+    "schema_valid": false,
+    "changes": [{"path": "/tracks/0/format/sample_format", "value": ""}]
+  },
+  {
+    "name": "track_requires_native_clock",
+    "expected_status": -18,
+    "schema_valid": false,
+    "changes": [{"path": "/tracks/0/source_clock", "value": ""}]
+  },
+  {
+    "name": "translation_parent_cannot_be_same_revision",
+    "expected_status": -17,
+    "schema_valid": true,
+    "changes": [{"path": "/translation_revisions/1/parent_revision_ids", "value": ["0000003d-0000-4000-8000-00000000003d"]}]
+  },
+  {
+    "name": "restore_requires_tombstone_link",
+    "expected_status": -13,
+    "schema_valid": false,
+    "changes": [{"path": "/sync_events/4/restored_from_tombstone_id", "value": null}]
+  },
+  {
+    "name": "restore_uses_new_entity_identity",
+    "expected_status": -13,
+    "schema_valid": true,
+    "changes": [{"path": "/sync_events/4/entity_id", "value": "00000002-0000-4000-8000-000000000002"}]
   }
 ]
