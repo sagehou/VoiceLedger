@@ -12,7 +12,16 @@ enum vl_error_v1 {
     VL_UNKNOWN_HANDLE = -2,
     VL_INVALID_TRANSITION = -3,
     VL_CANCELLED = -4,
-    VL_INTERNAL_ERROR = -5
+    VL_INTERNAL_ERROR = -5,
+    VL_UNSUPPORTED_SCHEMA_VERSION = -10,
+    VL_INVALID_DOMAIN_JSON = -11,
+    VL_DUPLICATE_DOMAIN_IDENTITY = -12,
+    VL_INVALID_DOMAIN_REFERENCE = -13,
+    VL_INVALID_DOMAIN_TRANSITION = -14,
+    VL_INVALID_DOMAIN_TIMELINE = -15,
+    VL_INVALID_AUDIO_DURABILITY = -16,
+    VL_INVALID_DOMAIN_REVISION = -17,
+    VL_INVALID_DOMAIN_METADATA = -18
 };
 
 enum vl_session_command_v1 {
@@ -50,6 +59,8 @@ typedef int64_t vl_session_handle_v1;
 
 /* Negative returns are vl_error_v1. Positive handles are owned by the caller. */
 int32_t vl_abi_version_v1(void);
+/* Borrowed UTF-8 input. The synchronous call accepts up to 16 MiB. */
+int32_t vl_domain_validate_v1(const uint8_t *data, uint32_t length);
 vl_session_handle_v1 vl_session_create_v1(void);
 int32_t vl_session_transition_v1(vl_session_handle_v1 handle, int32_t command, int64_t at_ns);
 int32_t vl_session_cancel_v1(vl_session_handle_v1 handle);

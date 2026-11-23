@@ -9,3 +9,6 @@ crate-type = ["cdylib"]
 
 [dependencies]
 voiceledger-core = { path = ".." }
+
+[target.'cfg(any(target_os = "android", target_os = "linux"))'.dependencies]
+jni = "=0.21.1"

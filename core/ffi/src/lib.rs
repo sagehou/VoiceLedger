@@ -2,12 +2,15 @@ use std::collections::BTreeMap;
 use std::panic::{UnwindSafe, catch_unwind};
 use std::sync::{Mutex, MutexGuard};
 
+use voiceledger_core::contracts::DomainBatch;
 use voiceledger_core::{
     Compatibility, RecommendationInput, Session, SessionCommand, TransitionError,
 };
 
 #[cfg(any(target_os = "android", target_os = "linux"))]
 mod jni;
+
+const MAX_DOMAIN_BATCH_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Clone, Copy)]
 #[repr(i32)]
@@ -85,6 +88,26 @@ fn memory_bytes(value: i64) -> Result<Option<u64>, Error> {
 #[unsafe(no_mangle)]
 pub extern "C" fn vl_abi_version_v1() -> i32 {
     1
+}
+
+fn validate_domain_bytes(bytes: &[u8]) -> i32 {
+    DomainBatch::decode(bytes).map_or_else(|error| error as i32, |_| 0)
+}
+
+/// Validate one versioned UTF-8 domain batch without retaining the input buffer.
+///
+/// # Safety
+/// A non-null `data` must be readable for `length` bytes throughout the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vl_domain_validate_v1(data: *const u8, length: u32) -> i32 {
+    guard(|| {
+        let length = length as usize;
+        if data.is_null() || length == 0 || length > MAX_DOMAIN_BATCH_BYTES {
+            return Err(Error::InvalidArgument);
+        }
+        let bytes = unsafe { std::slice::from_raw_parts(data, length) };
+        Ok(validate_domain_bytes(bytes))
+    })
 }
 
 #[unsafe(no_mangle)]

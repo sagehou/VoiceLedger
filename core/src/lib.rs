@@ -1,9 +1,15 @@
+use serde::{Deserialize, Serialize};
+
+pub mod contracts;
+pub mod track;
+
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[repr(i32)]
+#[serde(rename_all = "snake_case")]
 pub enum SessionState {
     Idle = 0,
     Preparing = 1,
@@ -14,7 +20,8 @@ pub enum SessionState {
     Interrupted = 6,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SessionCommand {
     Prepare,
     Start,

@@ -2,7 +2,11 @@ using System.Globalization;
 using System.Security.Cryptography;
 using VoiceLedger.Core;
 
-string fixture = args.Single();
+if (args.Length != 2)
+{
+    throw new ArgumentException("Supply the ABI fixture and the generated domain fixture directory.");
+}
+string fixture = args[0];
 var sessions = new Dictionary<string, CoreSession>();
 int cases = 0;
 
@@ -51,6 +55,31 @@ for (int index = 0; index < cycles; index++)
 string fixtureHash = Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(fixture)));
 Console.WriteLine($"P/Invoke ABI {NativeCore.AbiVersion} passed {cases} fixture cases and {cycles} ownership cycles.");
 Console.WriteLine($"Fixture SHA-256 {fixtureHash}");
+ValidateDomainFixtures(args[1]);
+
+static void ValidateDomainFixtures(string directory)
+{
+    string index = Path.Combine(directory, "cases.tsv");
+    int count = 0;
+    foreach (string row in File.ReadLines(index))
+    {
+        string[] fields = row.Split('\t');
+        byte[] data = File.ReadAllBytes(Path.Combine(directory, fields[0] + ".json"));
+        string hash = Convert.ToHexStringLower(SHA256.HashData(data));
+        if (hash != fields[2])
+        {
+            throw new InvalidDataException($"Domain fixture digest mismatch for {fields[0]}.");
+        }
+        Expect(Number(fields[1]), Outcome(() => NativeCore.ValidateDomain(data)), fields[0]);
+        count++;
+    }
+    if (count == 0)
+    {
+        throw new InvalidDataException("The domain fixture suite contains no cases.");
+    }
+    string suiteHash = Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(index)));
+    Console.WriteLine($"Domain schema v1 passed {count} cases. Suite SHA-256 {suiteHash}");
+}
 
 CoreSession Session(string name)
 {

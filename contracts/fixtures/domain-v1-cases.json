@@ -1,0 +1,270 @@
+[
+  {"name": "complete_contract", "expected_status": 0, "schema_valid": true, "changes": []},
+  {
+    "name": "recording_keeps_other_track_after_disconnect",
+    "expected_status": 0,
+    "schema_valid": true,
+    "changes": [{"path": "/sessions/0/ai_state", "value": "failed"}, {"path": "/sessions/0/sync_state", "value": "offline"}]
+  },
+  {
+    "name": "interrupted_after_process_death",
+    "expected_status": 0,
+    "schema_valid": true,
+    "changes": [
+      {"path": "/sessions/1/capture_state", "value": "interrupted"},
+      {
+        "path": "/sessions/1/transitions/4",
+        "value": {"command": "interrupt", "at_ns": 140, "reason": "process_death"}
+      },
+      {"path": "/tracks/2/capture_state", "value": "interrupted"},
+      {"path": "/tracks/2/transitions/3", "value": {"command": "interrupt", "at_ns": 140, "reason": "process_death"}}
+    ]
+  },
+  {
+    "name": "persisted_history_even_with_missing_audio",
+    "expected_status": 0,
+    "schema_valid": true,
+    "changes": [{"path": "/ai_jobs/0/state", "value": "completed"}, {"path": "/sessions/0/sync_state", "value": "syncing"}]
+  },
+  {
+    "name": "unsigned_overflow_in_timestamp",
+    "expected_status": -11,
+    "schema_valid": false,
+    "changes": [{"path": "/audio_chunks/3/range/end_ns", "value": 9223372036854775808}]
+  },
+  {
+    "name": "large_signed_timestamp",
+    "expected_status": 0,
+    "schema_valid": true,
+    "changes": [{"path": "/audio_chunks/3/range/end_ns", "value": 9223372036854775807}]
+  },
+  {
+    "name": "unsupported_schema_version",
+    "expected_status": -10,
+    "schema_valid": false,
+    "changes": [{"path": "/schema_version", "value": 2}]
+  },
+  {
+    "name": "invalid_uuid",
+    "expected_status": -11,
+    "schema_valid": false,
+    "changes": [{"path": "/tracks/0/id", "value": "not-a-uuid"}]
+  },
+  {
+    "name": "duplicate_record_id",
+    "expected_status": -12,
+    "schema_valid": true,
+    "changes": [{"path": "/gaps/0/id", "value": "00000028-0000-4000-8000-000000000028"}]
+  },
+  {
+    "name": "missing_track_reference",
+    "expected_status": -13,
+    "schema_valid": true,
+    "changes": [{"path": "/gaps/0/track_id", "value": "00000309-0000-4000-8000-000000000309"}]
+  },
+  {
+    "name": "source_track_cannot_be_duplicated",
+    "expected_status": -14,
+    "schema_valid": true,
+    "changes": [{"path": "/tracks/1/source", "value": "mic"}]
+  },
+  {
+    "name": "session_time_goes_backwards",
+    "expected_status": -14,
+    "schema_valid": true,
+    "changes": [{"path": "/sessions/0/transitions/3/at_ns", "value": 299}]
+  },
+  {
+    "name": "session_cannot_restart_after_stop",
+    "expected_status": -14,
+    "schema_valid": true,
+    "changes": [{"path": "/sessions/1/transitions/4/command", "value": "start"}]
+  },
+  {
+    "name": "recording_requires_a_recording_track",
+    "expected_status": -14,
+    "schema_valid": true,
+    "changes": [
+      {"path": "/tracks/0/capture_state", "value": "disconnected"},
+      {"path": "/tracks/0/source_epoch", "value": 0},
+      {
+        "path": "/tracks/0/transitions",
+        "value": [
+          {"command": "start", "at_ns": 10, "reason": "source_ready"},
+          {"command": "pause", "at_ns": 300, "reason": "user_request"},
+          {"command": "resume", "at_ns": 400, "reason": "user_request"},
+          {"command": "disconnect", "at_ns": 500, "reason": "endpoint_lost"}
+        ]
+      }
+    ]
+  },
+  {
+    "name": "reconnect_denies_different_endpoint",
+    "expected_status": -14,
+    "schema_valid": true,
+    "changes": [{"path": "/tracks/0/transitions/4/confirmed_endpoint_id", "value": "other-device"}]
+  },
+  {
+    "name": "reconnect_requires_user_action",
+    "expected_status": -14,
+    "schema_valid": true,
+    "changes": [{"path": "/tracks/0/transitions/4/reason", "value": "source_ready"}]
+  },
+  {
+    "name": "reconnect_requires_new_epoch",
+    "expected_status": -14,
+    "schema_valid": true,
+    "changes": [{"path": "/tracks/0/source_epoch", "value": 0}]
+  },
+  {
+    "name": "no_gap_fields_for_silence",
+    "expected_status": -11,
+    "schema_valid": false,
+    "changes": [{"path": "/silence/0/cause", "value": "endpoint_lost"}]
+  },
+  {
+    "name": "gap_and_silence_cannot_overlap",
+    "expected_status": -15,
+    "schema_valid": true,
+    "changes": [{"path": "/silence/0/range/end_ns", "value": 301}]
+  },
+  {
+    "name": "chunk_sequence_must_increase",
+    "expected_status": -15,
+    "schema_valid": true,
+    "changes": [{"path": "/audio_chunks/2/sequence", "value": 0}]
+  },
+  {
+    "name": "chunk_time_must_increase",
+    "expected_status": -15,
+    "schema_valid": true,
+    "changes": [{"path": "/audio_chunks/2/range/start_ns", "value": 199}]
+  },
+  {
+    "name": "chunk_rejects_future_epoch",
+    "expected_status": -15,
+    "schema_valid": true,
+    "changes": [{"path": "/audio_chunks/3/source_epoch", "value": 2}]
+  },
+  {
+    "name": "save_requires_valid_commit_evidence",
+    "expected_status": -16,
+    "schema_valid": false,
+    "changes": [{"path": "/audio_chunks/3/commit_state", "value": "committed"}]
+  },
+  {
+    "name": "saved_flag_is_not_a_domain_field",
+    "expected_status": -11,
+    "schema_valid": false,
+    "changes": [{"path": "/audio_chunks/3/saved", "value": true}]
+  },
+  {
+    "name": "ai_cannot_queue_uncommitted_audio",
+    "expected_status": -16,
+    "schema_valid": true,
+    "changes": [
+      {
+        "path": "/ai_jobs/1/inputs/0",
+        "value": {
+          "kind": "audio",
+          "span": {"chunk_id": "00000017-0000-4000-8000-000000000017", "range": {"start_ns": 710, "end_ns": 790}}
+        }
+      }
+    ]
+  },
+  {
+    "name": "sync_cannot_publish_pending_audio",
+    "expected_status": -16,
+    "schema_valid": true,
+    "changes": [
+      {"path": "/sync_events/1/entity_id", "value": "00000017-0000-4000-8000-000000000017"},
+      {"path": "/sync_events/1/revision_id", "value": "00000017-0000-4000-8000-000000000017"}
+    ]
+  },
+  {
+    "name": "selected_partial_is_invalid",
+    "expected_status": -17,
+    "schema_valid": true,
+    "changes": [{"path": "/utterance_selections/0/revision_id", "value": "00000032-0000-4000-8000-000000000032"}]
+  },
+  {
+    "name": "rerun_cannot_replace_manual_revision",
+    "expected_status": -17,
+    "schema_valid": true,
+    "changes": [{"path": "/utterance_selections/0/revision_id", "value": "00000035-0000-4000-8000-000000000035"}]
+  },
+  {
+    "name": "manual_edit_requires_stable_parent",
+    "expected_status": -17,
+    "schema_valid": true,
+    "changes": [{"path": "/utterance_revisions/2/parent_revision_ids/0", "value": "00000032-0000-4000-8000-000000000032"}]
+  },
+  {
+    "name": "translation_binds_to_stable_revision",
+    "expected_status": -17,
+    "schema_valid": true,
+    "changes": [{"path": "/translation_revisions/0/source_revision_id", "value": "00000032-0000-4000-8000-000000000032"}]
+  },
+  {
+    "name": "partial_cannot_enter_sync_journal",
+    "expected_status": -17,
+    "schema_valid": true,
+    "changes": [
+      {"path": "/sync_events/0/entity_id", "value": "00000032-0000-4000-8000-000000000032"},
+      {"path": "/sync_events/0/revision_id", "value": "00000032-0000-4000-8000-000000000032"}
+    ]
+  },
+  {
+    "name": "speaker_confirmation_requires_manual_revision",
+    "expected_status": -17,
+    "schema_valid": true,
+    "changes": [
+      {"path": "/speaker_assignments/0/authorship", "value": "machine"},
+      {
+        "path": "/speaker_assignments/0/model",
+        "value": {
+          "model_id": "synthetic-model",
+          "model_version": "0.1",
+          "runtime_version": "0.1",
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      }
+    ]
+  },
+  {
+    "name": "measured_benchmark_requires_provenance",
+    "expected_status": -18,
+    "schema_valid": false,
+    "changes": [{"path": "/benchmark_results/1/evidence_ref", "value": null}]
+  },
+  {
+    "name": "sync_sequence_is_per_device_monotonic",
+    "expected_status": -15,
+    "schema_valid": true,
+    "changes": [{"path": "/sync_events/1/sequence", "value": 0}]
+  },
+  {
+    "name": "completed_ai_does_not_upgrade_pending_audio",
+    "expected_status": -16,
+    "schema_valid": true,
+    "changes": [
+      {
+        "path": "/ai_jobs/1/inputs/0",
+        "value": {
+          "kind": "audio",
+          "span": {"chunk_id": "00000017-0000-4000-8000-000000000017", "range": {"start_ns": 710, "end_ns": 790}}
+        }
+      },
+      {"path": "/ai_jobs/1/state", "value": "completed"}
+    ]
+  },
+  {
+    "name": "sync_kind_cannot_hide_pending_audio",
+    "expected_status": -13,
+    "schema_valid": true,
+    "changes": [
+      {"path": "/sync_events/1/entity_kind", "value": "session"},
+      {"path": "/sync_events/1/entity_id", "value": "00000017-0000-4000-8000-000000000017"}
+    ]
+  }
+]

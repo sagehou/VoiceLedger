@@ -37,6 +37,7 @@ kotlin {
 tasks.withType<Test>().configureEach {
     systemProperty("java.library.path", layout.projectDirectory.dir("native-test").asFile.absolutePath)
     systemProperty("voiceledger.ffi.fixture", rootProject.file("../contracts/fixtures/ffi-v1.tsv").absolutePath)
+    systemProperty("voiceledger.domain.fixtures", rootProject.file("../artifacts/domain-fixtures-v1").absolutePath)
     testLogging.showStandardStreams = true
 }
 

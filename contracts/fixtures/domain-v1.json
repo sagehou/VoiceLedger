@@ -1,0 +1,509 @@
+{
+  "schema_version": 1,
+  "sessions": [
+    {
+      "id": "00000001-0000-4000-8000-000000000001",
+      "title": "合成 session",
+      "device_id": "00000003-0000-4000-8000-000000000003",
+      "created_at_unix_ms": 1760000000000,
+      "started_at_unix_ms": 1760000000001,
+      "ended_at_unix_ms": null,
+      "language_policy": "auto",
+      "translation_target": "ja",
+      "capture_state": "recording",
+      "ai_state": "completed",
+      "sync_state": "idle",
+      "transitions": [
+        {"command": "prepare", "at_ns": 0, "reason": "user_request"},
+        {"command": "start", "at_ns": 10, "reason": "source_ready"},
+        {"command": "pause", "at_ns": 300, "reason": "user_request"},
+        {"command": "resume", "at_ns": 400, "reason": "user_request"}
+      ]
+    },
+    {
+      "id": "00000002-0000-4000-8000-000000000002",
+      "title": "合成 session",
+      "device_id": "00000003-0000-4000-8000-000000000003",
+      "created_at_unix_ms": 1760000000000,
+      "started_at_unix_ms": 1760000000001,
+      "ended_at_unix_ms": 1760000000002,
+      "language_policy": "auto",
+      "translation_target": "ja",
+      "capture_state": "completed",
+      "ai_state": "completed",
+      "sync_state": "idle",
+      "transitions": [
+        {"command": "prepare", "at_ns": 0, "reason": "user_request"},
+        {"command": "start", "at_ns": 20, "reason": "source_ready"},
+        {"command": "stop", "at_ns": 130, "reason": "user_request"},
+        {"command": "stop", "at_ns": 132, "reason": "user_request"},
+        {"command": "finish", "at_ns": 140, "reason": "capture_drained"}
+      ]
+    }
+  ],
+  "tracks": [
+    {
+      "id": "0000000a-0000-4000-8000-00000000000a",
+      "session_id": "00000001-0000-4000-8000-000000000001",
+      "source": "mic",
+      "endpoint_id": "synthetic-mic",
+      "capture_state": "recording",
+      "source_epoch": 1,
+      "format": {"sample_rate_hz": 48000, "channels": 1},
+      "transitions": [
+        {"command": "start", "at_ns": 10, "reason": "source_ready"},
+        {"command": "pause", "at_ns": 300, "reason": "user_request"},
+        {"command": "resume", "at_ns": 400, "reason": "user_request"},
+        {"command": "disconnect", "at_ns": 500, "reason": "endpoint_lost"},
+        {
+          "command": "reconnect_confirmed",
+          "at_ns": 700,
+          "reason": "user_request",
+          "confirmed_endpoint_id": "synthetic-mic"
+        }
+      ]
+    },
+    {
+      "id": "0000000b-0000-4000-8000-00000000000b",
+      "session_id": "00000001-0000-4000-8000-000000000001",
+      "source": "system_loopback",
+      "endpoint_id": "synthetic-loopback",
+      "capture_state": "disconnected",
+      "source_epoch": 0,
+      "format": {"sample_rate_hz": 48000, "channels": 2},
+      "transitions": [
+        {"command": "start", "at_ns": 10, "reason": "source_ready"},
+        {"command": "pause", "at_ns": 300, "reason": "user_request"},
+        {"command": "resume", "at_ns": 400, "reason": "user_request"},
+        {"command": "disconnect", "at_ns": 600, "reason": "endpoint_lost"}
+      ]
+    },
+    {
+      "id": "0000000c-0000-4000-8000-00000000000c",
+      "session_id": "00000002-0000-4000-8000-000000000002",
+      "source": "mic",
+      "endpoint_id": "synthetic-mic",
+      "capture_state": "completed",
+      "source_epoch": 0,
+      "format": {"sample_rate_hz": 48000, "channels": 1},
+      "transitions": [
+        {"command": "start", "at_ns": 20, "reason": "source_ready"},
+        {"command": "stop", "at_ns": 130, "reason": "user_request"},
+        {"command": "stop", "at_ns": 132, "reason": "user_request"},
+        {"command": "finish", "at_ns": 140, "reason": "capture_drained"}
+      ]
+    }
+  ],
+  "audio_chunks": [
+    {
+      "id": "00000014-0000-4000-8000-000000000014",
+      "track_id": "0000000a-0000-4000-8000-00000000000a",
+      "source_epoch": 0,
+      "sequence": 0,
+      "range": {"start_ns": 10, "end_ns": 200},
+      "codec": "opus",
+      "format": {"sample_rate_hz": 48000, "channels": 1},
+      "byte_size": 64,
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "commit_state": "committed"
+    },
+    {
+      "id": "00000015-0000-4000-8000-000000000015",
+      "track_id": "0000000b-0000-4000-8000-00000000000b",
+      "source_epoch": 0,
+      "sequence": 0,
+      "range": {"start_ns": 10, "end_ns": 100},
+      "codec": "opus",
+      "format": {"sample_rate_hz": 48000, "channels": 2},
+      "byte_size": 64,
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "commit_state": "committed"
+    },
+    {
+      "id": "00000016-0000-4000-8000-000000000016",
+      "track_id": "0000000a-0000-4000-8000-00000000000a",
+      "source_epoch": 0,
+      "sequence": 1,
+      "range": {"start_ns": 200, "end_ns": 300},
+      "codec": "opus",
+      "format": {"sample_rate_hz": 48000, "channels": 1},
+      "byte_size": 64,
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "commit_state": "missing"
+    },
+    {
+      "id": "00000017-0000-4000-8000-000000000017",
+      "track_id": "0000000a-0000-4000-8000-00000000000a",
+      "source_epoch": 1,
+      "sequence": 2,
+      "range": {"start_ns": 700, "end_ns": 800},
+      "codec": "opus",
+      "format": {"sample_rate_hz": 48000, "channels": 1},
+      "byte_size": 0,
+      "sha256": null,
+      "commit_state": "pending"
+    }
+  ],
+  "gaps": [
+    {
+      "id": "0000001e-0000-4000-8000-00000000001e",
+      "track_id": "0000000a-0000-4000-8000-00000000000a",
+      "source_epoch": 0,
+      "range": {"start_ns": 200, "end_ns": 300},
+      "cause": "writer_failure",
+      "recoverable": false
+    },
+    {
+      "id": "0000001f-0000-4000-8000-00000000001f",
+      "track_id": "0000000a-0000-4000-8000-00000000000a",
+      "source_epoch": 0,
+      "range": {"start_ns": 300, "end_ns": 400},
+      "cause": "paused",
+      "recoverable": false
+    },
+    {
+      "id": "00000020-0000-4000-8000-000000000020",
+      "track_id": "0000000b-0000-4000-8000-00000000000b",
+      "source_epoch": 0,
+      "range": {"start_ns": 300, "end_ns": 400},
+      "cause": "paused",
+      "recoverable": false
+    },
+    {
+      "id": "00000021-0000-4000-8000-000000000021",
+      "track_id": "0000000a-0000-4000-8000-00000000000a",
+      "source_epoch": 0,
+      "range": {"start_ns": 500, "end_ns": 700},
+      "cause": "endpoint_lost",
+      "recoverable": true
+    },
+    {
+      "id": "00000022-0000-4000-8000-000000000022",
+      "track_id": "0000000b-0000-4000-8000-00000000000b",
+      "source_epoch": 0,
+      "range": {"start_ns": 600, "end_ns": 800},
+      "cause": "endpoint_lost",
+      "recoverable": true
+    }
+  ],
+  "silence": [
+    {
+      "id": "00000028-0000-4000-8000-000000000028",
+      "track_id": "0000000b-0000-4000-8000-00000000000b",
+      "source_epoch": 0,
+      "range": {"start_ns": 100, "end_ns": 300}
+    }
+  ],
+  "utterance_revisions": [
+    {
+      "id": "00000032-0000-4000-8000-000000000032",
+      "utterance_id": "00000031-0000-4000-8000-000000000031",
+      "revision": 1,
+      "parent_revision_ids": [],
+      "track_id": "0000000a-0000-4000-8000-00000000000a",
+      "source": [{"chunk_id": "00000014-0000-4000-8000-000000000014", "range": {"start_ns": 20, "end_ns": 70}}],
+      "range": {"start_ns": 20, "end_ns": 70},
+      "kind": "partial",
+      "language": "zh",
+      "text": "合成片段",
+      "confidence": 0.875,
+      "model": {
+        "model_id": "synthetic-model",
+        "model_version": "0.1",
+        "runtime_version": "0.1",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "created_at_unix_ms": 1760000000001
+    },
+    {
+      "id": "00000033-0000-4000-8000-000000000033",
+      "utterance_id": "00000031-0000-4000-8000-000000000031",
+      "revision": 1,
+      "parent_revision_ids": [],
+      "track_id": "0000000a-0000-4000-8000-00000000000a",
+      "source": [{"chunk_id": "00000014-0000-4000-8000-000000000014", "range": {"start_ns": 20, "end_ns": 70}}],
+      "range": {"start_ns": 20, "end_ns": 70},
+      "kind": "final",
+      "language": "zh",
+      "text": "合成文本。",
+      "confidence": 0.875,
+      "model": {
+        "model_id": "synthetic-model",
+        "model_version": "0.1",
+        "runtime_version": "0.1",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "created_at_unix_ms": 1760000000001
+    },
+    {
+      "id": "00000034-0000-4000-8000-000000000034",
+      "utterance_id": "00000031-0000-4000-8000-000000000031",
+      "revision": 2,
+      "parent_revision_ids": ["00000033-0000-4000-8000-000000000033"],
+      "track_id": "0000000a-0000-4000-8000-00000000000a",
+      "source": [{"chunk_id": "00000014-0000-4000-8000-000000000014", "range": {"start_ns": 20, "end_ns": 70}}],
+      "range": {"start_ns": 20, "end_ns": 70},
+      "kind": "manual",
+      "language": "zh",
+      "text": "人工修订。",
+      "confidence": null,
+      "model": null,
+      "created_at_unix_ms": 1760000000002
+    },
+    {
+      "id": "00000035-0000-4000-8000-000000000035",
+      "utterance_id": "00000031-0000-4000-8000-000000000031",
+      "revision": 3,
+      "parent_revision_ids": ["00000033-0000-4000-8000-000000000033"],
+      "track_id": "0000000a-0000-4000-8000-00000000000a",
+      "source": [{"chunk_id": "00000014-0000-4000-8000-000000000014", "range": {"start_ns": 20, "end_ns": 70}}],
+      "range": {"start_ns": 20, "end_ns": 70},
+      "kind": "final",
+      "language": "zh",
+      "text": "模型重跑候选。",
+      "confidence": 0.875,
+      "model": {
+        "model_id": "synthetic-model",
+        "model_version": "0.1",
+        "runtime_version": "0.1",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "created_at_unix_ms": 1760000000003
+    },
+    {
+      "id": "00000036-0000-4000-8000-000000000036",
+      "utterance_id": "00000031-0000-4000-8000-000000000031",
+      "revision": 2,
+      "parent_revision_ids": ["00000033-0000-4000-8000-000000000033"],
+      "track_id": "0000000a-0000-4000-8000-00000000000a",
+      "source": [{"chunk_id": "00000014-0000-4000-8000-000000000014", "range": {"start_ns": 20, "end_ns": 70}}],
+      "range": {"start_ns": 20, "end_ns": 70},
+      "kind": "manual",
+      "language": "zh",
+      "text": "并发人工修订。",
+      "confidence": null,
+      "model": null,
+      "created_at_unix_ms": 1760000000002
+    },
+    {
+      "id": "00000037-0000-4000-8000-000000000037",
+      "utterance_id": "0000003a-0000-4000-8000-00000000003a",
+      "revision": 1,
+      "parent_revision_ids": [],
+      "track_id": "0000000a-0000-4000-8000-00000000000a",
+      "source": [{"chunk_id": "00000016-0000-4000-8000-000000000016", "range": {"start_ns": 210, "end_ns": 275}}],
+      "range": {"start_ns": 210, "end_ns": 275},
+      "kind": "final",
+      "language": "zh",
+      "text": "源音频已缺失的历史文本。",
+      "confidence": 0.875,
+      "model": {
+        "model_id": "synthetic-model",
+        "model_version": "0.1",
+        "runtime_version": "0.1",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "created_at_unix_ms": 1760000000001
+    }
+  ],
+  "utterance_selections": [
+    {"utterance_id": "00000031-0000-4000-8000-000000000031", "revision_id": "00000034-0000-4000-8000-000000000034"},
+    {"utterance_id": "0000003a-0000-4000-8000-00000000003a", "revision_id": "00000037-0000-4000-8000-000000000037"}
+  ],
+  "translation_revisions": [
+    {
+      "id": "0000003c-0000-4000-8000-00000000003c",
+      "translation_id": "0000003e-0000-4000-8000-00000000003e",
+      "revision": 1,
+      "source_revision_id": "00000033-0000-4000-8000-000000000033",
+      "target_language": "ja",
+      "text": "合成文。",
+      "authorship": "machine",
+      "model": {
+        "model_id": "synthetic-model",
+        "model_version": "0.1",
+        "runtime_version": "0.1",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "created_at_unix_ms": 1760000000001
+    },
+    {
+      "id": "0000003d-0000-4000-8000-00000000003d",
+      "translation_id": "0000003e-0000-4000-8000-00000000003e",
+      "revision": 2,
+      "source_revision_id": "00000033-0000-4000-8000-000000000033",
+      "target_language": "ja",
+      "text": "人手で校正。",
+      "authorship": "manual",
+      "model": null,
+      "created_at_unix_ms": 1760000000002
+    }
+  ],
+  "speaker_assignments": [
+    {
+      "id": "00000047-0000-4000-8000-000000000047",
+      "session_id": "00000001-0000-4000-8000-000000000001",
+      "track_id": "0000000a-0000-4000-8000-00000000000a",
+      "speaker_id": "00000048-0000-4000-8000-000000000048",
+      "range": {"start_ns": 20, "end_ns": 70},
+      "revision": 1,
+      "authorship": "manual",
+      "confidence": null,
+      "model": null,
+      "confirmed_name": "Synthetic speaker",
+      "confirmed_profile_id": "00000046-0000-4000-8000-000000000046"
+    }
+  ],
+  "speaker_profiles": [
+    {
+      "id": "00000046-0000-4000-8000-000000000046",
+      "display_name": "Synthetic speaker",
+      "consented_at_unix_ms": 1760000000000,
+      "encrypted_sample_refs": ["00000049-0000-4000-8000-000000000049"],
+      "encrypted_embedding_refs": ["0000004a-0000-4000-8000-00000000004a"]
+    }
+  ],
+  "ai_jobs": [
+    {
+      "id": "00000050-0000-4000-8000-000000000050",
+      "session_id": "00000001-0000-4000-8000-000000000001",
+      "kind": "asr",
+      "inputs": [
+        {
+          "kind": "audio",
+          "span": {"chunk_id": "00000016-0000-4000-8000-000000000016", "range": {"start_ns": 210, "end_ns": 275}}
+        }
+      ],
+      "model": {
+        "model_id": "synthetic-model",
+        "model_version": "0.1",
+        "runtime_version": "0.1",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "state": "completed",
+      "attempts": 1,
+      "error_code": null
+    },
+    {
+      "id": "00000051-0000-4000-8000-000000000051",
+      "session_id": "00000001-0000-4000-8000-000000000001",
+      "kind": "asr",
+      "inputs": [
+        {
+          "kind": "audio",
+          "span": {"chunk_id": "00000014-0000-4000-8000-000000000014", "range": {"start_ns": 20, "end_ns": 70}}
+        }
+      ],
+      "model": {
+        "model_id": "synthetic-model",
+        "model_version": "0.1",
+        "runtime_version": "0.1",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "state": "queued",
+      "attempts": 0,
+      "error_code": null
+    },
+    {
+      "id": "00000052-0000-4000-8000-000000000052",
+      "session_id": "00000001-0000-4000-8000-000000000001",
+      "kind": "translation",
+      "inputs": [{"kind": "utterance_revision", "revision_id": "00000034-0000-4000-8000-000000000034"}],
+      "model": {
+        "model_id": "synthetic-model",
+        "model_version": "0.1",
+        "runtime_version": "0.1",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "state": "queued",
+      "attempts": 0,
+      "error_code": null
+    }
+  ],
+  "device_capability_profiles": [
+    {
+      "id": "0000005a-0000-4000-8000-00000000005a",
+      "device_id": "00000003-0000-4000-8000-000000000003",
+      "observed_at_unix_ms": 1760000000000,
+      "platform": "windows",
+      "os_version": "synthetic",
+      "abi": "x86_64",
+      "logical_cpu_count": 4,
+      "cpu_features": [],
+      "total_memory_bytes": 8589934592,
+      "available_memory_bytes": null,
+      "low_ram_device": null,
+      "storage_available_bytes": 1000000
+    }
+  ],
+  "benchmark_results": [
+    {
+      "id": "0000005b-0000-4000-8000-00000000005b",
+      "device_profile_id": "0000005a-0000-4000-8000-00000000005a",
+      "model": {
+        "model_id": "synthetic-model",
+        "model_version": "0.1",
+        "runtime_version": "0.1",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "stage": "estimate",
+      "observed_at_unix_ms": 1760000000000,
+      "peak_memory_bytes": 1000000
+    },
+    {
+      "id": "0000005c-0000-4000-8000-00000000005c",
+      "device_profile_id": "0000005a-0000-4000-8000-00000000005a",
+      "model": {
+        "model_id": "synthetic-model",
+        "model_version": "0.1",
+        "runtime_version": "0.1",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "stage": "short",
+      "observed_at_unix_ms": 1760000001000,
+      "corpus_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "duration_ms": 1000,
+      "cold_start_ms": 12,
+      "warm_rtf": 0.8,
+      "peak_memory_bytes": 1200000,
+      "final_p95_ms": 30,
+      "threads": 2,
+      "evidence_ref": "synthetic-measurement"
+    }
+  ],
+  "sync_events": [
+    {
+      "id": "00000064-0000-4000-8000-000000000064",
+      "device_id": "00000003-0000-4000-8000-000000000003",
+      "sequence": 0,
+      "entity_kind": "utterance_revision",
+      "entity_id": "00000034-0000-4000-8000-000000000034",
+      "operation": "upsert",
+      "revision_id": "00000034-0000-4000-8000-000000000034",
+      "object_refs": ["000000c8-0000-4000-8000-0000000000c8"],
+      "created_at_unix_ms": 1760000000020
+    },
+    {
+      "id": "00000065-0000-4000-8000-000000000065",
+      "device_id": "00000003-0000-4000-8000-000000000003",
+      "sequence": 1,
+      "entity_kind": "audio_chunk",
+      "entity_id": "00000016-0000-4000-8000-000000000016",
+      "operation": "upsert",
+      "revision_id": "00000016-0000-4000-8000-000000000016",
+      "object_refs": ["000000c9-0000-4000-8000-0000000000c9"],
+      "created_at_unix_ms": 1760000000020
+    },
+    {
+      "id": "00000066-0000-4000-8000-000000000066",
+      "device_id": "00000004-0000-4000-8000-000000000004",
+      "sequence": 0,
+      "entity_kind": "session",
+      "entity_id": "00000002-0000-4000-8000-000000000002",
+      "operation": "upsert",
+      "revision_id": "00000002-0000-4000-8000-000000000002",
+      "object_refs": ["000000ca-0000-4000-8000-0000000000ca"],
+      "created_at_unix_ms": 1760000000020
+    }
+  ]
+}
