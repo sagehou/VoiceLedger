@@ -129,6 +129,11 @@ jobs:
       - name: Run WPF ABI and synthetic capture checks
         run: |
           dotnet run --project windows/VoiceLedger.CoreSmoke/VoiceLedger.CoreSmoke.csproj --configuration Release --no-build -- contracts/fixtures/ffi-v1.tsv artifacts/domain-fixtures-v1 2>&1 | Tee-Object artifacts/windows-ffi.log
+      - name: Verify the PowerShell WASAPI evidence script
+        shell: powershell
+        run: |
+          .\scripts\Test-WasapiEvidence.ps1 | Tee-Object artifacts/windows-evidence.log
+          Copy-Item scripts/Measure-WasapiEvidence.ps1 artifacts/
       - name: Check the publish output
         run: |
           foreach ($file in 'VoiceLedger.exe', 'VoiceLedger.dll', 'VoiceLedger.runtimeconfig.json', 'voiceledger_ffi.dll', 'NAudio.Wasapi.dll', 'NAudio.Core.dll') {
@@ -144,6 +149,7 @@ jobs:
           path: |
             artifacts/windows/
             artifacts/windows-*.log
+            artifacts/Measure-WasapiEvidence.ps1
 
   android-client:
     runs-on: ubuntu-latest
