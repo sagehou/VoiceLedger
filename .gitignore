@@ -6,6 +6,9 @@ artifacts/
 **/.kotlin/
 android/**/build/
 android/local.properties
+android/app/native-test/
+android/app/src/main/jniLibs/arm64-v8a/libvoiceledger_ffi.so
+windows/VoiceLedger/native/
 .idea/
 .vs/
 *.user

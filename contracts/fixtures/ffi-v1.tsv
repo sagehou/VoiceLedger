@@ -1,0 +1,27 @@
+# session<TAB>scenario<TAB>command<TAB>session_monotonic_ns<TAB>state_or_error
+session	normal	5	0	0
+session	normal	2	0	-3
+session	normal	1	100	1
+session	normal	2	99	-1
+session	normal	2	200	2
+session	normal	3	300	3
+session	normal	4	400	2
+session	normal	5	500	4
+session	normal	5	500	4
+session	normal	6	600	5
+session	normal	5	600	5
+session	normal	2	700	-3
+session	interruption	1	-1	-1
+session	interruption	1	100	1
+session	interruption	2	200	2
+session	interruption	7	300	6
+session	interruption	5	400	6
+# recommend<TAB>compatibility<TAB>memory_budget_bytes<TAB>peak_memory_bytes<TAB>recommendation_or_error
+recommend	2	1024	1024	1
+recommend	2	1024	1025	0
+recommend	2	1024	0	0
+recommend	2	1024	-1	0
+recommend	2	-1	512	0
+recommend	1	1024	512	0
+recommend	0	1024	512	0
+recommend	2	-2	512	-1

@@ -5,3 +5,10 @@ version = 4
 [[package]]
 name = "voiceledger-core"
 version = "0.1.0"
+
+[[package]]
+name = "voiceledger-ffi"
+version = "0.1.0"
+dependencies = [
+ "voiceledger-core",
+]

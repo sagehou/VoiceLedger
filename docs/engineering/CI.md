@@ -7,6 +7,7 @@ The [CI workflow](../../.github/workflows/ci.yml) runs on pull requests to `main
 | G0 Windows WPF build | `windows-client` runs locked `dotnet restore`, `dotnet build` and `dotnet publish` for `windows/VoiceLedger.slnx` and its app | `windows-client` logs and framework-dependent publish output |
 | G0 Android Kotlin/Compose build | `android-client` runs `./gradlew :app:lintDebug :app:testDebugUnitTest :app:assembleDebug` under `android/` and checks the APK manifest | `android-client` build log, lint report and debug APK |
 | G0 shared-core host and targets | `rust-core` runs `cargo fmt`, `cargo clippy` and locked `cargo test` under `core/`. `rust-windows` and `rust-android` cross-target locked `cargo build` for MSVC x64 and NDK arm64 | `rust-core-report`, `voiceledger-core-windows-x64`, `voiceledger-core-android-arm64-v8a` |
+| G0 native FFI | `windows-client` runs the WPF P/Invoke smoke test. `android-client` runs a Kotlin JVM integration test against the Linux-host JNI library and checks the arm64 library in the APK | Windows smoke log, Android JUnit reports and [shared ABI fixture](../../contracts/fixtures/ffi-v1.tsv) |
 | Evidence format | `contracts` runs `python scripts/validate_evidence.py` against the JSON Schema and synthetic fixture | `contracts-report` |
 | Static validation | `security-static` runs actionlint and secret scanning on each run, plus dependency review on PRs | Job log and check annotations |
 
@@ -23,6 +24,5 @@ Commit the generated lock and verify a fresh run without `--write-locks`.
 
 ## Open acceptance gates
 
-- [#3](https://github.com/sagehou/VoiceLedger/issues/3) adds C# P/Invoke and Kotlin/JNI smoke tests. Building native libraries establishes target compilation.
 - [#4](https://github.com/sagehou/VoiceLedger/issues/4) adds domain schemas and shared golden fixture conformance.
 - [#5](https://github.com/sagehou/VoiceLedger/issues/5) and [#7](https://github.com/sagehou/VoiceLedger/issues/7) require Windows WASAPI and Android foreground-service tests on physical devices. The hardware-only checks are **BLOCKED** pending devices and recording prototypes. The [evidence schema](../../contracts/test-evidence-v1.schema.json) uses `blocked` for this state.
