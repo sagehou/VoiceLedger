@@ -9,7 +9,7 @@ Local-first voice recording and multilingual meeting transcription for Windows a
 - Android user-started microphone foreground service with screen-off recording.
 - Local AI with hardware-aware model recommendations and recording-only fallback.
 - Optional client-side encrypted WebDAV/S3 sync; no dedicated VoiceLedger server.
-- Shared business logic is preferred; Rust is a candidate pending a cross-platform vertical slice.
+- Shared Rust business core with native C# and Kotlin bindings.
 
 ## Specification
 Read [AGENTS.md](AGENTS.md) first, then the product and technical specifications in [docs/spec](docs/spec/).

@@ -33,11 +33,17 @@ jobs:
         with:
           persist-credentials: false
       - run: cargo fmt --all --check
-      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Test the shared core
         run: |
           mkdir -p artifacts
-          cargo test --locked 2>&1 | tee artifacts/rust-core.log
+          cargo test --workspace --locked 2>&1 | tee artifacts/rust-core.log
+      - run: cargo build --release --locked --package voiceledger-ffi
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: voiceledger-ffi-linux-x64
+          path: core/target/release/libvoiceledger_ffi.so
+          if-no-files-found: error
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         if: always()
         with:
@@ -55,11 +61,11 @@ jobs:
         with:
           persist-credentials: false
       - run: rustup target add x86_64-pc-windows-msvc
-      - run: cargo build --release --locked --target x86_64-pc-windows-msvc
+      - run: cargo build --workspace --release --locked --target x86_64-pc-windows-msvc
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: voiceledger-core-windows-x64
-          path: core/target/x86_64-pc-windows-msvc/release/voiceledger_core.dll
+          path: core/target/x86_64-pc-windows-msvc/release/voiceledger_ffi.dll
           if-no-files-found: error
 
   rust-android:
@@ -85,15 +91,16 @@ jobs:
       - name: Build for Android arm64 at API 26
         run: |
           export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang"
-          cargo build --release --locked --target aarch64-linux-android
+          cargo build --workspace --release --locked --target aarch64-linux-android
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: voiceledger-core-android-arm64-v8a
-          path: core/target/aarch64-linux-android/release/libvoiceledger_core.so
+          path: core/target/aarch64-linux-android/release/libvoiceledger_ffi.so
           if-no-files-found: error
 
   windows-client:
     runs-on: windows-latest
+    needs: rust-windows
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -102,6 +109,10 @@ jobs:
       - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
         with:
           global-json-file: global.json
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: voiceledger-core-windows-x64
+          path: windows/VoiceLedger/native
       - name: Restore, build and publish WPF
         run: |
           New-Item -ItemType Directory -Path artifacts | Out-Null
@@ -110,13 +121,17 @@ jobs:
           dotnet build windows/VoiceLedger.slnx --configuration Release --no-restore 2>&1 | Tee-Object artifacts/windows-build.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           dotnet publish windows/VoiceLedger/VoiceLedger.csproj --configuration Release --no-build --output artifacts/windows 2>&1 | Tee-Object artifacts/windows-publish.log
+      - name: Run the WPF P/Invoke smoke test
+        run: |
+          dotnet run --project windows/VoiceLedger.CoreSmoke/VoiceLedger.CoreSmoke.csproj --configuration Release --no-build -- contracts/fixtures/ffi-v1.tsv 2>&1 | Tee-Object artifacts/windows-ffi.log
       - name: Check the publish output
         run: |
-          foreach ($file in 'VoiceLedger.exe', 'VoiceLedger.dll', 'VoiceLedger.runtimeconfig.json') {
+          foreach ($file in 'VoiceLedger.exe', 'VoiceLedger.dll', 'VoiceLedger.runtimeconfig.json', 'voiceledger_ffi.dll') {
             if (-not (Test-Path "artifacts/windows/$file" -PathType Leaf)) {
               throw "Publish output is missing $file"
             }
           }
+          (Get-Item artifacts/windows/voiceledger_ffi.dll).Length | Set-Content artifacts/windows-native-bytes.log
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         if: always()
         with:
@@ -127,6 +142,7 @@ jobs:
 
   android-client:
     runs-on: ubuntu-latest
+    needs: [rust-core, rust-android]
     timeout-minutes: 25
     defaults:
       run:
@@ -149,6 +165,14 @@ jobs:
         with:
           cmdline-tools-version: ${{ env.ANDROID_CMDLINE_TOOLS_VERSION }}
           packages: platforms;android-36 build-tools;36.0.0
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: voiceledger-core-android-arm64-v8a
+          path: android/app/src/main/jniLibs/arm64-v8a
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: voiceledger-ffi-linux-x64
+          path: android/app/native-test
       - name: Build and check the Android app
         run: |
           mkdir -p artifacts
@@ -158,6 +182,8 @@ jobs:
           "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging app/build/outputs/apk/debug/app-debug.apk > artifacts/android-apk.txt
           grep -E "^package: name='com\.voiceledger\.app'" artifacts/android-apk.txt
           grep -E "^launchable-activity: name='com\.voiceledger\.app\.MainActivity'" artifacts/android-apk.txt
+          unzip -Z1 app/build/outputs/apk/debug/app-debug.apk | grep -Fx 'lib/arm64-v8a/libvoiceledger_ffi.so'
+          stat -c '%s' app/src/main/jniLibs/arm64-v8a/libvoiceledger_ffi.so > artifacts/android-native-bytes.log
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         if: always()
         with:
@@ -165,6 +191,7 @@ jobs:
           path: |
             android/artifacts/
             android/app/build/reports/
+            android/app/build/test-results/
             android/app/build/outputs/apk/debug/app-debug.apk
 
   contracts:
@@ -179,7 +206,7 @@ jobs:
         run: |
           python3 -m venv "$RUNNER_TEMP/voiceledger-ci"
           ci_python="$RUNNER_TEMP/voiceledger-ci/bin/python"
-          "$ci_python" -m pip install --only-binary=:all: -r scripts/requirements-ci.txt
+          "$ci_python" -m pip install --only-binary=:all: -r scripts/requirements.txt
           mkdir -p artifacts
           "$ci_python" scripts/validate_evidence.py 2>&1 | tee artifacts/contracts.log
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
@@ -204,9 +231,26 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           GITLEAKS_ENABLE_COMMENTS: 'false'
           GITLEAKS_ENABLE_UPLOAD_ARTIFACT: 'false'
-      - name: Review dependency changes
-        if: github.event_name == 'pull_request'
-        uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4
+      - name: Scan locked dependencies and report licenses
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          scanner="$RUNNER_TEMP/voiceledger-osv-scanner"
+          curl --fail --silent --show-error --location --retry 3 --output "$scanner" \
+            https://github.com/google/osv-scanner/releases/download/v2.7.0/osv-scanner_linux_amd64
+          printf '%s  %s\n' '160c6253e2922e9e0a6a9771c5c4c40a4b3c6090b34a3cdd5e80c96cc2e4218b' "$scanner" | sha256sum --check
+          chmod +x "$scanner"
+          "$scanner" scan source --licenses \
+            --lockfile=core/Cargo.lock \
+            --lockfile=android/app/gradle.lockfile \
+            --lockfile=windows/VoiceLedger/packages.lock.json \
+            --lockfile=windows/VoiceLedger.CoreSmoke/packages.lock.json \
+            --lockfile=scripts/requirements.txt 2>&1 | tee artifacts/dependency-scan.log
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        if: always()
+        with:
+          name: security-static-report
+          path: artifacts/dependency-scan.log
 
   gate:
     name: CI gate

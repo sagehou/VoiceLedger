@@ -1,3 +1,4 @@
 <Solution>
   <Project Path="VoiceLedger/VoiceLedger.csproj" />
+  <Project Path="VoiceLedger.CoreSmoke/VoiceLedger.CoreSmoke.csproj" />
 </Solution>

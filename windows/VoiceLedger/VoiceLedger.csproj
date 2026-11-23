@@ -6,4 +6,9 @@
     <Nullable>enable</Nullable>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
   </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="VoiceLedger.CoreSmoke" />
+    <Content Include="native/voiceledger_ffi.dll" Condition="Exists('native/voiceledger_ffi.dll')"
+             Link="voiceledger_ffi.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

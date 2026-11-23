@@ -1,4 +1,5 @@
 import org.gradle.api.artifacts.dsl.LockMode
+import org.gradle.api.tasks.testing.Test
 
 plugins {
     id("com.android.application") version "8.13.2"
@@ -33,6 +34,12 @@ kotlin {
     jvmToolchain(17)
 }
 
+tasks.withType<Test>().configureEach {
+    systemProperty("java.library.path", layout.projectDirectory.dir("native-test").asFile.absolutePath)
+    systemProperty("voiceledger.ffi.fixture", rootProject.file("../contracts/fixtures/ffi-v1.tsv").absolutePath)
+    testLogging.showStandardStreams = true
+}
+
 dependencyLocking {
     lockAllConfigurations()
     lockMode.set(LockMode.STRICT)
@@ -43,4 +50,5 @@ dependencyLocking {
 dependencies {
     implementation("androidx.activity:activity-compose:1.11.0")
     implementation("androidx.compose.material3:material3:1.4.0")
+    testImplementation("junit:junit:4.13.2")
 }
