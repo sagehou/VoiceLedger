@@ -57,8 +57,14 @@ internal data class StopRequest(val reason: CaptureEnd, val atNs: Long)
 internal class RecordingControl(private val clock: () -> Long, val origin: Long = clock()) {
     private val requested = AtomicReference<StopRequest?>()
     val stop: StopRequest? get() = requested.get()
+    @Volatile var capturedThroughNs: Long = 0L
+        private set
 
     fun elapsedNs(): Long = (clock() - origin).coerceAtLeast(0)
+
+    fun captured(time: PacketTime) {
+        capturedThroughNs = time.endNs
+    }
 
     fun request(reason: CaptureEnd) {
         requested.compareAndSet(null, StopRequest(reason, elapsedNs()))

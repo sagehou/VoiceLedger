@@ -124,6 +124,13 @@ internal class RecordingManifest(
         return saved
     }
 
+    fun checkpointUnwrittenTail(capturedThroughNs: Long) {
+        val id = chunkId ?: return
+        if (capturedThroughNs > checkpointNs) {
+            write("checkpoint", "id" to id, "end_ns" to capturedThroughNs)
+        }
+    }
+
     override fun close() = session.close()
 
     private fun seal() {

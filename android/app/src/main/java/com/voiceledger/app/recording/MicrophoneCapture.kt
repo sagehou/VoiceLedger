@@ -19,6 +19,7 @@ import android.os.PowerManager
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
 
 internal class MicrophoneCapture(
@@ -94,17 +95,19 @@ internal class MicrophoneCapture(
     }
 
     private fun watchInput(recorder: AudioRecord, initialRoute: Int?, capture: () -> Unit) {
-        var routeId = initialRoute
-        val routeListener = AudioRouting.OnRoutingChangedListener { routing ->
+        val routeId = AtomicReference(initialRoute)
+        fun checkRoute(routing: AudioRouting) {
             if (control.stop == null) {
                 val current = routing.routedDevice?.id
-                if (routeId != null && current != routeId) {
+                val previous = routeId.get()
+                if (previous != null && current != previous) {
                     control.request(CaptureEnd.Route)
                 } else if (current != null) {
-                    routeId = current
+                    routeId.compareAndSet(null, current)
                 }
             }
         }
+        val routeListener = AudioRouting.OnRoutingChangedListener(::checkRoute)
         val recordingCallback = object : AudioManager.AudioRecordingCallback() {
             override fun onRecordingConfigChanged(configs: List<AudioRecordingConfiguration>) {
                 if (Build.VERSION.SDK_INT >= 29 && control.stop == null &&
@@ -120,8 +123,9 @@ internal class MicrophoneCapture(
                 recorder.registerAudioRecordingCallback(context.mainExecutor, recordingCallback)
             }
             try {
+                checkRoute(recorder)
                 checkEnvironment(recorder)
-                capture()
+                if (control.stop == null) capture()
             } finally {
                 if (Build.VERSION.SDK_INT >= 29) recorder.unregisterAudioRecordingCallback(recordingCallback)
             }
@@ -137,6 +141,7 @@ internal class MicrophoneCapture(
         repeat(24) { pool.add(ShortArray(PACKET_FRAMES)) }
         val ready = ArrayBlockingQueue<Packet>(24)
         val lastReadNs = AtomicLong(control.elapsedNs())
+        val stallNs = maxOf(2 * SECOND_NS, recorder.bufferSizeInFrames.toLong() * SECOND_NS / SAMPLE_RATE)
         val reader = thread(name = "VoiceLedger microphone") {
             val timeline = CaptureTimeline(startNs)
             val timestamp = AudioTimestamp()
@@ -149,12 +154,17 @@ internal class MicrophoneCapture(
                         break
                     }
                     val frames = recorder.read(samples, 0, samples.size, AudioRecord.READ_BLOCKING)
-                    if (control.stop != null) break
+                    val stop = control.stop
+                    if (stop != null && stop.reason != CaptureEnd.User) break
+                    val observed = control.elapsedNs()
                     if (frames <= 0) {
                         control.request(CaptureEnd.Input)
                         break
                     }
-                    val observed = control.elapsedNs()
+                    if (observed - lastReadNs.getAndSet(observed) > stallNs) {
+                        control.request(CaptureEnd.Input)
+                        break
+                    }
                     val hardware = if (first &&
                         recorder.getTimestamp(timestamp, AudioTimestamp.TIMEBASE_BOOTTIME) == AudioRecord.SUCCESS
                     ) {
@@ -163,8 +173,10 @@ internal class MicrophoneCapture(
                         null
                     }
                     first = false
-                    lastReadNs.set(observed)
-                    ready.add(Packet(samples, timeline.next(frames, observed, hardware)))
+                    val time = timeline.next(frames, observed, hardware)
+                    if (stop != null && time.endNs > stop.atNs) break
+                    control.captured(time)
+                    ready.add(Packet(samples, time))
                 }
             } catch (_: SecurityException) {
                 control.request(CaptureEnd.Permission)
@@ -183,7 +195,7 @@ internal class MicrophoneCapture(
                 val now = control.elapsedNs()
                 if (control.stop == null && now >= nextCheckNs) {
                     checkEnvironment(recorder)
-                    if (now - lastReadNs.get() > 2 * SECOND_NS) control.request(CaptureEnd.Input)
+                    if (now - lastReadNs.get() > stallNs) control.request(CaptureEnd.Input)
                     nextCheckNs = now + SECOND_NS / 2
                 }
             }

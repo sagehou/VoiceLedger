@@ -102,13 +102,24 @@ class RecordingService : Service() {
             if (control.stop == null) {
                 AudioLibrary(directory).use { library ->
                     RecordingManifest(library) { committed, elapsed ->
+                        saved = committed
                         RecordingStatusStore.update { it.copy(saved = committed, elapsedNs = elapsed) }
                     }.use { manifest ->
                         sessionCreated = true
-                        manifest.prepare(control.origin)
-                        MicrophoneCapture(applicationContext, control).run(manifest)
-                        RecordingStatusStore.update { it.copy(phase = RecordingPhase.Stopping) }
-                        saved = manifest.finish(requireNotNull(control.stop))
+                        saved = SavedAudio()
+                        try {
+                            manifest.prepare(control.origin)
+                            MicrophoneCapture(applicationContext, control).run(manifest)
+                            RecordingStatusStore.update { it.copy(phase = RecordingPhase.Stopping) }
+                            saved = manifest.finish(requireNotNull(control.stop))
+                        } catch (failure: Exception) {
+                            try {
+                                manifest.checkpointUnwrittenTail(control.capturedThroughNs)
+                            } catch (_: Exception) {
+                                // Reconciliation will use the last durable checkpoint.
+                            }
+                            throw failure
+                        }
                     }
                 }
             }
@@ -118,7 +129,7 @@ class RecordingService : Service() {
         } catch (_: Exception) {
             failure = CaptureEnd.Storage
             if (sessionCreated) {
-                saved = (RecordingStatusStore.state.value.saved ?: SavedAudio()).copy(unknownTail = true)
+                saved = (saved ?: SavedAudio()).copy(unknownTail = true)
                 try {
                     val (reconciled, report) = recoverLibrary(directory)
                     saved = reconciled

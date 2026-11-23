@@ -36,13 +36,18 @@ import com.voiceledger.app.recording.RecordingStatusStore
 import com.voiceledger.app.recording.SECOND_NS
 
 class MainActivity : ComponentActivity() {
+    private var startRequested = false
     private val microphonePermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            if (granted) allowNotificationsAndStart() else report(CaptureEnd.Permission)
+            if (startRequested) {
+                if (granted) allowNotificationsAndStart() else rejectStart(CaptureEnd.Permission)
+            }
         }
     private val notificationPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            if (granted) startIfVisible() else report(CaptureEnd.Notification)
+            if (startRequested) {
+                if (granted) startIfVisible() else rejectStart(CaptureEnd.Notification)
+            }
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -62,6 +67,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun requestStart() {
+        if (startRequested || !lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) return
+        startRequested = true
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             microphonePermission.launch(Manifest.permission.RECORD_AUDIO)
         } else {
@@ -70,7 +77,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun allowNotificationsAndStart() {
-        if (!lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) return
+        if (!lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
+            startRequested = false
+            return
+        }
         if (Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {
@@ -81,16 +91,18 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startIfVisible() {
+        startRequested = false
         if (!lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) return
         when {
             checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED ->
-                report(CaptureEnd.Permission)
-            !RecordingService.notificationsEnabled(this) -> report(CaptureEnd.Notification)
+                rejectStart(CaptureEnd.Permission)
+            !RecordingService.notificationsEnabled(this) -> rejectStart(CaptureEnd.Notification)
             else -> RecordingService.start(this)
         }
     }
 
-    private fun report(failure: CaptureEnd) {
+    private fun rejectStart(failure: CaptureEnd) {
+        startRequested = false
         RecordingStatusStore.update {
             if (it.phase == RecordingPhase.Idle) it.copy(failure = failure) else it
         }
