@@ -11,43 +11,89 @@ namespace VoiceLedger.Capture;
 
 internal static class EndpointCatalog
 {
-    internal static IReadOnlyList<CaptureEndpoint> Read()
+    internal static (IReadOnlyList<CaptureEndpoint> Endpoints, string? Diagnostic) Read()
     {
-        using var devices = new MMDeviceEnumerator();
         var result = new List<CaptureEndpoint>();
-        ReadDirection(DataFlow.Capture, CaptureSource.Mic);
-        ReadDirection(DataFlow.Render, CaptureSource.System);
-        return result;
-
-        void ReadDirection(DataFlow flow, CaptureSource source)
+        string? diagnostic = null;
+        try
         {
-            string? defaultId = null;
-            if (devices.HasDefaultAudioEndpoint(flow, Role.Multimedia))
+            using var devices = new MMDeviceEnumerator();
+            ReadDirection(devices, DataFlow.Capture, CaptureSource.Mic);
+            ReadDirection(devices, DataFlow.Render, CaptureSource.System);
+        }
+        catch (Exception failure)
+        {
+            Report("Windows audio discovery failed", failure);
+        }
+        return (result, diagnostic);
+
+        void ReadDirection(MMDeviceEnumerator devices, DataFlow flow, CaptureSource source)
+        {
+            string? defaultId = ReadOptionalText(() =>
             {
+                if (!devices.HasDefaultAudioEndpoint(flow, Role.Multimedia)) return null;
                 using MMDevice defaultDevice = devices.GetDefaultAudioEndpoint(flow, Role.Multimedia);
-                defaultId = defaultDevice.ID;
-            }
-            foreach (MMDevice device in devices.EnumerateAudioEndPoints(flow, DeviceState.All))
+                return defaultDevice.ID;
+            });
+
+            try
             {
-                using (device)
+                MMDeviceCollection endpoints = devices.EnumerateAudioEndPoints(flow, DeviceState.All);
+                int count = endpoints.Count;
+                for (int index = 0; index < count; index++)
                 {
-                    string format = "Format unavailable";
-                    DeviceState state = device.State;
-                    if (state == DeviceState.Active)
+                    try
                     {
-                        try
+                        using MMDevice device = endpoints[index];
+                        string id = device.ID;
+                        DeviceState state = device.State;
+                        string name = ReadOptionalText(() => device.FriendlyName) ?? $"{source} endpoint {index + 1}";
+                        string? format = null;
+                        if (state == DeviceState.Active)
                         {
-                            using AudioClient client = device.AudioClient;
-                            format = client.MixFormat.ToString();
+                            format = ReadOptionalText(() =>
+                            {
+                                using AudioClient client = device.AudioClient;
+                                return client.MixFormat.ToString();
+                            });
                         }
-                        catch (COMException) { }
+                        result.Add(new CaptureEndpoint(id, name, source, state,
+                            StringComparer.Ordinal.Equals(defaultId, id), format ?? "Format unavailable"));
                     }
-                    result.Add(new CaptureEndpoint(device.ID, device.FriendlyName, source, state,
-                        StringComparer.Ordinal.Equals(defaultId, device.ID), format));
+                    catch (Exception failure) when (IsEndpointReadFailure(failure))
+                    {
+                        Report($"Could not read a {source} endpoint", failure);
+                    }
                 }
             }
+            catch (Exception failure) when (IsEndpointReadFailure(failure))
+            {
+                Report($"Could not list {source} endpoints", failure);
+            }
+        }
+
+        void Report(string operation, Exception failure)
+        {
+            diagnostic ??= $"{operation} ({failure.GetType().Name}, 0x{failure.HResult:X8}).";
         }
     }
+
+    internal static string? ReadOptionalText(Func<string?> read)
+    {
+        try
+        {
+            string? value = read();
+            return string.IsNullOrWhiteSpace(value) ? null : value;
+        }
+        catch (Exception failure) when (IsEndpointReadFailure(failure))
+        {
+            return null;
+        }
+    }
+
+    private static bool IsEndpointReadFailure(Exception failure) => failure is ExternalException
+        or UnauthorizedAccessException or InvalidComObjectException or ArgumentException or InvalidCastException
+        or NotSupportedException or NotImplementedException or IOException;
 }
 
 internal sealed class WasapiInput : ICaptureInput

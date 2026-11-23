@@ -96,11 +96,12 @@ internal sealed class RecordingViewModel : INotifyPropertyChanged, IAsyncDisposa
         if (Active) return;
         string? previousMic = mic?.Id;
         string? previousSystem = system?.Id;
-        IReadOnlyList<CaptureEndpoint> endpoints = await Task.Run(EndpointCatalog.Read);
+        var (endpoints, diagnostic) = await Task.Run(EndpointCatalog.Read);
         Microphones = endpoints.Where(item => item.Source == CaptureSource.Mic).ToArray();
         RenderEndpoints = endpoints.Where(item => item.Source == CaptureSource.System).ToArray();
         mic = Selection(Microphones, previousMic, initial);
         system = Selection(RenderEndpoints, previousSystem, initial);
+        error = diagnostic ?? (endpoints.Any(item => item.IsAvailable) ? null : "No active audio endpoints found.");
     }, "Audio endpoints could not be listed. Refresh devices to try again.");
 
     internal Task StartAsync() => ExecuteAsync(async () =>

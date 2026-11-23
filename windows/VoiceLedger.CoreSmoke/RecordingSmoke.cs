@@ -5,6 +5,7 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
+using VoiceLedger;
 using VoiceLedger.Capture;
 using VoiceLedger.Core;
 
@@ -12,6 +13,7 @@ internal static class RecordingSmoke
 {
     internal static async Task RunAsync()
     {
+        await VerifyEndpointDiscoveryAsync();
         VerifyTimeline();
         string scratch = Path.Combine(Path.GetTempPath(), "VoiceLedger-synthetic-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(scratch);
@@ -27,6 +29,23 @@ internal static class RecordingSmoke
         {
             Directory.Delete(scratch, recursive: true);
         }
+    }
+
+    private static async Task VerifyEndpointDiscoveryAsync()
+    {
+        Expect(EndpointCatalog.ReadOptionalText(() => throw new UnauthorizedAccessException()) is null,
+            "an unreadable device property allows a display fallback");
+        Expect(EndpointCatalog.ReadOptionalText(() => throw new NotImplementedException()) is null,
+            "an unsupported device property allows a display fallback");
+        Expect(EndpointCatalog.ReadOptionalText(() => "Test endpoint") == "Test endpoint",
+            "readable endpoint metadata is preserved");
+
+        await using var viewModel = new RecordingViewModel();
+        await viewModel.RefreshDevicesAsync(initial: true);
+        Expect(viewModel.Status is "Ready" or "No active audio endpoints found.",
+            $"Windows audio discovery returned {viewModel.Status}");
+        Console.WriteLine($"Windows audio discovery completed with {viewModel.Microphones.Count} capture and " +
+            $"{viewModel.RenderEndpoints.Count} render endpoints on the hosted runner.");
     }
 
     private static void VerifyTimeline()
