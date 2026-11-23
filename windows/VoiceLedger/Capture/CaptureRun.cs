@@ -86,6 +86,7 @@ internal sealed class CaptureRun
             started.TrySetResult(start);
             var ready = new[] { wake, input.PacketReady };
             PacketConsumer offer = (data, stamp) => Offer(data, stamp, format.BlockAlign, format.SampleRate);
+            long nextCheckpointNs = startNs + 1_000_000_000;
             try
             {
                 while (StopRequest is null)
@@ -93,7 +94,14 @@ internal sealed class CaptureRun
                     while (StopRequest is null && input.TryRead(offer)) { }
                     if (StopRequest is null)
                     {
-                        Interlocked.Exchange(ref lastEmptyNs, clock.NowNs);
+                        long observed = clock.NowNs;
+                        Interlocked.Exchange(ref lastEmptyNs, observed);
+                        if (observed >= nextCheckpointNs)
+                        {
+                            // A zero-frame checkpoint lets the writer seal audio during idle periods.
+                            queue.Writer.TryWrite(new CapturedPacket(default, observed, null, 0));
+                            nextCheckpointNs = observed + 1_000_000_000;
+                        }
                         WaitHandle.WaitAny(ready, 100);
                     }
                 }
@@ -179,6 +187,11 @@ internal sealed class CaptureRun
             {
                 try
                 {
+                    if (packet.Stamp.Frames == 0)
+                    {
+                        if (packet.ObservedAtNs - timeline.EndNs >= 1_000_000_000) SealSegment();
+                        continue;
+                    }
                     var placed = timeline.Place(packet.Stamp,
                         clock.MapQpc(packet.Stamp.Qpc100ns, packet.ObservedAtNs), packet.ObservedAtNs);
                     if (placed.Before is CaptureInterval before)

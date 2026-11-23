@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Threading;
+using System.Threading.Tasks;
 using Microsoft.Win32;
 using Forms = System.Windows.Forms;
 
@@ -14,6 +15,7 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer timer = new() { Interval = TimeSpan.FromMilliseconds(250) };
     private readonly Forms.NotifyIcon tray = new() { Icon = System.Drawing.SystemIcons.Application, Text = "VoiceLedger" };
     private readonly Forms.ToolStripMenuItem trayStop = new("Stop recording");
+    private bool closePromptPending;
 
     public MainWindow()
     {
@@ -69,7 +71,7 @@ public partial class MainWindow : Window
         trayStop.Enabled = viewModel.CanStop;
     }
 
-    protected override async void OnClosing(CancelEventArgs e)
+    protected override void OnClosing(CancelEventArgs e)
     {
         base.OnClosing(e);
         if (e.Cancel || viewModel.Busy)
@@ -79,16 +81,32 @@ public partial class MainWindow : Window
         }
         if (!viewModel.Active) return;
         e.Cancel = true;
-        switch (PromptWhileRecording())
+        if (!closePromptPending)
         {
-            case CloseAction.Background:
-                Hide();
-                UpdateTray();
-                break;
-            case CloseAction.StopAndClose:
-                await viewModel.StopAsync();
-                if (!viewModel.Active) Close();
-                break;
+            closePromptPending = true;
+            Dispatcher.InvokeAsync(() => { _ = ChooseCloseActionAsync(); });
+        }
+    }
+
+    private async Task ChooseCloseActionAsync()
+    {
+        try
+        {
+            switch (PromptWhileRecording())
+            {
+                case CloseAction.Background:
+                    Hide();
+                    UpdateTray();
+                    break;
+                case CloseAction.StopAndClose:
+                    await viewModel.StopAsync();
+                    if (!viewModel.Active) Close();
+                    break;
+            }
+        }
+        finally
+        {
+            closePromptPending = false;
         }
     }
 

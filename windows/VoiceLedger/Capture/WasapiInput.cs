@@ -153,8 +153,19 @@ internal sealed class WasapiInput : ICaptureInput
     }
 }
 
-internal sealed class EndpointWatch(string selectedId, Action<CaptureEnd> interrupted) : IMMNotificationClient
+[ComVisible(true)]
+[ClassInterface(ClassInterfaceType.None)]
+public sealed class EndpointWatch : IMMNotificationClient
 {
+    private readonly string selectedId;
+    private readonly Action<CaptureEnd> interrupted;
+
+    internal EndpointWatch(string selectedId, Action<CaptureEnd> interrupted)
+    {
+        this.selectedId = selectedId;
+        this.interrupted = interrupted;
+    }
+
     public void OnDeviceStateChanged(string deviceId, DeviceState newState)
     {
         if (newState != DeviceState.Active)

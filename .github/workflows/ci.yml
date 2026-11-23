@@ -109,6 +109,8 @@ jobs:
       - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
         with:
           global-json-file: global.json
+          cache: true
+          cache-dependency-path: windows/**/packages.lock.json
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: voiceledger-core-windows-x64
@@ -119,7 +121,7 @@ jobs:
           path: artifacts/domain-fixtures-v1
       - name: Restore, build and publish WPF
         run: |
-          dotnet restore windows/VoiceLedger.slnx --use-lock-file --force-evaluate 2>&1 | Tee-Object artifacts/windows-restore.log
+          dotnet restore windows/VoiceLedger.slnx --locked-mode 2>&1 | Tee-Object artifacts/windows-restore.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           dotnet build windows/VoiceLedger.slnx --configuration Release --no-restore 2>&1 | Tee-Object artifacts/windows-build.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -129,7 +131,7 @@ jobs:
           dotnet run --project windows/VoiceLedger.CoreSmoke/VoiceLedger.CoreSmoke.csproj --configuration Release --no-build -- contracts/fixtures/ffi-v1.tsv artifacts/domain-fixtures-v1 2>&1 | Tee-Object artifacts/windows-ffi.log
       - name: Check the publish output
         run: |
-          foreach ($file in 'VoiceLedger.exe', 'VoiceLedger.dll', 'VoiceLedger.runtimeconfig.json', 'voiceledger_ffi.dll') {
+          foreach ($file in 'VoiceLedger.exe', 'VoiceLedger.dll', 'VoiceLedger.runtimeconfig.json', 'voiceledger_ffi.dll', 'NAudio.Wasapi.dll', 'NAudio.Core.dll') {
             if (-not (Test-Path "artifacts/windows/$file" -PathType Leaf)) {
               throw "Publish output is missing $file"
             }
@@ -142,11 +144,6 @@ jobs:
           path: |
             artifacts/windows/
             artifacts/windows-*.log
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
-        if: always()
-        with:
-          name: windows-lockfiles
-          path: windows/**/packages.lock.json
 
   android-client:
     runs-on: ubuntu-latest

@@ -19,8 +19,9 @@ internal static class RecordingSmoke
         {
             await VerifyBothAsync(scratch);
             await VerifySilentLoopbackAsync(scratch);
+            await VerifyIdleSealsAsync(scratch);
             await VerifySuspendAsync(scratch);
-            Console.WriteLine("Windows capture smoke passed synthetic packet positions, loopback silence, independent tracks, endpoint loss, pause, reconnect, and suspend.");
+            Console.WriteLine("Windows capture smoke passed synthetic packet positions, loopback silence, idle sealing, independent tracks, endpoint loss, pause, reconnect, format changes, and suspend.");
         }
         finally
         {
@@ -121,6 +122,24 @@ internal static class RecordingSmoke
         await session.ReconnectAsync(track.Files.Id);
         Expect(session.State == SessionState.Recording && track.Core.Epoch == 1 && factory.Opened.Count == 2,
             "explicit reconnect resumes the same suspended source");
+        var resumed = track.Run!;
+        factory.Latest(mic.Id).ChangeFormat();
+        await resumed.Completion.WaitAsync(TimeSpan.FromSeconds(15));
+        await session.RefreshAsync();
+        Expect(session.State == SessionState.Paused && track.LastEnd == CaptureEnd.FormatChanged && factory.Opened.Count == 2,
+            "format change stops the old stream and waits for explicit reconnect");
+    }
+
+    private static async Task VerifyIdleSealsAsync(string scratch)
+    {
+        var factory = new ScriptedFactory();
+        var system = Endpoint(CaptureSource.System);
+        await using RecordingSession session = await RecordingSession.StartAsync(scratch, [system], factory.Open);
+        var track = session.Tracks.Single();
+        factory.Latest(system.Id).Push(42, 0, Qpc100Ns());
+        await UntilAsync(() => track.Files.SealedSegments == 1, "loopback idle seals existing audio while recording stays active");
+        Expect(session.State == SessionState.Recording && track.Run?.Completion.IsCompleted == false,
+            "idle checkpoint keeps capture running");
     }
 
     private static void VerifyStream(string output, RecordingTrack track, byte first, long qpc, bool expectedGap)
@@ -206,6 +225,7 @@ internal static class RecordingSmoke
         public void Stop() { }
         internal void ChangeDefault() => watch.OnDefaultDeviceChanged(DataFlow.Capture, Role.Multimedia, "synthetic-other-default");
         internal void Disconnect() => watch.OnDeviceRemoved(endpointId);
+        internal void ChangeFormat() => watch.OnPropertyValueChanged(endpointId, PropertyKeys.PKEY_AudioEngine_DeviceFormat);
 
         internal void Push(byte value, long position, long qpc, AudioClientBufferFlags flags = AudioClientBufferFlags.None)
         {

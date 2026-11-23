@@ -61,7 +61,14 @@ internal sealed class RecordingViewModel : INotifyPropertyChanged, IAsyncDisposa
     public bool CanResume => !busy && Active && session!.Tracks.Any(track => track.Core.State == TrackState.Paused);
     public bool CanStop => !busy && Active;
     public bool HasOutput => session is not null;
-    public string Duration => TimeSpan.FromTicks((session?.ElapsedNs ?? 0) / 100).ToString(@"hh\:mm\:ss");
+    public string Duration
+    {
+        get
+        {
+            var elapsed = TimeSpan.FromTicks((session?.ElapsedNs ?? 0) / 100);
+            return $"{(long)elapsed.TotalHours:00}:{elapsed.Minutes:00}:{elapsed.Seconds:00}";
+        }
+    }
 
     public string Status
     {
@@ -166,7 +173,7 @@ internal sealed class RecordingViewModel : INotifyPropertyChanged, IAsyncDisposa
             track.Files.Endpoint.Source == CaptureSource.Mic ? "Microphone" : "System loopback",
             track.Files.Endpoint.Name,
             track.LastEnd is CaptureEnd reason && reason is not (CaptureEnd.Stop or CaptureEnd.Pause)
-                ? $"{track.Core.State} · {FailureLabel(reason)}" : track.Core.State.ToString(),
+                ? $"Gap · {FailureLabel(reason)}" : track.Core.State.ToString(),
             $"{track.Files.SealedSegments} saved segments · epoch {track.Core.Epoch}",
             !busy && Active && track.Core.State == TrackState.Disconnected)).ToArray() ?? Array.Empty<TrackRow>();
         if (!rows.SequenceEqual(updated)) rows = updated;

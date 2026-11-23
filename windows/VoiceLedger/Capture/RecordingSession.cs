@@ -306,7 +306,7 @@ internal sealed class RecordingSession : IAsyncDisposable
     private async Task SaveSessionAsync(bool required = false)
     {
         string path = Path.Combine(OutputDirectory, "session.json");
-        var record = new { schema_version = 1, session_id = Id, created_at_utc = created,
+        var record = new { schema_version = 1, kind = "windows_wasapi_prototype", session_id = Id, created_at_utc = created,
             source_clock = "windows_qpc", qpc_origin_100ns = clock.OriginQpc100ns, elapsed_ns = ElapsedNs,
             state = State.ToString(), transitions = transitions.ToArray(),
             tracks = tracks.Select(track => new { id = track.Files.Id, source = track.Files.Endpoint.Source.ToString(),
