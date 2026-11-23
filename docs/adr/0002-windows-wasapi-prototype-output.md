@@ -1,0 +1,5 @@
+# Capture prototype recordings as per-track WAV files
+
+Issue #5 needs inspectable audio and timing evidence while the shared segmented writer is developed in #6. The native Windows prototype stores the original WASAPI packet bytes in bounded rolling WAV files and records their packet timing, source identity, epoch, checksum, gaps and silence in per-track JSON lines. The shared Opus and SQLite storage remains the production format specified by #6. [Windows capture](https://github.com/sagehou/VoiceLedger/issues/5) · [Shared writer](https://github.com/sagehou/VoiceLedger/issues/6)
+
+The Windows prototype outputs have their own format and local directory. They can be read for capture verification using the source clocks and packet offsets. Integration with #6 replaces the file sink at the packet and timeline boundary. A migration can use the sealed bytes and timing records after integrity validation. Prototype output can also remain an independently readable test record. Removing the prototype sink leaves the shared v1 contract and native capture interface available.

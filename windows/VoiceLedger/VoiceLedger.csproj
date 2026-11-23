@@ -3,10 +3,12 @@
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
   </PropertyGroup>
   <ItemGroup>
+    <PackageReference Include="NAudio.Wasapi" Version="[2.4.0]" />
     <InternalsVisibleTo Include="VoiceLedger.CoreSmoke" />
     <Content Include="native/voiceledger_ffi.dll" Condition="Exists('native/voiceledger_ffi.dll')"
              Link="voiceledger_ffi.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />

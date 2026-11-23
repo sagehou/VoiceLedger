@@ -109,6 +109,8 @@ jobs:
       - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
         with:
           global-json-file: global.json
+          cache: true
+          cache-dependency-path: windows/**/packages.lock.json
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: voiceledger-core-windows-x64
@@ -124,12 +126,17 @@ jobs:
           dotnet build windows/VoiceLedger.slnx --configuration Release --no-restore 2>&1 | Tee-Object artifacts/windows-build.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           dotnet publish windows/VoiceLedger/VoiceLedger.csproj --configuration Release --no-build --output artifacts/windows 2>&1 | Tee-Object artifacts/windows-publish.log
-      - name: Run the WPF P/Invoke smoke test
+      - name: Run WPF ABI and synthetic capture checks
         run: |
           dotnet run --project windows/VoiceLedger.CoreSmoke/VoiceLedger.CoreSmoke.csproj --configuration Release --no-build -- contracts/fixtures/ffi-v1.tsv artifacts/domain-fixtures-v1 2>&1 | Tee-Object artifacts/windows-ffi.log
+      - name: Verify the PowerShell WASAPI evidence script
+        shell: powershell
+        run: |
+          .\scripts\Test-WasapiEvidence.ps1 | Tee-Object artifacts/windows-evidence.log
+          Copy-Item scripts/Measure-WasapiEvidence.ps1 artifacts/
       - name: Check the publish output
         run: |
-          foreach ($file in 'VoiceLedger.exe', 'VoiceLedger.dll', 'VoiceLedger.runtimeconfig.json', 'voiceledger_ffi.dll') {
+          foreach ($file in 'VoiceLedger.exe', 'VoiceLedger.dll', 'VoiceLedger.runtimeconfig.json', 'voiceledger_ffi.dll', 'NAudio.Wasapi.dll', 'NAudio.Core.dll') {
             if (-not (Test-Path "artifacts/windows/$file" -PathType Leaf)) {
               throw "Publish output is missing $file"
             }
@@ -142,6 +149,7 @@ jobs:
           path: |
             artifacts/windows/
             artifacts/windows-*.log
+            artifacts/Measure-WasapiEvidence.ps1
 
   android-client:
     runs-on: ubuntu-latest

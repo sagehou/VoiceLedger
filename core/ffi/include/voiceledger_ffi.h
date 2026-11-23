@@ -56,6 +56,19 @@ enum vl_recommendation_v1 {
 };
 
 typedef int64_t vl_session_handle_v1;
+typedef int64_t vl_track_handle_v1;
+
+enum vl_track_command_v1 {
+    VL_TRACK_START = 1, VL_TRACK_PAUSE = 2, VL_TRACK_RESUME = 3,
+    VL_TRACK_DISCONNECT = 4, VL_TRACK_RECONNECT_CONFIRMED = 5,
+    VL_TRACK_STOP = 6, VL_TRACK_FINISH = 7, VL_TRACK_INTERRUPT = 8
+};
+
+enum vl_track_state_v1 {
+    VL_TRACK_PREPARING = 0, VL_TRACK_RECORDING = 1, VL_TRACK_PAUSED = 2,
+    VL_TRACK_DISCONNECTED = 3, VL_TRACK_STOPPING = 4,
+    VL_TRACK_COMPLETED = 5, VL_TRACK_INTERRUPTED = 6
+};
 
 /* Negative returns are vl_error_v1. Positive handles are owned by the caller. */
 int32_t vl_abi_version_v1(void);
@@ -65,6 +78,13 @@ vl_session_handle_v1 vl_session_create_v1(void);
 int32_t vl_session_transition_v1(vl_session_handle_v1 handle, int32_t command, int64_t at_ns);
 int32_t vl_session_cancel_v1(vl_session_handle_v1 handle);
 int32_t vl_session_release_v1(vl_session_handle_v1 handle);
+
+/* The UTF-8 endpoint is required at creation and for confirmed reconnect only. */
+vl_track_handle_v1 vl_track_create_v1(const uint8_t *endpoint, uint32_t length);
+int32_t vl_track_transition_v1(vl_track_handle_v1 handle, int32_t command, int64_t at_ns,
+    const uint8_t *confirmed_endpoint, uint32_t length);
+int64_t vl_track_source_epoch_v1(vl_track_handle_v1 handle);
+int32_t vl_track_release_v1(vl_track_handle_v1 handle);
 
 /* Supply -1 for an unknown memory value. Memory values are measured in bytes. */
 int32_t vl_recommend_v1(int32_t compatibility, int64_t budget_bytes, int64_t peak_bytes);
