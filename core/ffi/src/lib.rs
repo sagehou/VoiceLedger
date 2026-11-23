@@ -8,6 +8,7 @@ use voiceledger_core::{
     Compatibility, RecommendationInput, Session, SessionCommand, TransitionError,
 };
 
+mod device_profile;
 #[cfg(any(target_os = "android", target_os = "linux"))]
 mod jni;
 mod track;
@@ -22,6 +23,7 @@ enum Error {
     InvalidTransition = -3,
     Cancelled = -4,
     Internal = -5,
+    DeviceProfileStorage = -6,
 }
 
 #[derive(Default)]
