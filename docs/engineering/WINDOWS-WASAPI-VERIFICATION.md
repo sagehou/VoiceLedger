@@ -14,13 +14,15 @@ Each source writes to its own directory under `%LOCALAPPDATA%\VoiceLedger\Record
 
 Extract the `windows-client` artifact from the linked Actions run and open `windows/VoiceLedger.exe` on a physical Windows x64 device with the .NET 10 Desktop Runtime installed. Record the build SHA, OS build, architecture, endpoint roles, sample formats, duration, expected and observed outcomes, and evidence location in the [evidence schema](../../contracts/test-evidence-v1.schema.json). Attach redacted metadata to [Issue #5](https://github.com/sagehou/VoiceLedger/issues/5). Keep user audio local.
 
-| Test | Procedure and expected outcome | Status |
+Issue #5 records prototype acceptance from the available device results. [Acceptance decision](../adr/0003-accept-windows-wasapi-prototype-evidence.md)
+
+| Test | Procedure and expected outcome | Issue #5 evidence |
 | --- | --- | --- |
-| `wasapi.mic` | Select a capture endpoint, start Mic, speak or use a synthetic test tone, then stop. Check the microphone WAV and packet metadata. | **BLOCKED** |
-| `wasapi.system` | Select a render endpoint, play a synthetic tone, allow an idle interval, play a second tone and stop. Check that the session clock advances during idle and that the journal labels the observed idle interval Silence. | **BLOCKED** |
-| `wasapi.both.alignment` | Record Both using a short synthetic transient played through speakers and recorded by the selected mic. Locate the transient in each WAV. Use packet start times and sample offsets to calculate relative timing. Report the measured delta and acoustic conditions. Initial target is under 100 ms. | **BLOCKED** |
-| `wasapi.endpoint-loss` | While Both is recording, unplug or disable one selected endpoint. Confirm its track shows a gap and the other track keeps recording. Restore the same endpoint and reconnect explicitly. Confirm the epoch advances only on that track. | **BLOCKED** |
-| `wasapi.default-and-format` | Change the OS default during recording. Check that the bound endpoint ID stays fixed. Change the selected endpoint format and confirm the transition records a format change or invalidation. | **BLOCKED** |
-| `wasapi.background-and-suspend` | Minimize or move the window to tray, then stop from the tray. Start a new session and suspend and wake Windows. Check that affected streams close and reconnect requires user action. | **BLOCKED** |
+| `wasapi.mic` | Select a capture endpoint, start Mic, speak or use a synthetic test tone, then stop. Check the microphone WAV and packet metadata. | Existing results accepted for the prototype |
+| `wasapi.system` | Select a render endpoint, play a synthetic tone, allow an idle interval, play a second tone and stop. Check that the session clock advances during idle and that the journal labels the observed idle interval Silence. | Silence observed on the System track in Both |
+| `wasapi.both.alignment` | Record Both using a short synthetic transient played through speakers and recorded by the selected mic. Locate the transient in each WAV. Use packet start times and sample offsets to calculate relative timing. Report the measured delta and acoustic conditions. Initial target is under 100 ms. | Measurement pending. Supplemental session waived |
+| `wasapi.endpoint-loss` | While Both is recording, unplug or disable one selected endpoint. Confirm its track shows a gap and the other track keeps recording. Restore the same endpoint and reconnect explicitly. Confirm the epoch advances only on that track. | Zero disconnects in the reported session. Supplemental session waived |
+| `wasapi.default-and-format` | Change the OS default during recording. Check that the bound endpoint ID stays fixed. Change the selected endpoint format and confirm the transition records a format change or invalidation. | Physical evidence pending |
+| `wasapi.background-and-suspend` | Minimize or move the window to tray, then stop from the tray. Start a new session and suspend and wake Windows. Check that affected streams close and reconnect requires user action. | Physical evidence pending |
 
 Run a short functional recording first. A 1–2 hour soak and an extended representative soak remain release evidence. Test reporting uses physical measurements for endpoint behavior and alignment.

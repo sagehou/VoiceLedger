@@ -24,6 +24,7 @@ The Android build uses strict dependency locking against `android/app/gradle.loc
 
 Commit the generated lock and verify a fresh run without `--write-locks`.
 
-## Open acceptance gates
+## Device acceptance
 
-- [#5](https://github.com/sagehou/VoiceLedger/issues/5) requires physical Windows WASAPI endpoint and alignment evidence. [#7](https://github.com/sagehou/VoiceLedger/issues/7) requires Android foreground-service evidence. The hardware-only checks are **BLOCKED** pending device testing. The [evidence schema](../../contracts/test-evidence-v1.schema.json) uses `blocked` for this state.
+- The Windows prototype acceptance decision records the available device evidence and remaining measurements. [#5](https://github.com/sagehou/VoiceLedger/issues/5) · [Acceptance decision](../adr/0003-accept-windows-wasapi-prototype-evidence.md)
+- [#7](https://github.com/sagehou/VoiceLedger/issues/7) requires Android foreground-service evidence. The hardware-only checks are **BLOCKED** pending device testing. The [evidence schema](../../contracts/test-evidence-v1.schema.json) uses `blocked` for this state.
