@@ -1,10 +1,33 @@
 use std::ffi::c_void;
+use std::panic::AssertUnwindSafe;
+
+use ::jni::JNIEnv;
+use ::jni::objects::{JByteArray, JObject};
 
 use super::*;
 
 #[unsafe(export_name = "Java_com_voiceledger_app_core_NativeCore_nativeAbiVersion")]
 pub extern "system" fn abi_version(_: *mut c_void, _: *mut c_void) -> i32 {
     vl_abi_version_v1()
+}
+
+#[unsafe(export_name = "Java_com_voiceledger_app_core_NativeCore_nativeValidateDomain")]
+pub extern "system" fn validate_domain(
+    env: JNIEnv<'_>,
+    _: JObject<'_>,
+    data: JByteArray<'_>,
+) -> i32 {
+    guard(AssertUnwindSafe(|| {
+        if data.as_raw().is_null() {
+            return Err(Error::InvalidArgument);
+        }
+        let length = env.get_array_length(&data).map_err(|_| Error::Internal)? as usize;
+        if length == 0 || length > MAX_DOMAIN_BATCH_BYTES {
+            return Err(Error::InvalidArgument);
+        }
+        let bytes = env.convert_byte_array(&data).map_err(|_| Error::Internal)?;
+        Ok(validate_domain_bytes(&bytes))
+    }))
 }
 
 #[unsafe(export_name = "Java_com_voiceledger_app_core_NativeCore_nativeCreate")]

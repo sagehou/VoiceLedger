@@ -65,6 +65,8 @@ internal static class NativeCore
 
     internal static int AbiVersion { get; }
 
+    internal static int ValidateDomain(byte[] data) => (int)RequireSuccess(ValidateDomainNative(data, (uint)data.Length));
+
     internal static Recommendation Recommend(Compatibility compatibility, long? budgetBytes, long? peakBytes) =>
         (Recommendation)RequireSuccess(RecommendNative((int)compatibility, budgetBytes ?? -1, peakBytes ?? -1));
 
@@ -79,6 +81,9 @@ internal static class NativeCore
 
     [DllImport(Library, EntryPoint = "vl_abi_version_v1", ExactSpelling = true, CallingConvention = CallingConvention.Cdecl)]
     private static extern int GetAbiVersion();
+
+    [DllImport(Library, EntryPoint = "vl_domain_validate_v1", ExactSpelling = true, CallingConvention = CallingConvention.Cdecl)]
+    private static extern int ValidateDomainNative([In] byte[] data, uint length);
 
     [DllImport(Library, EntryPoint = "vl_session_create_v1", ExactSpelling = true, CallingConvention = CallingConvention.Cdecl)]
     internal static extern long Create();

@@ -17,3 +17,5 @@ The input is platform compatibility, available inference memory budget and candi
 ## Integration evidence
 
 The [same fixture](../../contracts/fixtures/ffi-v1.tsv) runs through the WPF assembly's P/Invoke bindings and the Android app's JNI bindings. The latter runs on a hosted Linux JVM with the Linux Rust target. The Android NDK job independently produces an arm64 library that the Android packaging smoke check finds in the APK.
+
+`vl_domain_validate_v1` accepts a borrowed UTF-8 [domain v1 batch](DOMAIN-CONTRACT-V1.md) of up to 16 MiB and returns a numeric validation result synchronously. Windows passes a byte array and Android JNI copies the bounded Java byte array into Rust once per call. Both consume the same schema-checked fixture artifact.

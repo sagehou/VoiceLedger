@@ -1,0 +1,493 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:voiceledger:domain:v1",
+  "title": "VoiceLedger domain batch v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "sessions",
+    "tracks",
+    "audio_chunks",
+    "gaps",
+    "silence",
+    "utterance_revisions",
+    "utterance_selections",
+    "translation_revisions",
+    "speaker_assignments",
+    "speaker_profiles",
+    "ai_jobs",
+    "device_capability_profiles",
+    "benchmark_results",
+    "sync_events"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "sessions": {"type": "array", "items": {"$ref": "#/$defs/Session"}},
+    "tracks": {"type": "array", "items": {"$ref": "#/$defs/Track"}},
+    "audio_chunks": {"type": "array", "items": {"$ref": "#/$defs/AudioChunk"}},
+    "gaps": {"type": "array", "items": {"$ref": "#/$defs/Gap"}},
+    "silence": {"type": "array", "items": {"$ref": "#/$defs/Silence"}},
+    "utterance_revisions": {"type": "array", "items": {"$ref": "#/$defs/UtteranceRevision"}},
+    "utterance_selections": {"type": "array", "items": {"$ref": "#/$defs/UtteranceSelection"}},
+    "translation_revisions": {"type": "array", "items": {"$ref": "#/$defs/TranslationRevision"}},
+    "speaker_assignments": {"type": "array", "items": {"$ref": "#/$defs/SpeakerAssignment"}},
+    "speaker_profiles": {"type": "array", "items": {"$ref": "#/$defs/SpeakerProfile"}},
+    "ai_jobs": {"type": "array", "items": {"$ref": "#/$defs/AiJob"}},
+    "device_capability_profiles": {"type": "array", "items": {"$ref": "#/$defs/DeviceCapabilityProfile"}},
+    "benchmark_results": {"type": "array", "items": {"$ref": "#/$defs/BenchmarkResult"}},
+    "sync_events": {"type": "array", "items": {"$ref": "#/$defs/SyncEvent"}}
+  },
+  "$defs": {
+    "StableId": {
+      "type": "string",
+      "minLength": 36,
+      "maxLength": 36,
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "Sha256": {"type": "string", "minLength": 64, "maxLength": 64, "pattern": "^[0-9a-f]{64}$"},
+    "Count": {"type": "integer", "minimum": 0, "maximum": 9223372036854775807},
+    "TimeRange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start_ns", "end_ns"],
+      "properties": {"start_ns": {"$ref": "#/$defs/Count"}, "end_ns": {"$ref": "#/$defs/Count"}}
+    },
+    "Language": {"enum": ["zh", "en", "ja"]},
+    "Authorship": {"enum": ["machine", "manual"]},
+    "TransitionReason": {
+      "enum": [
+        "user_request",
+        "source_ready",
+        "capture_drained",
+        "endpoint_lost",
+        "permission_revoked",
+        "audio_route_changed",
+        "writer_failure",
+        "storage_exhausted",
+        "process_death",
+        "system_suspend",
+        "platform_error"
+      ]
+    },
+    "SessionChange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command", "at_ns", "reason"],
+      "properties": {
+        "command": {"enum": ["prepare", "start", "pause", "resume", "stop", "finish", "interrupt"]},
+        "at_ns": {"$ref": "#/$defs/Count"},
+        "reason": {"$ref": "#/$defs/TransitionReason"}
+      }
+    },
+    "TrackChange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command", "at_ns", "reason"],
+      "properties": {
+        "command": {"enum": ["start", "pause", "resume", "disconnect", "reconnect_confirmed", "stop", "finish", "interrupt"]},
+        "at_ns": {"$ref": "#/$defs/Count"},
+        "reason": {"$ref": "#/$defs/TransitionReason"},
+        "confirmed_endpoint_id": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]}
+      },
+      "if": {"properties": {"command": {"const": "reconnect_confirmed"}}},
+      "then": {
+        "required": ["confirmed_endpoint_id"],
+        "properties": {"confirmed_endpoint_id": {"type": "string", "minLength": 1}}
+      }
+    },
+    "AudioFormat": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sample_rate_hz", "channels", "sample_format"],
+      "properties": {
+        "sample_rate_hz": {"type": "integer", "minimum": 1, "maximum": 4294967295},
+        "channels": {"type": "integer", "minimum": 1, "maximum": 4294967295},
+        "sample_format": {"type": "string", "minLength": 1}
+      }
+    },
+    "Session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "title",
+        "device_id",
+        "created_at_unix_ms",
+        "language_policy",
+        "capture_state",
+        "ai_state",
+        "sync_state",
+        "transitions"
+      ],
+      "properties": {
+        "id": {"$ref": "#/$defs/StableId"},
+        "title": {"type": "string"},
+        "device_id": {"$ref": "#/$defs/StableId"},
+        "created_at_unix_ms": {"$ref": "#/$defs/Count"},
+        "language_policy": {"enum": ["auto", "zh", "en", "ja"]},
+        "capture_state": {"enum": ["idle", "preparing", "recording", "paused", "stopping", "completed", "interrupted"]},
+        "ai_state": {"enum": ["disabled", "pending", "running", "deferred", "completed", "failed", "cancelled"]},
+        "sync_state": {
+          "enum": [
+            "not_configured",
+            "configured",
+            "idle",
+            "syncing",
+            "offline",
+            "waiting_key",
+            "authentication_required",
+            "provider_unsupported",
+            "quota_exceeded",
+            "conflict_needs_review",
+            "retry_scheduled"
+          ]
+        },
+        "transitions": {"type": "array", "items": {"$ref": "#/$defs/SessionChange"}},
+        "started_at_unix_ms": {"anyOf": [{"$ref": "#/$defs/Count"}, {"type": "null"}]},
+        "ended_at_unix_ms": {"anyOf": [{"$ref": "#/$defs/Count"}, {"type": "null"}]},
+        "translation_target": {"anyOf": [{"$ref": "#/$defs/Language"}, {"type": "null"}]}
+      }
+    },
+    "Track": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "session_id",
+        "source",
+        "endpoint_id",
+        "source_clock",
+        "format",
+        "source_epoch",
+        "capture_state",
+        "transitions"
+      ],
+      "properties": {
+        "id": {"$ref": "#/$defs/StableId"},
+        "session_id": {"$ref": "#/$defs/StableId"},
+        "source": {"enum": ["mic", "system_loopback"]},
+        "endpoint_id": {"type": "string", "minLength": 1},
+        "source_clock": {"type": "string", "minLength": 1},
+        "format": {"$ref": "#/$defs/AudioFormat"},
+        "source_epoch": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+        "capture_state": {"enum": ["preparing", "recording", "paused", "disconnected", "stopping", "completed", "interrupted"]},
+        "transitions": {"type": "array", "items": {"$ref": "#/$defs/TrackChange"}}
+      }
+    },
+    "AudioChunk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "track_id", "source_epoch", "range", "sequence", "codec", "format", "byte_size", "commit_state"],
+      "properties": {
+        "id": {"$ref": "#/$defs/StableId"},
+        "track_id": {"$ref": "#/$defs/StableId"},
+        "source_epoch": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+        "range": {"$ref": "#/$defs/TimeRange"},
+        "sequence": {"$ref": "#/$defs/Count"},
+        "codec": {"type": "string", "minLength": 1},
+        "format": {"$ref": "#/$defs/AudioFormat"},
+        "byte_size": {"$ref": "#/$defs/Count"},
+        "commit_state": {"enum": ["pending", "committed", "missing"]},
+        "sha256": {"anyOf": [{"$ref": "#/$defs/Sha256"}, {"type": "null"}]}
+      },
+      "if": {"properties": {"commit_state": {"const": "committed"}}},
+      "then": {"required": ["sha256"], "properties": {"sha256": {"$ref": "#/$defs/Sha256"}, "byte_size": {"minimum": 1}}}
+    },
+    "Gap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "track_id", "source_epoch", "range", "cause", "recoverable"],
+      "properties": {
+        "id": {"$ref": "#/$defs/StableId"},
+        "track_id": {"$ref": "#/$defs/StableId"},
+        "source_epoch": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+        "range": {"$ref": "#/$defs/TimeRange"},
+        "cause": {
+          "enum": [
+            "paused",
+            "endpoint_lost",
+            "format_changed",
+            "audio_route_changed",
+            "permission_revoked",
+            "writer_failure",
+            "storage_exhausted",
+            "queue_overflow",
+            "process_death",
+            "system_suspend",
+            "unknown_capture"
+          ]
+        },
+        "recoverable": {"type": "boolean"}
+      }
+    },
+    "Silence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "track_id", "source_epoch", "range"],
+      "properties": {
+        "id": {"$ref": "#/$defs/StableId"},
+        "track_id": {"$ref": "#/$defs/StableId"},
+        "source_epoch": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+        "range": {"$ref": "#/$defs/TimeRange"}
+      }
+    },
+    "ChunkSpan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["chunk_id", "range"],
+      "properties": {"chunk_id": {"$ref": "#/$defs/StableId"}, "range": {"$ref": "#/$defs/TimeRange"}}
+    },
+    "ModelRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model_id", "model_version", "runtime_version", "sha256"],
+      "properties": {
+        "model_id": {"type": "string", "minLength": 1},
+        "model_version": {"type": "string", "minLength": 1},
+        "runtime_version": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/Sha256"}
+      }
+    },
+    "UtteranceRevision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "utterance_id",
+        "revision",
+        "parent_revision_ids",
+        "track_id",
+        "source",
+        "range",
+        "kind",
+        "language",
+        "text",
+        "created_at_unix_ms"
+      ],
+      "properties": {
+        "id": {"$ref": "#/$defs/StableId"},
+        "utterance_id": {"$ref": "#/$defs/StableId"},
+        "revision": {"type": "integer", "minimum": 1, "maximum": 4294967295},
+        "parent_revision_ids": {"type": "array", "items": {"$ref": "#/$defs/StableId"}, "uniqueItems": true},
+        "track_id": {"$ref": "#/$defs/StableId"},
+        "source": {"type": "array", "items": {"$ref": "#/$defs/ChunkSpan"}, "minItems": 1},
+        "range": {"$ref": "#/$defs/TimeRange"},
+        "kind": {"enum": ["partial", "final", "manual"]},
+        "language": {"$ref": "#/$defs/Language"},
+        "text": {"type": "string"},
+        "created_at_unix_ms": {"$ref": "#/$defs/Count"},
+        "confidence": {"anyOf": [{"type": "number", "minimum": 0, "maximum": 1}, {"type": "null"}]},
+        "model": {"anyOf": [{"$ref": "#/$defs/ModelRef"}, {"type": "null"}]}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"kind": {"enum": ["partial", "final"]}}},
+          "then": {"required": ["model"], "properties": {"model": {"$ref": "#/$defs/ModelRef"}}}
+        },
+        {
+          "if": {"properties": {"kind": {"const": "manual"}}},
+          "then": {"required": [], "properties": {"parent_revision_ids": {"minItems": 1}}}
+        }
+      ]
+    },
+    "UtteranceSelection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["utterance_id", "revision_id"],
+      "properties": {"utterance_id": {"$ref": "#/$defs/StableId"}, "revision_id": {"$ref": "#/$defs/StableId"}}
+    },
+    "TranslationRevision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "translation_id",
+        "revision",
+        "source_revision_id",
+        "parent_revision_ids",
+        "target_language",
+        "text",
+        "authorship",
+        "created_at_unix_ms"
+      ],
+      "properties": {
+        "id": {"$ref": "#/$defs/StableId"},
+        "translation_id": {"$ref": "#/$defs/StableId"},
+        "revision": {"type": "integer", "minimum": 1, "maximum": 4294967295},
+        "source_revision_id": {"$ref": "#/$defs/StableId"},
+        "parent_revision_ids": {"type": "array", "items": {"$ref": "#/$defs/StableId"}, "uniqueItems": true},
+        "target_language": {"$ref": "#/$defs/Language"},
+        "text": {"type": "string"},
+        "authorship": {"$ref": "#/$defs/Authorship"},
+        "created_at_unix_ms": {"$ref": "#/$defs/Count"},
+        "model": {"anyOf": [{"$ref": "#/$defs/ModelRef"}, {"type": "null"}]}
+      },
+      "if": {"properties": {"authorship": {"const": "machine"}}},
+      "then": {"required": ["model"], "properties": {"model": {"$ref": "#/$defs/ModelRef"}}}
+    },
+    "SpeakerAssignment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "session_id", "track_id", "range", "revision", "authorship"],
+      "properties": {
+        "id": {"$ref": "#/$defs/StableId"},
+        "session_id": {"$ref": "#/$defs/StableId"},
+        "track_id": {"$ref": "#/$defs/StableId"},
+        "range": {"$ref": "#/$defs/TimeRange"},
+        "revision": {"type": "integer", "minimum": 1, "maximum": 4294967295},
+        "authorship": {"$ref": "#/$defs/Authorship"},
+        "speaker_id": {"anyOf": [{"$ref": "#/$defs/StableId"}, {"type": "null"}]},
+        "confidence": {"anyOf": [{"type": "number", "minimum": 0, "maximum": 1}, {"type": "null"}]},
+        "model": {"anyOf": [{"$ref": "#/$defs/ModelRef"}, {"type": "null"}]},
+        "confirmed_name": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "confirmed_profile_id": {"anyOf": [{"$ref": "#/$defs/StableId"}, {"type": "null"}]}
+      },
+      "if": {"properties": {"authorship": {"const": "machine"}}},
+      "then": {"required": ["model"], "properties": {"model": {"$ref": "#/$defs/ModelRef"}}}
+    },
+    "SpeakerProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "display_name", "consented_at_unix_ms", "encrypted_sample_refs", "encrypted_embedding_refs"],
+      "properties": {
+        "id": {"$ref": "#/$defs/StableId"},
+        "display_name": {"type": "string", "minLength": 1},
+        "consented_at_unix_ms": {"$ref": "#/$defs/Count"},
+        "encrypted_sample_refs": {"type": "array", "items": {"$ref": "#/$defs/StableId"}, "minItems": 1},
+        "encrypted_embedding_refs": {"type": "array", "items": {"$ref": "#/$defs/StableId"}}
+      }
+    },
+    "AiInput": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "span"],
+          "properties": {"kind": {"const": "audio"}, "span": {"$ref": "#/$defs/ChunkSpan"}}
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "revision_id"],
+          "properties": {"kind": {"const": "utterance_revision"}, "revision_id": {"$ref": "#/$defs/StableId"}}
+        }
+      ]
+    },
+    "AiJob": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "session_id", "kind", "inputs", "model", "state", "attempts"],
+      "properties": {
+        "id": {"$ref": "#/$defs/StableId"},
+        "session_id": {"$ref": "#/$defs/StableId"},
+        "kind": {"enum": ["asr", "translation", "speaker"]},
+        "inputs": {"type": "array", "items": {"$ref": "#/$defs/AiInput"}, "minItems": 1},
+        "model": {"$ref": "#/$defs/ModelRef"},
+        "state": {"enum": ["queued", "running", "deferred", "completed", "failed", "cancelled"]},
+        "attempts": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+        "error_code": {"anyOf": [{"type": "string"}, {"type": "null"}]}
+      }
+    },
+    "DeviceCapabilityProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "device_id", "observed_at_unix_ms", "platform", "os_version", "abi", "cpu_features"],
+      "properties": {
+        "id": {"$ref": "#/$defs/StableId"},
+        "device_id": {"$ref": "#/$defs/StableId"},
+        "observed_at_unix_ms": {"$ref": "#/$defs/Count"},
+        "platform": {"enum": ["windows", "android"]},
+        "os_version": {"type": "string", "minLength": 1},
+        "abi": {"type": "string", "minLength": 1},
+        "cpu_features": {"type": "array", "items": {"type": "string"}},
+        "logical_cpu_count": {"anyOf": [{"type": "integer", "minimum": 1, "maximum": 4294967295}, {"type": "null"}]},
+        "total_memory_bytes": {"anyOf": [{"allOf": [{"$ref": "#/$defs/Count"}, {"minimum": 1}]}, {"type": "null"}]},
+        "available_memory_bytes": {"anyOf": [{"$ref": "#/$defs/Count"}, {"type": "null"}]},
+        "low_memory_threshold_bytes": {"anyOf": [{"$ref": "#/$defs/Count"}, {"type": "null"}]},
+        "process_memory_bytes": {"anyOf": [{"$ref": "#/$defs/Count"}, {"type": "null"}]},
+        "low_memory": {"anyOf": [{"type": "boolean"}, {"type": "null"}]},
+        "low_ram_device": {"anyOf": [{"type": "boolean"}, {"type": "null"}]},
+        "storage_available_bytes": {"anyOf": [{"$ref": "#/$defs/Count"}, {"type": "null"}]},
+        "thermal_state": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "power_saver": {"anyOf": [{"type": "boolean"}, {"type": "null"}]},
+        "battery_percent": {"anyOf": [{"type": "integer", "minimum": 0, "maximum": 100}, {"type": "null"}]}
+      }
+    },
+    "BenchmarkResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "device_profile_id", "model", "stage", "observed_at_unix_ms"],
+      "properties": {
+        "id": {"$ref": "#/$defs/StableId"},
+        "device_profile_id": {"$ref": "#/$defs/StableId"},
+        "model": {"$ref": "#/$defs/ModelRef"},
+        "stage": {"enum": ["estimate", "short", "sustained", "extended"]},
+        "observed_at_unix_ms": {"$ref": "#/$defs/Count"},
+        "corpus_sha256": {"anyOf": [{"$ref": "#/$defs/Sha256"}, {"type": "null"}]},
+        "duration_ms": {"anyOf": [{"$ref": "#/$defs/Count"}, {"type": "null"}]},
+        "cold_start_ms": {"anyOf": [{"$ref": "#/$defs/Count"}, {"type": "null"}]},
+        "warm_rtf": {"anyOf": [{"type": "number", "minimum": 0}, {"type": "null"}]},
+        "peak_memory_bytes": {"anyOf": [{"$ref": "#/$defs/Count"}, {"type": "null"}]},
+        "final_p95_ms": {"anyOf": [{"$ref": "#/$defs/Count"}, {"type": "null"}]},
+        "threads": {"anyOf": [{"type": "integer", "minimum": 1, "maximum": 4294967295}, {"type": "null"}]},
+        "thermal_note": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "battery_note": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "evidence_ref": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]}
+      },
+      "if": {"properties": {"stage": {"enum": ["short", "sustained", "extended"]}}},
+      "then": {
+        "required": ["corpus_sha256", "duration_ms", "evidence_ref"],
+        "properties": {
+          "corpus_sha256": {"$ref": "#/$defs/Sha256"},
+          "duration_ms": {"allOf": [{"$ref": "#/$defs/Count"}, {"minimum": 1}]},
+          "evidence_ref": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "SyncEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "device_id",
+        "sequence",
+        "entity_kind",
+        "entity_id",
+        "operation",
+        "revision_id",
+        "object_refs",
+        "created_at_unix_ms"
+      ],
+      "properties": {
+        "id": {"$ref": "#/$defs/StableId"},
+        "device_id": {"$ref": "#/$defs/StableId"},
+        "sequence": {"$ref": "#/$defs/Count"},
+        "entity_kind": {
+          "enum": [
+            "session",
+            "track",
+            "audio_chunk",
+            "gap",
+            "silence",
+            "utterance_revision",
+            "translation_revision",
+            "speaker_assignment",
+            "speaker_profile"
+          ]
+        },
+        "entity_id": {"$ref": "#/$defs/StableId"},
+        "operation": {"enum": ["upsert", "tombstone", "restore"]},
+        "revision_id": {"$ref": "#/$defs/StableId"},
+        "object_refs": {"type": "array", "items": {"$ref": "#/$defs/StableId"}},
+        "created_at_unix_ms": {"$ref": "#/$defs/Count"},
+        "restored_from_tombstone_id": {"anyOf": [{"$ref": "#/$defs/StableId"}, {"type": "null"}]}
+      },
+      "if": {"properties": {"operation": {"const": "restore"}}},
+      "then": {
+        "required": ["restored_from_tombstone_id"],
+        "properties": {"restored_from_tombstone_id": {"$ref": "#/$defs/StableId"}}
+      }
+    }
+  }
+}
