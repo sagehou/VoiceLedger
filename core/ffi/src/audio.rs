@@ -5,6 +5,10 @@ use voiceledger_audio::{MAX_CHANNELS, MAX_FRAMES, Response, Store};
 
 use crate::{Error, guard, handles};
 
+pub(crate) const MAX_PATH_BYTES: usize = 128 * 1024;
+pub(crate) const MAX_REQUEST_BYTES: usize = 1024 * 1024;
+pub(crate) const MAX_PCM_SAMPLES: usize = MAX_CHANNELS * MAX_FRAMES;
+
 impl From<voiceledger_audio::Error> for Error {
     fn from(error: voiceledger_audio::Error) -> Self {
         use voiceledger_audio::Error as AudioError;
@@ -33,16 +37,44 @@ pub struct AudioBuffer {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vl_audio_open_v1(path: *const u8, length: u32) -> i64 {
     guard(|| {
-        if path.is_null() || length == 0 || length > 128 * 1024 {
+        if path.is_null() || length == 0 || length as usize > MAX_PATH_BYTES {
             return Err(Error::InvalidArgument);
         }
-        let bytes = unsafe { std::slice::from_raw_parts(path, length as usize) };
-        let path = std::str::from_utf8(bytes).map_err(|_| Error::InvalidArgument)?;
-        let store = Arc::new(Store::open(Path::new(path))?);
-        let mut handles = handles()?;
-        let id = handles.next_id()?;
-        handles.stores.insert(id, store);
-        Ok(id)
+        open(unsafe { std::slice::from_raw_parts(path, length as usize) })
+    })
+}
+
+pub(crate) fn open(path: &[u8]) -> Result<i64, Error> {
+    let path = std::str::from_utf8(path).map_err(|_| Error::InvalidArgument)?;
+    let store = Arc::new(Store::open(Path::new(path))?);
+    let mut handles = handles()?;
+    let id = handles.next_id()?;
+    handles.stores.insert(id, store);
+    Ok(id)
+}
+
+pub(crate) fn request(handle: i64, json: &[u8], pcm: &[f32]) -> Result<Option<Vec<u8>>, Error> {
+    let store = handles()?
+        .stores
+        .get(&handle)
+        .cloned()
+        .ok_or(Error::UnknownHandle)?;
+    Ok(match store.execute_json(json, pcm)? {
+        Response::Empty => None,
+        Response::Json(bytes) => Some(bytes),
+        Response::Playback {
+            channels,
+            next_ns,
+            samples,
+        } => {
+            let mut payload = Vec::with_capacity(12 + samples.len() * 4);
+            payload.extend(channels.to_le_bytes());
+            payload.extend(next_ns.to_le_bytes());
+            for sample in samples {
+                payload.extend(sample.to_le_bytes());
+            }
+            Some(payload)
+        }
     })
 }
 
@@ -72,8 +104,8 @@ pub unsafe extern "C" fn vl_audio_request_v1(
         };
         if json.is_null()
             || length == 0
-            || length > 1024 * 1024
-            || count as usize > MAX_CHANNELS * MAX_FRAMES
+            || length as usize > MAX_REQUEST_BYTES
+            || count as usize > MAX_PCM_SAMPLES
         {
             return Err(Error::InvalidArgument);
         }
@@ -86,27 +118,8 @@ pub unsafe extern "C" fn vl_audio_request_v1(
             }
             unsafe { std::slice::from_raw_parts(pcm, count as usize) }
         };
-        let store = handles()?
-            .stores
-            .get(&handle)
-            .cloned()
-            .ok_or(Error::UnknownHandle)?;
-        let response = match store.execute_json(json, pcm)? {
-            Response::Empty => return Ok(0),
-            Response::Json(bytes) => bytes,
-            Response::Playback {
-                channels,
-                next_ns,
-                samples,
-            } => {
-                let mut payload = Vec::with_capacity(12 + samples.len() * 4);
-                payload.extend(channels.to_le_bytes());
-                payload.extend(next_ns.to_le_bytes());
-                for sample in samples {
-                    payload.extend(sample.to_le_bytes());
-                }
-                payload
-            }
+        let Some(response) = request(handle, json, pcm)? else {
+            return Ok(0);
         };
         let length = u32::try_from(response.len()).map_err(|_| Error::Internal)?;
         let data = Box::into_raw(response.into_boxed_slice()) as *mut u8;

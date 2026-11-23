@@ -209,10 +209,30 @@ jobs:
           ./gradlew --no-daemon --stacktrace :app:lintDebug :app:testDebugUnitTest :app:assembleDebug 2>&1 | tee artifacts/android-gradle.log
       - name: Check the APK manifest
         run: |
-          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging app/build/outputs/apk/debug/app-debug.apk > artifacts/android-apk.txt
+          apk=app/build/outputs/apk/debug/app-debug.apk
+          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" > artifacts/android-apk.txt
           grep -E "^package: name='com\.voiceledger\.app'" artifacts/android-apk.txt
           grep -E "^launchable-activity: name='com\.voiceledger\.app\.MainActivity'" artifacts/android-apk.txt
-          unzip -Z1 app/build/outputs/apk/debug/app-debug.apk | grep -Fx 'lib/arm64-v8a/libvoiceledger_ffi.so'
+          apkanalyzer manifest print "$apk" > artifacts/android-manifest.xml
+          python3 - <<'PY'
+          from xml.etree import ElementTree
+
+          manifest = ElementTree.parse("artifacts/android-manifest.xml")
+          ns = "{http://schemas.android.com/apk/res/android}"
+          permissions = {entry.get(ns + "name") for entry in manifest.findall("uses-permission")}
+          required = {"RECORD_AUDIO", "FOREGROUND_SERVICE", "FOREGROUND_SERVICE_MICROPHONE", "POST_NOTIFICATIONS"}
+          assert {"android.permission." + name for name in required} <= permissions, permissions
+          assert "android.permission.RECEIVE_BOOT_COMPLETED" not in permissions
+          service, = (
+              item for item in manifest.findall("application/service")
+              if item.get(ns + "name", "").endswith(".recording.RecordingService")
+          )
+          service_type = service.get(ns + "foregroundServiceType", "")
+          assert service_type == "microphone" or int(service_type, 0) == 0x80, service.attrib
+          assert service.get(ns + "exported") == "false", service.attrib
+          assert service.get(ns + "directBootAware") != "true", service.attrib
+          PY
+          unzip -Z1 "$apk" | grep -Fx 'lib/arm64-v8a/libvoiceledger_ffi.so'
           stat -c '%s' app/src/main/jniLibs/arm64-v8a/libvoiceledger_ffi.so > artifacts/android-native-bytes.log
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         if: always()

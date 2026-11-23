@@ -67,6 +67,22 @@ internal object NativeCore {
 
     fun validateDomain(data: ByteArray): Int = requireSuccess(nativeValidateDomain(data))
 
+    fun openAudio(path: ByteArray): Long {
+        val result = nativeAudioOpenV1(path)
+        if (result < 0L) throw CoreException(result.toInt())
+        return result
+    }
+
+    fun requestAudio(handle: Long, command: ByteArray, pcm: FloatArray?, count: Int): ByteArray? {
+        val output = arrayOfNulls<ByteArray>(1)
+        requireSuccess(nativeAudioRequestV1(handle, command, pcm, count, output))
+        return output[0]
+    }
+
+    fun releaseAudio(handle: Long) {
+        requireSuccess(nativeAudioReleaseV1(handle))
+    }
+
     fun recommend(compatibility: Compatibility, budgetBytes: Long?, peakBytes: Long?): Recommendation {
         val result = requireSuccess(nativeRecommend(compatibility.code, budgetBytes ?: -1L, peakBytes ?: -1L))
         return Recommendation.entries.single { it.code == result }
@@ -83,5 +99,14 @@ internal object NativeCore {
     private external fun nativeTransition(handle: Long, command: Int, atNs: Long): Int
     private external fun nativeCancel(handle: Long): Int
     private external fun nativeRelease(handle: Long): Int
+    private external fun nativeAudioOpenV1(path: ByteArray): Long
+    private external fun nativeAudioRequestV1(
+        handle: Long,
+        command: ByteArray,
+        pcm: FloatArray?,
+        count: Int,
+        output: Array<ByteArray?>,
+    ): Int
+    private external fun nativeAudioReleaseV1(handle: Long): Int
     private external fun nativeRecommend(compatibility: Int, budgetBytes: Long, peakBytes: Long): Int
 }

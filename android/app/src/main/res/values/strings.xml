@@ -1,3 +1,27 @@
 <resources>
     <string name="app_name">VoiceLedger</string>
+    <string name="recording_channel">Microphone recording</string>
+    <string name="recording_notification">VoiceLedger is recording</string>
+    <string name="start_recording">Start recording</string>
+    <string name="stop_recording">Stop recording</string>
+    <string name="recovering_recordings">Recovering recordings…</string>
+    <string name="preparing_recording">Preparing microphone and storage…</string>
+    <string name="recording_in_progress">Recording microphone</string>
+    <string name="saving_recording">Saving recording…</string>
+    <string name="saved_audio">Saved segments: %1$d · Last saved position: %2$s</string>
+    <string name="no_saved_audio">No audio saved.</string>
+    <string name="saved_gaps">Capture gaps: %1$d</string>
+    <string name="unknown_tail">A recording ended unexpectedly. The final unsaved duration may be unknown.</string>
+    <string name="recovery_report">Interrupted sessions: %1$d · Recovered segments: %2$d · Known data loss: %3$d ms · Recovery time: %4$d ms</string>
+    <string name="thermal_pressure">Device temperature is high.</string>
+    <string name="memory_pressure">Device memory is low.</string>
+    <string name="service_interrupted">Android could not keep the recording service running.</string>
+    <string name="microphone_permission_required">Allow microphone access to record.</string>
+    <string name="recording_notifications_required">Enable recording notifications in Android settings to use the notification Stop action.</string>
+    <string name="microphone_route_changed">The microphone route changed. Start a new recording to use the current microphone.</string>
+    <string name="microphone_contended">The microphone is unavailable during another app’s capture or call.</string>
+    <string name="microphone_unavailable">The microphone stopped providing audio.</string>
+    <string name="recording_backpressure">Audio could not be saved fast enough. Recording stopped.</string>
+    <string name="recording_low_storage">Free up storage before recording. VoiceLedger keeps a 64 MiB reserve.</string>
+    <string name="recording_storage_error">The recording library could not be read or written.</string>
 </resources>
