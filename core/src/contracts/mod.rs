@@ -64,6 +64,18 @@ fn require(condition: bool, failure: ContractError) -> Result<(), ContractError>
     condition.then_some(()).ok_or(failure)
 }
 
+impl DeviceCapabilityProfile {
+    pub fn validate(&self) -> Result<(), ContractError> {
+        require(
+            !self.os_version.is_empty()
+                && !self.abi.is_empty()
+                && self.battery_percent.is_none_or(|percent| percent <= 100)
+                && self.total_memory_bytes.is_none_or(|total| total.get() > 0),
+            ContractError::InvalidMetadata,
+        )
+    }
+}
+
 impl DomainBatch {
     pub fn decode(data: &[u8]) -> Result<Self, ContractError> {
         #[derive(Deserialize)]
@@ -439,15 +451,7 @@ impl DomainBatch {
 
     fn validate_devices(&self, indexes: &Indexes<'_>) -> Result<(), ContractError> {
         for profile in &self.device_capability_profiles {
-            require(
-                !profile.os_version.is_empty()
-                    && !profile.abi.is_empty()
-                    && profile.battery_percent.is_none_or(|percent| percent <= 100)
-                    && profile
-                        .total_memory_bytes
-                        .is_none_or(|total| total.get() > 0),
-                ContractError::InvalidMetadata,
-            )?;
+            profile.validate()?;
         }
         for result in &self.benchmark_results {
             require(

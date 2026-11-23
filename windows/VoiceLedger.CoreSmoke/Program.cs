@@ -56,6 +56,7 @@ string fixtureHash = Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(
 Console.WriteLine($"P/Invoke ABI {NativeCore.AbiVersion} passed {cases} fixture cases and {cycles} ownership cycles.");
 Console.WriteLine($"Fixture SHA-256 {fixtureHash}");
 ValidateDomainFixtures(args[1]);
+DeviceProfileSmoke.Run();
 await RecordingSmoke.RunAsync();
 
 static void ValidateDomainFixtures(string directory)
