@@ -2,7 +2,7 @@
     <string name="models">Models</string>
     <string name="models_loading">Loading models…</string>
     <string name="models_unavailable">Model catalog unavailable.</string>
-    <string name="recording_only">Recording only</string>
+    <string name="recording_only_during_capture">Recording only during capture</string>
     <string name="model_title">%1$s · %2$s</string>
     <string name="model_runtime">%1$s %2$s · %3$s</string>
     <string name="model_download">Languages %1$s · Download %2$.1f MiB</string>
@@ -18,4 +18,26 @@
     <string name="model_memory_unknown">Peak RAM or memory budget unknown</string>
     <string name="model_runtime_unknown">Local runtime unavailable</string>
     <string name="model_compatibility_unknown">Compatibility unconfirmed</string>
+    <string name="download_model">Download and verify</string>
+    <string name="transcribe_saved">Transcribe latest saved session</string>
+    <string name="cancel_speech">Cancel</string>
+    <string name="speech_working">Processing local speech task…</string>
+    <string name="speech_complete">Local speech task complete.</string>
+    <string name="speech_cancelled">Speech task cancelled.</string>
+    <string name="speech_no_audio">No committed audio is available in this session.</string>
+    <string name="speech_not_installed">Download the model first.</string>
+    <string name="speech_blocked">Speech task paused by recording or device limits.</string>
+    <string name="speech_transfer">Download interrupted. Retry to resume.</string>
+    <string name="speech_integrity">Model checksum failed.</string>
+    <string name="speech_failed">Local speech task stopped.</string>
+    <string name="speech_battery_pressure">Battery pressure</string>
+    <string name="latest_saved_session">Latest saved session · %1$s</string>
+    <string name="transcription_language">Language · %1$s</string>
+    <string name="model_auto">Auto</string>
+    <string name="model_chinese">Chinese</string>
+    <string name="model_english">English</string>
+    <string name="model_japanese">Japanese</string>
+    <string name="model_mic">Microphone</string>
+    <string name="model_loopback">System loopback</string>
+    <string name="model_line">%1$s · %2$.1fs</string>
 </resources>

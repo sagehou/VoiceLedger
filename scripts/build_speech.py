@@ -25,9 +25,10 @@ def fetch(directory, name, url, digest):
     return path
 
 
-def unpack(path, directory):
+def unpack(path, directory, *, source=False):
     with tarfile.open(path) as archive:
-        archive.extractall(directory, filter="data")
+        members = archive if not source else (entry for entry in archive if entry.isfile() or entry.isdir())
+        archive.extractall(directory, members=members, filter="data")
 
 
 def run(*args, env=None):
@@ -38,7 +39,7 @@ def android_sherpa(work, cmake_options):
     archive = fetch(work, "sherpa-source.tar.gz",
         f"https://codeload.github.com/k2-fsa/sherpa-onnx/tar.gz/{SHERPA}",
         "96b1a69ab0a85a8b42437a6c7f169b55dcf480997d761d5c6d79abbc2842e69b")
-    unpack(archive, work)
+    unpack(archive, work, source=True)
     source = work / f"sherpa-onnx-{SHERPA}"
     aar = fetch(work, "onnxruntime.aar",
         "https://repo.maven.apache.org/maven2/com/microsoft/onnxruntime/onnxruntime-android/1.23.2/onnxruntime-android-1.23.2.aar",

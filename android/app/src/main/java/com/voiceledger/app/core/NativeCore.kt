@@ -93,6 +93,20 @@ internal object NativeCore {
         return output.copyOf(length)
     }
 
+    fun speechRequest(request: String): ByteArray {
+        val output = arrayOfNulls<ByteArray>(1)
+        requireSuccess(nativeSpeechRequestV1(request.encodeToByteArray(), output))
+        return requireNotNull(output[0])
+    }
+
+    fun speechPartial(): ByteArray {
+        val output = arrayOfNulls<ByteArray>(1)
+        requireSuccess(nativeSpeechPartialV1(output))
+        return requireNotNull(output[0])
+    }
+
+    fun cancelSpeech() = nativeSpeechCancelV1()
+
     fun recommend(compatibility: Compatibility, budgetBytes: Long?, peakBytes: Long?): Recommendation {
         val result = requireSuccess(nativeRecommend(compatibility.code, budgetBytes ?: -1L, peakBytes ?: -1L))
         return Recommendation.entries.single { it.code == result }
@@ -107,6 +121,9 @@ internal object NativeCore {
     private external fun nativeValidateDomain(data: ByteArray): Int
     private external fun nativeSaveDeviceProfileV1(directory: ByteArray, measurement: ByteArray): Int
     private external fun nativeModelPreviewV1(directory: ByteArray, output: ByteArray): Int
+    private external fun nativeSpeechRequestV1(request: ByteArray, output: Array<ByteArray?>): Int
+    private external fun nativeSpeechPartialV1(output: Array<ByteArray?>): Int
+    private external fun nativeSpeechCancelV1()
     private external fun nativeCreate(): Long
     private external fun nativeTransition(handle: Long, command: Int, atNs: Long): Int
     private external fun nativeCancel(handle: Long): Int

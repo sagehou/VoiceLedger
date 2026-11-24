@@ -182,6 +182,31 @@ jobs:
               throw "Publish output is missing speech/$file"
             }
           }
+      - name: Check the separate Windows speech worker without model weights
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'voiceledger-speech-worker'
+          $request = @{
+            recordings = $root
+            profiles = $root
+            adapters = (Resolve-Path 'artifacts/windows/speech').Path
+            action = @{ op = 'install'; model_id = 'whisper-tiny-multilingual-q5-1'; approved = $false }
+          } | ConvertTo-Json -Compress
+          $info = [System.Diagnostics.ProcessStartInfo]::new((Resolve-Path 'artifacts/windows/VoiceLedger.exe').Path)
+          $info.UseShellExecute = $false
+          $info.CreateNoWindow = $true
+          $info.RedirectStandardOutput = $true
+          $info.RedirectStandardError = $true
+          $info.ArgumentList.Add('--speech-worker')
+          $info.ArgumentList.Add($request)
+          $process = [System.Diagnostics.Process]::Start($info)
+          if (-not $process.WaitForExit(15000)) {
+            $process.Kill($true)
+            throw 'Speech worker did not terminate'
+          }
+          if ($process.ExitCode -ne -34 -or (Test-Path (Join-Path $root 'models'))) {
+            throw "Speech worker failed the approval check (exit $($process.ExitCode))"
+          }
+          'Windows speech worker rejected unapproved work.' | Set-Content artifacts/windows-speech-worker.log
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         if: always()
         with:

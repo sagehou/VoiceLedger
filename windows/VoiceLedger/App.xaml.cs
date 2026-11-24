@@ -11,6 +11,12 @@ public partial class App : Application
 {
     protected override void OnStartup(StartupEventArgs e)
     {
+        if (e.Args is ["--speech-worker", var request])
+        {
+            StartupUri = null!;
+            Shutdown(SpeechWorker.Run(request));
+            return;
+        }
         base.OnStartup(e);
         _ = Task.Run(() =>
         {
