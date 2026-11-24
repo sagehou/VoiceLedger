@@ -1,0 +1,21 @@
+<resources>
+    <string name="models">Models</string>
+    <string name="models_loading">Loading models…</string>
+    <string name="models_unavailable">Model catalog unavailable.</string>
+    <string name="recording_only">Recording only</string>
+    <string name="model_title">%1$s · %2$s</string>
+    <string name="model_runtime">%1$s %2$s · %3$s</string>
+    <string name="model_download">Languages %1$s · Download %2$.1f MiB</string>
+    <string name="model_estimate">Estimated peak RAM %1$.1f MiB</string>
+    <string name="model_estimate_unknown">Peak RAM estimate unavailable</string>
+    <string name="model_status">Benchmark pending · %1$s</string>
+    <string name="model_compatible">Compatible candidate</string>
+    <string name="model_device_unknown">Device capabilities unavailable</string>
+    <string name="model_incompatible">Incompatible device</string>
+    <string name="model_storage_low">Insufficient storage</string>
+    <string name="model_storage_unknown">Available storage unknown</string>
+    <string name="model_memory_low">Insufficient available RAM</string>
+    <string name="model_memory_unknown">Peak RAM or memory budget unknown</string>
+    <string name="model_runtime_unknown">Local runtime unavailable</string>
+    <string name="model_compatibility_unknown">Compatibility unconfirmed</string>
+</resources>

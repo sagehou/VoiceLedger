@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 pub mod contracts;
+pub mod device_profile;
+pub mod models;
 pub mod track;
 
 pub fn version() -> &'static str {

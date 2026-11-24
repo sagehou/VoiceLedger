@@ -48,6 +48,7 @@ public partial class MainWindow : Window
     private void OpenRecordingFolder(object sender, RoutedEventArgs e) => viewModel.OpenFolder();
     private async void PlaySavedAudio(object sender, RoutedEventArgs e) => await viewModel.PlayAsync();
     private void StopPlayback(object sender, RoutedEventArgs e) => viewModel.StopPlayback();
+    private void OpenModels(object sender, RoutedEventArgs e) => new ModelsWindow { Owner = this }.ShowDialog();
 
     private async void ReconnectEndpoint(object sender, RoutedEventArgs e)
     {

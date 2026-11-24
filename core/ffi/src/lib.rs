@@ -9,8 +9,10 @@ use voiceledger_core::{
 };
 
 mod audio;
+mod device_profile;
 #[cfg(any(target_os = "android", target_os = "linux"))]
 mod jni;
+mod model_preview;
 mod track;
 
 const MAX_DOMAIN_BATCH_BYTES: usize = 16 * 1024 * 1024;
@@ -23,6 +25,7 @@ enum Error {
     InvalidTransition = -3,
     Cancelled = -4,
     Internal = -5,
+    DeviceProfileStorage = -6,
     AudioStore = -20,
     AudioLocked = -21,
     AudioUnavailable = -22,

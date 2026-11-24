@@ -454,7 +454,7 @@ pub struct AiJob {
     pub error_code: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Platform {
     Windows,

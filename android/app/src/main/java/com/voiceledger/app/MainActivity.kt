@@ -1,6 +1,7 @@
 package com.voiceledger.app
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -59,7 +60,11 @@ class MainActivity : ComponentActivity() {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     Box(Modifier.safeDrawingPadding().padding(24.dp), contentAlignment = Alignment.Center) {
-                        RecordingScreen(status, ::requestStart) { RecordingService.stop(this@MainActivity) }
+                        RecordingScreen(
+                            status, ::requestStart,
+                            { RecordingService.stop(this@MainActivity) },
+                            { startActivity(Intent(this@MainActivity, ModelsActivity::class.java)) },
+                        )
                     }
                 }
             }
@@ -110,7 +115,7 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun RecordingScreen(status: RecordingStatus, start: () -> Unit, stop: () -> Unit) {
+private fun RecordingScreen(status: RecordingStatus, start: () -> Unit, stop: () -> Unit, openModels: () -> Unit) {
     val recording = status.phase == RecordingPhase.Preparing || status.phase == RecordingPhase.Recording
     Column(
         modifier = Modifier.verticalScroll(rememberScrollState()),
@@ -155,6 +160,7 @@ private fun RecordingScreen(status: RecordingStatus, start: () -> Unit, stop: ()
         ) {
             Text(stringResource(if (recording) R.string.stop_recording else R.string.start_recording))
         }
+        Button(onClick = openModels) { Text(stringResource(R.string.models)) }
     }
 }
 

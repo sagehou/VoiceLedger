@@ -1,0 +1,231 @@
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Read, Write};
+use std::path::{Path, PathBuf};
+
+use sha2::{Digest, Sha256};
+
+use crate::contracts::DeviceCapabilityProfile;
+
+use super::policy::{check_pressure, estimate, preflight};
+use super::{Activity, Artifact, Block, Model, RuntimeIdentity};
+
+pub struct Download {
+    pub start: u64,
+    pub body: Box<dyn Read>,
+}
+
+pub trait RuntimeProbe {
+    fn identity(&self) -> RuntimeIdentity<'_>;
+
+    fn load_and_release(
+        &self,
+        model: &Model,
+        directory: &Path,
+        cancelled: &dyn Fn() -> bool,
+    ) -> bool;
+}
+
+pub struct InstallRequest<'a> {
+    pub root: &'a Path,
+    pub device: &'a DeviceCapabilityProfile,
+    pub activity: Activity,
+}
+
+#[derive(Debug)]
+pub enum InstallError {
+    Blocked(Block),
+    Cancelled,
+    Busy,
+    Storage(io::Error),
+    Transfer,
+    InvalidArtifact,
+    RuntimeLoad,
+}
+
+impl From<io::Error> for InstallError {
+    fn from(error: io::Error) -> Self {
+        Self::Storage(error)
+    }
+}
+
+#[derive(Debug)]
+pub struct InstalledModel<'a> {
+    model: &'a Model,
+    directory: PathBuf,
+}
+
+impl<'a> InstalledModel<'a> {
+    pub fn model(&self) -> &'a Model {
+        self.model
+    }
+
+    pub fn directory(&self) -> &Path {
+        &self.directory
+    }
+}
+
+pub fn install<'a>(
+    model: &'a Model,
+    request: InstallRequest<'_>,
+    runtime: &impl RuntimeProbe,
+    mut fetch: impl FnMut(&Artifact, u64) -> io::Result<Download>,
+    cancelled: impl Fn() -> bool,
+) -> Result<InstalledModel<'a>, InstallError> {
+    request.activity.check().map_err(InstallError::Blocked)?;
+    check_pressure(request.device).map_err(InstallError::Blocked)?;
+    let identities = [runtime.identity()];
+    preflight(model, request.device, &identities, 0, estimate(model))
+        .map_err(InstallError::Blocked)?;
+    check_cancel(&cancelled)?;
+
+    fs::create_dir_all(request.root)?;
+    let stem = format!("{}-{}", model.id, model.version);
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(request.root.join(format!("{stem}.lock")))?;
+    lock.try_lock().map_err(|_| InstallError::Busy)?;
+    check_cancel(&cancelled)?;
+    let destination = request.root.join(&stem);
+    let staging = request.root.join(format!("{stem}.partial"));
+    let published = destination.try_exists()?;
+    let source = if published { &destination } else { &staging };
+
+    if !published {
+        let remaining = model.artifacts.iter().try_fold(0, |total, artifact| {
+            let written = partial_bytes(&source.join(&artifact.file), artifact)?;
+            Ok::<_, io::Error>(total + artifact.size_bytes - written)
+        })?;
+        preflight(
+            model,
+            request.device,
+            &identities,
+            remaining,
+            estimate(model),
+        )
+        .map_err(InstallError::Blocked)?;
+        fs::create_dir_all(source)?;
+    }
+
+    for artifact in &model.artifacts {
+        check_cancel(&cancelled)?;
+        let path = source.join(&artifact.file);
+        if !published {
+            transfer(&path, artifact, &mut fetch, &cancelled)?;
+        }
+        if !verify(&path, artifact, &cancelled)? {
+            if !published && path.try_exists()? {
+                fs::remove_file(path)?;
+            }
+            return Err(InstallError::InvalidArtifact);
+        }
+    }
+    check_cancel(&cancelled)?;
+    if !runtime.load_and_release(model, source, &cancelled) {
+        check_cancel(&cancelled)?;
+        return Err(InstallError::RuntimeLoad);
+    }
+    check_cancel(&cancelled)?;
+    if !published {
+        fs::rename(staging, &destination)?;
+    }
+    Ok(InstalledModel {
+        model,
+        directory: destination,
+    })
+}
+
+fn partial_bytes(path: &Path, artifact: &Artifact) -> io::Result<u64> {
+    match fs::metadata(path) {
+        Ok(meta) if meta.is_file() && meta.len() <= artifact.size_bytes => Ok(meta.len()),
+        Ok(_) => Ok(0),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(0),
+        Err(error) => Err(error),
+    }
+}
+
+fn transfer(
+    path: &Path,
+    artifact: &Artifact,
+    fetch: &mut impl FnMut(&Artifact, u64) -> io::Result<Download>,
+    cancelled: &impl Fn() -> bool,
+) -> Result<(), InstallError> {
+    let offset = partial_bytes(path, artifact)?;
+    if offset == artifact.size_bytes {
+        return Ok(());
+    }
+    let mut response = fetch(artifact, offset).map_err(|_| InstallError::Transfer)?;
+    if response.start != offset && response.start != 0 {
+        return Err(InstallError::Transfer);
+    }
+    let mut file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .append(response.start != 0)
+        .truncate(response.start == 0)
+        .open(path)?;
+    let mut total = response.start;
+    let mut buffer = [0; 64 * 1024];
+    loop {
+        check_cancel(cancelled)?;
+        let count = response
+            .body
+            .read(&mut buffer)
+            .map_err(|_| InstallError::Transfer)?;
+        if count == 0 {
+            break;
+        }
+        total += count as u64;
+        if total > artifact.size_bytes {
+            drop(file);
+            fs::remove_file(path)?;
+            return Err(InstallError::InvalidArtifact);
+        }
+        file.write_all(&buffer[..count])?;
+    }
+    file.sync_all()?;
+    if total == artifact.size_bytes {
+        Ok(())
+    } else {
+        Err(InstallError::Transfer)
+    }
+}
+
+fn verify(
+    path: &Path,
+    artifact: &Artifact,
+    cancelled: &impl Fn() -> bool,
+) -> Result<bool, InstallError> {
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() != artifact.size_bytes {
+        return Ok(false);
+    }
+    let mut reader = file.take(artifact.size_bytes + 1);
+    let mut hash = Sha256::new();
+    let mut buffer = [0; 64 * 1024];
+    loop {
+        check_cancel(cancelled)?;
+        let count = reader.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        hash.update(&buffer[..count]);
+    }
+    Ok(reader.limit() == 1
+        && format!("{:x}", hash.finalize()) == String::from(artifact.sha256.clone()))
+}
+
+fn check_cancel(cancelled: &dyn Fn() -> bool) -> Result<(), InstallError> {
+    if cancelled() {
+        Err(InstallError::Cancelled)
+    } else {
+        Ok(())
+    }
+}

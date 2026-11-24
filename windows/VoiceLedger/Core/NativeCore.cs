@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.InteropServices;
+using System.Text;
 
 namespace VoiceLedger.Core;
 
@@ -67,6 +68,20 @@ internal static class NativeCore
 
     internal static int ValidateDomain(byte[] data) => (int)RequireSuccess(ValidateDomainNative(data, (uint)data.Length));
 
+    internal static void SaveDeviceProfile(string directory, byte[] measurement)
+    {
+        byte[] path = Encoding.UTF8.GetBytes(directory);
+        RequireSuccess(SaveDeviceProfileNative(path, (uint)path.Length, measurement, (uint)measurement.Length));
+    }
+
+    internal static ReadOnlyMemory<byte> ModelPreview(string directory)
+    {
+        byte[] path = Encoding.UTF8.GetBytes(directory);
+        byte[] output = new byte[16 * 1024];
+        int length = (int)RequireSuccess(ModelPreviewNative(path, (uint)path.Length, output, (uint)output.Length));
+        return output.AsMemory(0, length);
+    }
+
     internal static Recommendation Recommend(Compatibility compatibility, long? budgetBytes, long? peakBytes) =>
         (Recommendation)RequireSuccess(RecommendNative((int)compatibility, budgetBytes ?? -1, peakBytes ?? -1));
 
@@ -84,6 +99,13 @@ internal static class NativeCore
 
     [DllImport(Library, EntryPoint = "vl_domain_validate_v1", ExactSpelling = true, CallingConvention = CallingConvention.Cdecl)]
     private static extern int ValidateDomainNative([In] byte[] data, uint length);
+
+    [DllImport(Library, EntryPoint = "vl_device_profile_save_v1", ExactSpelling = true, CallingConvention = CallingConvention.Cdecl)]
+    private static extern int SaveDeviceProfileNative([In] byte[] path, uint pathLength,
+        [In] byte[] measurement, uint measurementLength);
+
+    [DllImport(Library, EntryPoint = "vl_model_preview_v1", ExactSpelling = true, CallingConvention = CallingConvention.Cdecl)]
+    private static extern int ModelPreviewNative([In] byte[] path, uint pathLength, [Out] byte[] output, uint capacity);
 
     [DllImport(Library, EntryPoint = "vl_session_create_v1", ExactSpelling = true, CallingConvention = CallingConvention.Cdecl)]
     internal static extern long Create();
