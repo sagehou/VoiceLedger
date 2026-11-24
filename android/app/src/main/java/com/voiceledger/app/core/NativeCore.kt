@@ -107,6 +107,10 @@ internal object NativeCore {
 
     fun cancelSpeech() = nativeSpeechCancelV1()
 
+    fun updateSpeechResources(data: ByteArray) {
+        requireSuccess(nativeSpeechResourcesV1(data))
+    }
+
     fun recommend(compatibility: Compatibility, budgetBytes: Long?, peakBytes: Long?): Recommendation {
         val result = requireSuccess(nativeRecommend(compatibility.code, budgetBytes ?: -1L, peakBytes ?: -1L))
         return Recommendation.entries.single { it.code == result }
@@ -124,6 +128,7 @@ internal object NativeCore {
     private external fun nativeSpeechRequestV1(request: ByteArray, output: Array<ByteArray?>): Int
     private external fun nativeSpeechPartialV1(output: Array<ByteArray?>): Int
     private external fun nativeSpeechCancelV1()
+    private external fun nativeSpeechResourcesV1(data: ByteArray): Int
     private external fun nativeCreate(): Long
     private external fun nativeTransition(handle: Long, command: Int, atNs: Long): Int
     private external fun nativeCancel(handle: Long): Int

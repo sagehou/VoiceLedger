@@ -40,6 +40,7 @@ enum Error {
     SpeechTransfer = -35,
     SpeechIntegrity = -36,
     SpeechBusy = -37,
+    SpeechDeferred = -38,
 }
 
 #[derive(Default)]

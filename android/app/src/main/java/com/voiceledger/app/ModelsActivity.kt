@@ -90,7 +90,8 @@ class ModelsActivity : ComponentActivity() {
                     ) {
                         Text(stringResource(R.string.models), style = MaterialTheme.typography.headlineLarge)
                         Text(stringResource(R.string.recording_only_during_capture))
-                        result?.let { Text(stringResource(resultText(it))) }
+                        val status = result?.let(::resultText) ?: inspection?.optJSONObject("job")?.let(::jobStatus)
+                        status?.let { Text(stringResource(it)) }
                         if (working) {
                             Text(stringResource(R.string.speech_working))
                             partial?.let { Text(it) }
@@ -248,7 +249,14 @@ private fun resultText(code: Int): Int = when (code) {
     -35 -> R.string.speech_transfer
     -36 -> R.string.speech_integrity
     -37 -> R.string.speech_busy
+    -38 -> R.string.speech_deferred
     else -> R.string.speech_failed
+}
+
+private fun jobStatus(job: JSONObject): Int? = when (job.optString("state")) {
+    "deferred" -> if (job.optString("reason") == "worker_interrupted") R.string.speech_interrupted else R.string.speech_deferred
+    "failed" -> R.string.speech_retry
+    else -> null
 }
 
 private fun reason(key: String): Int = when (key) {

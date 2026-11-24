@@ -10,8 +10,10 @@ import android.os.Messenger
 import android.os.Process
 import android.os.RemoteException
 import com.voiceledger.app.core.CoreException
+import com.voiceledger.app.core.DeviceProfiler
 import com.voiceledger.app.core.NativeCore
 import kotlin.concurrent.thread
+import kotlin.concurrent.timer
 
 internal const val RUN = 1
 internal const val RESULT = 2
@@ -54,8 +56,12 @@ class SpeechWorkerService : Service() {
         }
         working = true
         thread(name = "VoiceLedger speech") {
+            val sampling = timer(name = "VoiceLedger speech resources", daemon = true, initialDelay = 1000L, period = 1000L) {
+                runCatching { NativeCore.updateSpeechResources(DeviceProfiler.speechResources(applicationContext)) }
+            }
             val outcome = try {
                 Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
+                NativeCore.updateSpeechResources(DeviceProfiler.speechResources(applicationContext))
                 NativeCore.speechRequest(request)
                 0
             } catch (failure: CoreException) {
@@ -64,6 +70,8 @@ class SpeechWorkerService : Service() {
                 -31
             } catch (_: LinkageError) {
                 -31
+            } finally {
+                sampling.cancel()
             }
             main.post {
                 working = false

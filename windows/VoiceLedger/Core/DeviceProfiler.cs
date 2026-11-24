@@ -15,10 +15,7 @@ internal static class DeviceProfiler
         try
         {
             Directory.CreateDirectory(directory);
-            var memory = new MemoryStatus { Length = (uint)Marshal.SizeOf<MemoryStatus>() };
-            bool memoryKnown = GlobalMemoryStatusEx(ref memory) && memory.TotalPhysical != 0;
-            bool powerKnown = GetSystemPowerStatus(out PowerStatus power);
-            bool hasBattery = powerKnown && (power.BatteryFlag & 128) == 0;
+            var resources = ReadResources(directory);
             using var process = Process.GetCurrentProcess();
             long privateBytes = process.PrivateMemorySize64;
             var measurement = new
@@ -29,14 +26,13 @@ internal static class DeviceProfiler
                 platform = "windows",
                 os_version = Environment.OSVersion.Version.ToString(),
                 logical_cpu_count = Environment.ProcessorCount,
-                total_memory_bytes = memoryKnown ? ToCount(memory.TotalPhysical) : null,
-                available_memory_bytes = memoryKnown ? ToCount(memory.AvailablePhysical) : null,
+                total_memory_bytes = resources.TotalMemory,
+                available_memory_bytes = resources.AvailableMemory,
                 process_memory_bytes = privateBytes > 0 ? (long?)privateBytes : null,
-                low_memory = LowMemory(),
-                storage_available_bytes = GetDiskFreeSpaceEx(directory, out ulong available, out _, out _)
-                    ? ToCount(available) : null,
-                power_saver = powerKnown && power.Saver <= 1 ? (bool?)(power.Saver == 1) : null,
-                battery_percent = hasBattery && power.BatteryPercent <= 100 ? (byte?)power.BatteryPercent : null,
+                low_memory = resources.LowMemory,
+                storage_available_bytes = resources.Storage,
+                power_saver = resources.PowerSaver,
+                battery_percent = resources.BatteryPercent,
             };
             NativeCore.SaveDeviceProfile(directory, JsonSerializer.SerializeToUtf8Bytes(measurement));
             return true;
@@ -47,6 +43,37 @@ internal static class DeviceProfiler
             return false;
         }
     }
+
+    internal static byte[] SpeechResources(string directory)
+    {
+        var resources = ReadResources(directory);
+        return JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            available_memory_bytes = resources.AvailableMemory,
+            low_memory = resources.LowMemory,
+            storage_available_bytes = resources.Storage,
+            power_saver = resources.PowerSaver,
+            battery_percent = resources.BatteryPercent,
+        });
+    }
+
+    private static Resources ReadResources(string directory)
+    {
+        var memory = new MemoryStatus { Length = (uint)Marshal.SizeOf<MemoryStatus>() };
+        bool memoryKnown = GlobalMemoryStatusEx(ref memory) && memory.TotalPhysical != 0;
+        bool powerKnown = GetSystemPowerStatus(out PowerStatus power);
+        bool hasBattery = powerKnown && (power.BatteryFlag & 128) == 0;
+        return new Resources(
+            memoryKnown ? ToCount(memory.TotalPhysical) : null,
+            memoryKnown ? ToCount(memory.AvailablePhysical) : null,
+            LowMemory(),
+            GetDiskFreeSpaceEx(directory, out ulong available, out _, out _) ? ToCount(available) : null,
+            powerKnown && power.Saver <= 1 ? power.Saver == 1 : null,
+            hasBattery && power.BatteryPercent <= 100 ? power.BatteryPercent : null);
+    }
+
+    private readonly record struct Resources(long? TotalMemory, long? AvailableMemory, bool? LowMemory,
+        long? Storage, bool? PowerSaver, byte? BatteryPercent);
 
     private static long? ToCount(ulong value) => value <= long.MaxValue ? (long)value : null;
 

@@ -10,6 +10,7 @@ use voiceledger_core::contracts::{
 };
 use voiceledger_core::models::Model;
 
+use crate::jobs::{self, Queue};
 use crate::pipeline::{Final, Output, Partial};
 use crate::{Error, Result};
 
@@ -46,18 +47,25 @@ impl Transcripts {
             "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;",
         )?;
         let version: i64 = db.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        if version == 0 {
+        if matches!(version, 0 | 1) {
             let tx = db.unchecked_transaction()?;
-            tx.execute_batch(SCHEMA)?;
-            tx.execute_batch("PRAGMA user_version=1;")?;
+            if version == 0 {
+                tx.execute_batch(SCHEMA)?;
+            }
+            tx.execute_batch(jobs::SCHEMA)?;
+            tx.execute_batch("PRAGMA user_version=2;")?;
             tx.commit()?;
-        } else if version != 1 {
+        } else if version != 2 {
             return Err(Error::Storage);
         }
         Ok(Self { db })
     }
 
-    fn id(&self) -> Result<StableId> {
+    pub fn queue(&self) -> Queue<'_> {
+        Queue(&self.db)
+    }
+
+    pub fn id(&self) -> Result<StableId> {
         let mut bytes: Vec<u8> = self
             .db
             .query_row("SELECT randomblob(16)", [], |row| row.get(0))?;
@@ -79,6 +87,7 @@ impl Transcripts {
         session: &StableId,
         model: &Model,
         language: LanguagePolicy,
+        job: Option<&str>,
         value: Final,
     ) -> Result<bool> {
         let session = String::from(session.clone());
@@ -95,6 +104,9 @@ impl Transcripts {
             language,
         ))?;
         let tx = self.db.unchecked_transaction()?;
+        if let Some(job) = job {
+            Queue(&tx).checkpoint(job, &value.track_id, end)?;
+        }
         tx.execute(
             "INSERT INTO utterances(id,session_id,track_id,start_ns,end_ns) VALUES (?1,?2,?3,?4,?5)
              ON CONFLICT(session_id,track_id,start_ns,end_ns) DO NOTHING",
@@ -164,6 +176,7 @@ pub(crate) struct Writer<'a> {
     pub session: &'a StableId,
     pub model: &'a Model,
     pub language: LanguagePolicy,
+    pub job: Option<&'a str>,
     pub publish_partial: &'a mut dyn FnMut(Option<Partial>),
     pub saved: u64,
 }
@@ -179,11 +192,13 @@ impl Output for Writer<'_> {
     }
 
     fn finish(&mut self, value: Final) -> Result<()> {
-        self.saved +=
-            u64::from(
-                self.transcripts
-                    .save(self.session, self.model, self.language, value)?,
-            );
+        self.saved += u64::from(self.transcripts.save(
+            self.session,
+            self.model,
+            self.language,
+            self.job,
+            value,
+        )?);
         Ok(())
     }
 }
@@ -232,6 +247,23 @@ pub fn selected(root: &Path, session: &StableId) -> Result<Vec<Line>> {
         });
     }
     Ok(lines)
+}
+
+pub(crate) fn job_status(
+    root: &Path,
+    session: &StableId,
+    worker_active: bool,
+) -> Result<Option<jobs::Status>> {
+    if !root.join(PATH).try_exists()? {
+        return Ok(None);
+    }
+    let db = Connection::open_with_flags(root.join(PATH), OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    db.busy_timeout(Duration::from_millis(150))?;
+    let version: i64 = db.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version < 2 {
+        return Ok(None);
+    }
+    Queue(&db).status(session, worker_active)
 }
 
 fn timestamp() -> Result<Count> {

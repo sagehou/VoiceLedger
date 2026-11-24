@@ -42,10 +42,13 @@ internal static class SpeechWorker
                 ".", pipeName, PipeDirection.Out, PipeOptions.CurrentUserOnly);
             pipe?.Connect(2000);
             using var writer = pipe is null ? null : new StreamWriter(pipe, new UTF8Encoding(false)) { AutoFlush = true };
+            if (pipe is not null)
+                NativeCore.UpdateSpeechResources(DeviceProfiler.SpeechResources(ProfileDirectory));
             using var progress = writer is null ? null : new Timer(_ =>
             {
                 try
                 {
+                    NativeCore.UpdateSpeechResources(DeviceProfiler.SpeechResources(ProfileDirectory));
                     writer.WriteLine(Encoding.UTF8.GetString(NativeCore.SpeechPartial()));
                 }
                 catch (Exception error) when (error is IOException or InvalidOperationException

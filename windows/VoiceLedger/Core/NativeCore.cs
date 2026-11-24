@@ -95,6 +95,9 @@ internal static class NativeCore
         return ReadBuffer(result, buffer);
     }
 
+    internal static void UpdateSpeechResources(byte[] data) =>
+        RequireSuccess(SpeechResourcesNative(data, (uint)data.Length));
+
     private static byte[] ReadBuffer(int result, AudioBuffer buffer)
     {
         try
@@ -148,6 +151,9 @@ internal static class NativeCore
 
     [DllImport(Library, EntryPoint = "vl_speech_partial_v1", ExactSpelling = true, CallingConvention = CallingConvention.Cdecl)]
     private static extern int SpeechPartialNative(out AudioBuffer buffer);
+
+    [DllImport(Library, EntryPoint = "vl_speech_resources_v1", ExactSpelling = true, CallingConvention = CallingConvention.Cdecl)]
+    private static extern int SpeechResourcesNative([In] byte[] data, uint length);
 
     [DllImport(Library, EntryPoint = "vl_audio_buffer_release_v1", ExactSpelling = true, CallingConvention = CallingConvention.Cdecl)]
     private static extern void ReleaseBuffer(IntPtr data, uint length);

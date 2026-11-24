@@ -35,7 +35,8 @@ enum vl_error_v1 {
     VL_SPEECH_BLOCKED = -34,
     VL_SPEECH_TRANSFER_ERROR = -35,
     VL_SPEECH_INTEGRITY_ERROR = -36,
-    VL_SPEECH_BUSY = -37
+    VL_SPEECH_BUSY = -37,
+    VL_SPEECH_DEFERRED = -38
 };
 
 enum vl_session_command_v1 {
@@ -124,6 +125,7 @@ int32_t vl_audio_release_v1(vl_audio_handle_v1 handle);
 int32_t vl_speech_request_v1(const uint8_t *request, uint32_t length, vl_audio_buffer_v1 *result);
 int32_t vl_speech_partial_v1(vl_audio_buffer_v1 *result);
 void vl_speech_cancel_v1(void);
+int32_t vl_speech_resources_v1(const uint8_t *sample, uint32_t length);
 
 /* Supply -1 for an unknown memory value. Memory values are measured in bytes. */
 int32_t vl_recommend_v1(int32_t compatibility, int64_t budget_bytes, int64_t peak_bytes);
