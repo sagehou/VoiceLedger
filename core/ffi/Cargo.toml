@@ -10,6 +10,7 @@ crate-type = ["cdylib"]
 [dependencies]
 voiceledger-audio = { path = "../audio" }
 voiceledger-core = { path = ".." }
+voiceledger-speech = { path = "../speech" }
 
 [target.'cfg(any(target_os = "android", target_os = "linux"))'.dependencies]
 jni = "=0.21.1"

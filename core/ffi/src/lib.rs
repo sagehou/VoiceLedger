@@ -13,6 +13,7 @@ mod device_profile;
 #[cfg(any(target_os = "android", target_os = "linux"))]
 mod jni;
 mod model_preview;
+mod speech;
 mod track;
 
 const MAX_DOMAIN_BATCH_BYTES: usize = 16 * 1024 * 1024;
@@ -31,6 +32,14 @@ enum Error {
     AudioUnavailable = -22,
     AudioMedia = -23,
     AudioSchema = -24,
+    SpeechStorage = -30,
+    SpeechRuntime = -31,
+    SpeechNoAudio = -32,
+    SpeechNotInstalled = -33,
+    SpeechBlocked = -34,
+    SpeechTransfer = -35,
+    SpeechIntegrity = -36,
+    SpeechBusy = -37,
 }
 
 #[derive(Default)]

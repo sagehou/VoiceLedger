@@ -82,6 +82,42 @@ internal static class NativeCore
         return output.AsMemory(0, length);
     }
 
+    internal static byte[] SpeechRequest(string request)
+    {
+        byte[] query = Encoding.UTF8.GetBytes(request);
+        int result = SpeechRequestNative(query, (uint)query.Length, out AudioBuffer buffer);
+        return ReadBuffer(result, buffer);
+    }
+
+    internal static byte[] SpeechPartial()
+    {
+        int result = SpeechPartialNative(out AudioBuffer buffer);
+        return ReadBuffer(result, buffer);
+    }
+
+    private static byte[] ReadBuffer(int result, AudioBuffer buffer)
+    {
+        try
+        {
+            RequireSuccess(result);
+            if (buffer.Length == 0) return Array.Empty<byte>();
+            byte[] output = new byte[checked((int)buffer.Length)];
+            Marshal.Copy(buffer.Data, output, 0, output.Length);
+            return output;
+        }
+        finally
+        {
+            ReleaseBuffer(buffer.Data, buffer.Length);
+        }
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct AudioBuffer
+    {
+        internal IntPtr Data;
+        internal uint Length;
+    }
+
     internal static Recommendation Recommend(Compatibility compatibility, long? budgetBytes, long? peakBytes) =>
         (Recommendation)RequireSuccess(RecommendNative((int)compatibility, budgetBytes ?? -1, peakBytes ?? -1));
 
@@ -106,6 +142,15 @@ internal static class NativeCore
 
     [DllImport(Library, EntryPoint = "vl_model_preview_v1", ExactSpelling = true, CallingConvention = CallingConvention.Cdecl)]
     private static extern int ModelPreviewNative([In] byte[] path, uint pathLength, [Out] byte[] output, uint capacity);
+
+    [DllImport(Library, EntryPoint = "vl_speech_request_v1", ExactSpelling = true, CallingConvention = CallingConvention.Cdecl)]
+    private static extern int SpeechRequestNative([In] byte[] request, uint length, out AudioBuffer buffer);
+
+    [DllImport(Library, EntryPoint = "vl_speech_partial_v1", ExactSpelling = true, CallingConvention = CallingConvention.Cdecl)]
+    private static extern int SpeechPartialNative(out AudioBuffer buffer);
+
+    [DllImport(Library, EntryPoint = "vl_audio_buffer_release_v1", ExactSpelling = true, CallingConvention = CallingConvention.Cdecl)]
+    private static extern void ReleaseBuffer(IntPtr data, uint length);
 
     [DllImport(Library, EntryPoint = "vl_session_create_v1", ExactSpelling = true, CallingConvention = CallingConvention.Cdecl)]
     internal static extern long Create();

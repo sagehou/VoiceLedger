@@ -10,5 +10,5 @@ serde_json = "=1.0.149"
 sha2 = "=0.10.9"
 
 [workspace]
-members = ["audio", "ffi"]
+members = ["audio", "ffi", "speech"]
 resolver = "3"

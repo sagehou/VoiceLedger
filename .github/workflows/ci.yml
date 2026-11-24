@@ -23,7 +23,7 @@ env:
 jobs:
   rust-core:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 22
     defaults:
       run:
         working-directory: core
@@ -39,6 +39,8 @@ jobs:
           mkdir -p artifacts
           cargo test --workspace --locked -- --nocapture 2>&1 | tee artifacts/rust-core.log
       - run: cargo build --release --locked --package voiceledger-ffi
+      - name: Build and exercise native speech adapters with model-free inputs
+        run: python3 ../scripts/build_speech.py --work "$RUNNER_TEMP/voiceledger-speech" --output artifacts/speech
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: voiceledger-ffi-linux-x64
@@ -52,7 +54,7 @@ jobs:
 
   rust-windows:
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 22
     defaults:
       run:
         working-directory: core
@@ -67,6 +69,13 @@ jobs:
           New-Item -ItemType Directory -Force artifacts | Out-Null
           cargo test --release --locked -p voiceledger-audio --target x86_64-pc-windows-msvc -- --nocapture 2>&1 | Tee-Object artifacts/windows-recovery.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build and exercise native speech adapters on Windows
+        run: python ../scripts/build_speech.py --work "$env:RUNNER_TEMP/voiceledger-speech" --output artifacts/speech
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: voiceledger-speech-windows-x64
+          path: core/artifacts/speech/
+          if-no-files-found: error
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         if: always()
         with:
@@ -80,7 +89,7 @@ jobs:
 
   rust-android:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: core
@@ -107,6 +116,13 @@ jobs:
           export CC_aarch64_linux_android="$CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER"
           export AR_aarch64_linux_android="$ndk_tools/llvm-ar"
           cargo build --workspace --release --locked --target aarch64-linux-android
+          python3 ../scripts/build_speech.py --work "$RUNNER_TEMP/voiceledger-speech" \
+            --output artifacts/speech --android-ndk "$ANDROID_NDK_HOME"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: voiceledger-speech-android-arm64-v8a
+          path: core/artifacts/speech/
+          if-no-files-found: error
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: voiceledger-core-android-arm64-v8a
@@ -130,6 +146,10 @@ jobs:
         with:
           name: voiceledger-core-windows-x64
           path: windows/VoiceLedger/native
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: voiceledger-speech-windows-x64
+          path: windows/VoiceLedger/native/speech
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: domain-fixtures-v1
@@ -157,6 +177,37 @@ jobs:
             }
           }
           (Get-Item artifacts/windows/voiceledger_ffi.dll).Length | Set-Content artifacts/windows-native-bytes.log
+          foreach ($file in 'voiceledger_whisper.dll', 'voiceledger_sensevoice.dll', 'sherpa-onnx-c-api.dll', 'onnxruntime.dll') {
+            if (-not (Test-Path "artifacts/windows/speech/$file" -PathType Leaf)) {
+              throw "Publish output is missing speech/$file"
+            }
+          }
+      - name: Check the separate Windows speech worker without model weights
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'voiceledger-speech-worker'
+          $request = @{
+            recordings = $root
+            profiles = $root
+            adapters = (Resolve-Path 'artifacts/windows/speech').Path
+            action = @{ op = 'install'; model_id = 'whisper-tiny-multilingual-q5-1'; approved = $false }
+          } | ConvertTo-Json -Compress
+          $info = [System.Diagnostics.ProcessStartInfo]::new((Resolve-Path 'artifacts/windows/VoiceLedger.exe').Path)
+          $info.UseShellExecute = $false
+          $info.CreateNoWindow = $true
+          $info.RedirectStandardOutput = $true
+          $info.RedirectStandardError = $true
+          $info.ArgumentList.Add('--speech-worker')
+          $info.ArgumentList.Add($request)
+          $process = [System.Diagnostics.Process]::Start($info)
+          $stderr = $process.StandardError.ReadToEndAsync()
+          if (-not $process.WaitForExit(15000)) {
+            $process.Kill($true)
+            throw 'Speech worker did not terminate'
+          }
+          if ($process.ExitCode -ne -34 -or (Test-Path (Join-Path $root 'models'))) {
+            throw "Speech worker failed the approval check (exit $($process.ExitCode)). $($stderr.GetAwaiter().GetResult())"
+          }
+          'Windows speech worker rejected unapproved work.' | Set-Content artifacts/windows-speech-worker.log
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         if: always()
         with:
@@ -197,6 +248,14 @@ jobs:
           path: android/app/src/main/jniLibs/arm64-v8a
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
+          name: voiceledger-speech-android-arm64-v8a
+          path: android/app/src/main/jniLibs/arm64-v8a
+      - name: Include the native speech component notices
+        run: |
+          mkdir -p app/src/main/assets/speech-notices
+          mv app/src/main/jniLibs/arm64-v8a/*.md app/src/main/jniLibs/arm64-v8a/*.txt app/src/main/assets/speech-notices/
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
           name: voiceledger-ffi-linux-x64
           path: android/app/native-test
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
@@ -220,7 +279,7 @@ jobs:
           manifest = ElementTree.parse("artifacts/android-manifest.xml")
           ns = "{http://schemas.android.com/apk/res/android}"
           permissions = {entry.get(ns + "name") for entry in manifest.findall("uses-permission")}
-          required = {"RECORD_AUDIO", "FOREGROUND_SERVICE", "FOREGROUND_SERVICE_MICROPHONE", "POST_NOTIFICATIONS"}
+          required = {"RECORD_AUDIO", "FOREGROUND_SERVICE", "FOREGROUND_SERVICE_MICROPHONE", "POST_NOTIFICATIONS", "INTERNET"}
           assert {"android.permission." + name for name in required} <= permissions, permissions
           assert "android.permission.RECEIVE_BOOT_COMPLETED" not in permissions
           application = manifest.find("application")
@@ -234,8 +293,17 @@ jobs:
           assert service_type == "microphone" or int(service_type, 0) == 0x80, service.attrib
           assert service.get(ns + "exported") == "false", service.attrib
           assert service.get(ns + "directBootAware") != "true", service.attrib
+          speech, = (
+              item for item in manifest.findall("application/service")
+              if item.get(ns + "name", "").endswith(".speech.SpeechWorkerService")
+          )
+          assert speech.get(ns + "exported") == "false", speech.attrib
+          assert speech.get(ns + "process", "").endswith(":speech"), speech.attrib
           PY
           unzip -Z1 "$apk" | grep -Fx 'lib/arm64-v8a/libvoiceledger_ffi.so'
+          for library in voiceledger_whisper voiceledger_sensevoice sherpa-onnx-c-api onnxruntime; do
+            unzip -Z1 "$apk" | grep -Fx "lib/arm64-v8a/lib${library}.so"
+          done
           stat -c '%s' app/src/main/jniLibs/arm64-v8a/libvoiceledger_ffi.so > artifacts/android-native-bytes.log
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         if: always()
