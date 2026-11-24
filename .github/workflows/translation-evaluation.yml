@@ -1,0 +1,39 @@
+name: Offline translation evaluation
+
+on:
+  push:
+    paths:
+      - .github/workflows/translation-evaluation.yml
+      - contracts/fixtures/translation-en-zh-v1.json
+      - scripts/evaluate_translation.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bergamot-en-zh:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.10'
+      - name: Fetch and verify the runtime and four model files
+        run: python scripts/evaluate_translation.py fetch "$RUNNER_TEMP/voiceledger-translation"
+      - name: Translate synthetic final utterances in a private network namespace
+        run: |
+          mkdir -p artifacts
+          sudo unshare --net --setgid="$(id -g)" --setuid="$(id -u)" -- env \
+            GITHUB_SHA="$GITHUB_SHA" GITHUB_RUN_ID="$GITHUB_RUN_ID" \
+            OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 "$(command -v python)" \
+            scripts/evaluate_translation.py run "$RUNNER_TEMP/voiceledger-translation" \
+            --corpus contracts/fixtures/translation-en-zh-v1.json --report artifacts/bergamot-en-zh.json
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        if: always()
+        with:
+          name: translation-en-zh-evaluation
+          path: artifacts/bergamot-en-zh.json
