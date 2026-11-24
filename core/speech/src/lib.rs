@@ -6,6 +6,7 @@ mod transfer;
 #[cfg(test)]
 mod tests;
 
+use std::fs::OpenOptions;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -33,6 +34,7 @@ pub enum Error {
     Blocked(Block),
     Transfer,
     Integrity,
+    Busy,
 }
 
 impl From<rusqlite::Error> for Error {
@@ -73,6 +75,7 @@ impl From<InstallError> for Error {
             InstallError::InvalidArtifact => Self::Integrity,
             InstallError::RuntimeLoad => Self::Runtime,
             InstallError::Transfer => Self::Transfer,
+            InstallError::Busy => Self::Busy,
             _ => Self::Storage,
         }
     }
@@ -216,6 +219,13 @@ impl Request {
             version: &model.runtime.version,
         };
         check_candidate(model, &device, &[runtime], true).map_err(Error::Blocked)?;
+        let lock = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(self.profiles.join("speech-worker.lock"))?;
+        lock.try_lock().map_err(|_| Error::Busy)?;
         let threads = device
             .logical_cpu_count
             .map_or(1, |value| value.get().min(2) as i32);
@@ -278,6 +288,9 @@ impl Request {
         let mut segments = Segmenter::new();
         let mut next = Some(first);
         while let Some(chunk) = next {
+            if reader.recording()? {
+                return Err(Error::Blocked(Block::RecordingActive));
+            }
             let track = chunk.track_id.clone();
             let start = chunk.start_ns;
             segments.ingest(chunk, &mut processor)?;

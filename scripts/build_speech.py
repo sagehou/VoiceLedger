@@ -85,6 +85,32 @@ def desktop_sherpa(work):
     return root / "include", root / "lib" / linker, list((root / "lib").glob(pattern))
 
 
+def notices(work, output, android):
+    sherpa_license = fetch(work, "sherpa-license.txt",
+        f"https://raw.githubusercontent.com/k2-fsa/sherpa-onnx/{SHERPA}/LICENSE",
+        "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30")
+    shutil.copyfile(sherpa_license, output / "SHERPA-ONNX-LICENSE.txt")
+    if android:
+        wheel = fetch(work, "onnx-notices.whl",
+            "https://files.pythonhosted.org/packages/2e/4d/a382452b17cf70a2313153c520ea4c96ab670c996cb3a95cc5d5ac7bfdac/onnxruntime-1.23.2-cp310-cp310-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl",
+            "8f7d1fe034090a1e371b7f3ca9d3ccae2fabae8c1d8844fb7371d1ea38e8e8d2")
+    else:
+        wheel = fetch(work, "onnx-notices.whl",
+            "https://files.pythonhosted.org/packages/e0/fa/f5b8a7dc6c0b7d059c073dcb192bfb02c86a6006c8735509eb59b9ea11f0/onnxruntime-1.17.1-cp310-cp310-win_amd64.whl",
+            "fbb98cced6782ae1bb799cc74ddcbbeeae8819f3ad1d942a74d88e72b6511337")
+    with ZipFile(wheel) as archive:
+        (output / "ONNX-RUNTIME-LICENSE.txt").write_bytes(archive.read("onnxruntime/LICENSE"))
+        (output / "ONNX-RUNTIME-NOTICES.txt").write_bytes(archive.read("onnxruntime/ThirdPartyNotices.txt"))
+    vad = fetch(work, "webrtc-vad.crate",
+        "https://static.crates.io/crates/webrtc-vad/webrtc-vad-0.4.0.crate",
+        "39a1e40fd6ca90be95459152a2537f2ba4286ee1b13073f7ebcaa74fc94e3008")
+    with tarfile.open(vad) as archive:
+        (output / "WEBRTC-VAD-BINDING-LICENSE.txt").write_bytes(archive.extractfile("webrtc-vad-0.4.0/LICENSE").read())
+        for notice in ("LICENSE", "PATENTS", "AUTHORS"):
+            content = archive.extractfile(f"webrtc-vad-0.4.0/resources/libfvad/{notice}").read()
+            (output / f"WEBRTC-VAD-{notice}.txt").write_bytes(content)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--work", type=Path, required=True)
@@ -127,6 +153,7 @@ def main():
         shutil.copyfile(library, output / library.name)
     shutil.copyfile(REPO / "native/speech/THIRD-PARTY.md", output / "THIRD-PARTY.md")
     shutil.copyfile(work / f"whisper.cpp-{WHISPER}" / "LICENSE", output / "WHISPER-LICENSE.txt")
+    notices(work, output, bool(args.android_ndk))
 
 
 if __name__ == "__main__":

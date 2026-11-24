@@ -111,6 +111,58 @@ fn jobs(store: &Store) -> i64 {
 }
 
 #[test]
+fn speech_reader_uses_committed_completed_audio_without_the_writer_lock() {
+    let scratch = Scratch::new();
+    let store = Store::open(&scratch.0).unwrap();
+    prepare(&store);
+    begin(&store, FIRST, 0);
+    store
+        .seal(FIRST, END, &[packet(0)], &pcm(), |_| {})
+        .unwrap();
+    begin(&store, SECOND, END);
+    let reader = CommittedReader::open(&scratch.0).unwrap();
+    let id = stable(SESSION);
+    assert!(reader.recording().unwrap());
+    assert!(reader.latest().unwrap().is_none());
+    assert!(reader.next_chunk(&id, None).unwrap().is_none());
+
+    store
+        .execute(
+            Command::SessionState {
+                id: id.clone(),
+                state: 6,
+                elapsed_ns: END * 2,
+                snapshot: serde_json::json!({}),
+            },
+            &[],
+        )
+        .unwrap();
+    assert!(!reader.recording().unwrap());
+    assert_eq!(reader.latest().unwrap().unwrap().id, id);
+    let audio = reader.next_chunk(&id, None).unwrap().unwrap();
+    assert_eq!(audio.id, stable(FIRST));
+    assert_eq!(audio.track_id, stable(TRACK));
+    assert_eq!((audio.epoch, audio.start_ns, audio.end_ns), (0, 0, END));
+    assert_eq!(audio.samples.unwrap().len(), FRAMES);
+    assert!(
+        reader
+            .next_chunk(&id, Some((&stable(TRACK), 0)))
+            .unwrap()
+            .is_none()
+    );
+    let first = store.chunk(FIRST).unwrap();
+    fs::write(store.path(&first, "opus").unwrap(), [0_u8; 4]).unwrap();
+    assert!(
+        reader
+            .next_chunk(&id, None)
+            .unwrap()
+            .unwrap()
+            .samples
+            .is_none()
+    );
+}
+
+#[test]
 fn crash_child() {
     let Some(root) = std::env::var_os(ROOT_ENV) else {
         return;

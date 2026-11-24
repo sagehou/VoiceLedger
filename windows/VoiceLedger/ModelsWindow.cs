@@ -1,8 +1,10 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.IO.Pipes;
 using System.Linq;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
@@ -131,28 +133,18 @@ internal sealed class ModelsWindow : Window
         int result = -31;
         try
         {
-            await Task.Run(() => DeviceProfiler.Capture(SpeechWorker.ProfileDirectory));
+            bool refreshed = await Task.Run(() => DeviceProfiler.Capture(SpeechWorker.ProfileDirectory));
             if (closed || cancelled || !canWork()) return;
-            using var process = new Process { StartInfo = SpeechWorker.StartInfo(SpeechWorker.Request(action)) };
-            process.OutputDataReceived += (_, args) =>
+            if (!refreshed)
             {
-                const string prefix = "VL_PARTIAL ";
-                if (args.Data is not { } line || !line.StartsWith(prefix, StringComparison.Ordinal)) return;
-                try
-                {
-                    byte[] bytes = Convert.FromBase64String(line[prefix.Length..]);
-                    using var snapshot = bytes.Length == 0 ? null : JsonDocument.Parse(bytes);
-                    string text = snapshot is null ? "" : Read(snapshot.RootElement, "text");
-                    Dispatcher.InvokeAsync(() =>
-                    {
-                        if (worker == process && !closed && !cancelled) partial.Text = text;
-                    });
-                }
-                catch (Exception failure) when (failure is FormatException or JsonException or InvalidOperationException)
-                {
-                }
-            };
-            process.ErrorDataReceived += (_, _) => { };
+                result = -34;
+                return;
+            }
+            string name = $"voiceledger-speech-{Guid.NewGuid():N}";
+            using var pipe = new NamedPipeServerStream(name, PipeDirection.In, 1, PipeTransmissionMode.Byte,
+                PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+            using var receiveCancelled = new CancellationTokenSource();
+            using var process = new Process { StartInfo = SpeechWorker.StartInfo(SpeechWorker.Request(action), name) };
             if (!process.Start()) return;
             worker = process;
             try { process.PriorityClass = ProcessPriorityClass.BelowNormal; }
@@ -160,7 +152,13 @@ internal sealed class ModelsWindow : Window
             catch (InvalidOperationException) { }
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();
-            await process.WaitForExitAsync();
+            Task receive = ReceivePartialsAsync(pipe, receiveCancelled.Token);
+            try { await process.WaitForExitAsync(); }
+            finally
+            {
+                await receiveCancelled.CancelAsync();
+                await receive;
+            }
             result = process.ExitCode;
         }
         catch (Exception failure) when (failure is InvalidOperationException or IOException
@@ -176,6 +174,24 @@ internal sealed class ModelsWindow : Window
             {
                 await LoadAsync(cancelled ? "Speech task cancelled." : ResultText(result, sessionId is null));
             }
+        }
+    }
+
+    private async Task ReceivePartialsAsync(NamedPipeServerStream pipe, CancellationToken cancellation)
+    {
+        try
+        {
+            await pipe.WaitForConnectionAsync(cancellation);
+            using var reader = new StreamReader(pipe);
+            while ((await reader.ReadLineAsync(cancellation)) is { } line)
+            {
+                if (closed || cancelled) return;
+                using var snapshot = line.Length == 0 ? null : JsonDocument.Parse(line);
+                partial.Text = snapshot is null ? "" : Read(snapshot.RootElement, "text");
+            }
+        }
+        catch (Exception failure) when (failure is OperationCanceledException or IOException or JsonException)
+        {
         }
     }
 
@@ -199,6 +215,7 @@ internal sealed class ModelsWindow : Window
         -34 => "Speech task paused by recording or device limits.",
         -35 => "Download interrupted. Retry to resume.",
         -36 => "Model checksum failed.",
+        -37 => "Another local speech task is running.",
         _ => "Local speech task stopped.",
     };
 

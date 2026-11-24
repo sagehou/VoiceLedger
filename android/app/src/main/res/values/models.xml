@@ -29,6 +29,7 @@
     <string name="speech_blocked">Speech task paused by recording or device limits.</string>
     <string name="speech_transfer">Download interrupted. Retry to resume.</string>
     <string name="speech_integrity">Model checksum failed.</string>
+    <string name="speech_busy">Another local speech task is running.</string>
     <string name="speech_failed">Local speech task stopped.</string>
     <string name="speech_battery_pressure">Battery pressure</string>
     <string name="latest_saved_session">Latest saved session · %1$s</string>

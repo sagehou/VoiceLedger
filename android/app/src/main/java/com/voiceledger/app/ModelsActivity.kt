@@ -27,6 +27,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.lifecycleScope
 import com.voiceledger.app.core.DeviceProfiler
 import com.voiceledger.app.core.NativeCore
 import com.voiceledger.app.recording.RecordingPhase
@@ -36,12 +37,15 @@ import java.io.File
 import java.text.DateFormat
 import java.util.Date
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
 class ModelsActivity : ComponentActivity() {
     private var connection: SpeechConnection? = null
+    private var preparing: Job? = null
     private var working by mutableStateOf(false)
     private var partial by mutableStateOf<String?>(null)
     private var result by mutableStateOf<Int?>(null)
@@ -146,20 +150,30 @@ class ModelsActivity : ComponentActivity() {
         working = true
         result = null
         partial = null
-        val request = SpeechConnection(this, query(action), ::finishRequest) { bytes ->
-            partial = bytes?.takeIf { it.isNotEmpty() }?.let {
-                runCatching { JSONObject(it.decodeToString()).getString("text") }.getOrNull()
+        preparing = lifecycleScope.launch {
+            val refreshed = withContext(Dispatchers.IO) { runCatching { DeviceProfiler.capture(applicationContext) }.isSuccess }
+            if (!working) return@launch
+            if (!refreshed || RecordingStatusStore.state.value.phase != RecordingPhase.Idle) {
+                finishRequest(-34)
+                return@launch
             }
-        }
-        connection = request
-        try {
-            request.bind()
-        } catch (_: RuntimeException) {
-            finishRequest(-31)
+            val request = SpeechConnection(this@ModelsActivity, query(action), ::finishRequest) { bytes ->
+                partial = bytes?.takeIf { it.isNotEmpty() }?.let {
+                    runCatching { JSONObject(it.decodeToString()).getString("text") }.getOrNull()
+                }
+            }
+            connection = request
+            try {
+                request.bind()
+            } catch (_: RuntimeException) {
+                finishRequest(-31)
+            }
         }
     }
 
     private fun finishRequest(code: Int) {
+        preparing?.cancel()
+        preparing = null
         connection?.close()
         connection = null
         working = false
@@ -233,6 +247,7 @@ private fun resultText(code: Int): Int = when (code) {
     -34 -> R.string.speech_blocked
     -35 -> R.string.speech_transfer
     -36 -> R.string.speech_integrity
+    -37 -> R.string.speech_busy
     else -> R.string.speech_failed
 }
 

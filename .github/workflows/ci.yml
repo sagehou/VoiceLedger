@@ -199,12 +199,13 @@ jobs:
           $info.ArgumentList.Add('--speech-worker')
           $info.ArgumentList.Add($request)
           $process = [System.Diagnostics.Process]::Start($info)
+          $stderr = $process.StandardError.ReadToEndAsync()
           if (-not $process.WaitForExit(15000)) {
             $process.Kill($true)
             throw 'Speech worker did not terminate'
           }
           if ($process.ExitCode -ne -34 -or (Test-Path (Join-Path $root 'models'))) {
-            throw "Speech worker failed the approval check (exit $($process.ExitCode))"
+            throw "Speech worker failed the approval check (exit $($process.ExitCode)). $($stderr.GetAwaiter().GetResult())"
           }
           'Windows speech worker rejected unapproved work.' | Set-Content artifacts/windows-speech-worker.log
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
@@ -278,7 +279,7 @@ jobs:
           manifest = ElementTree.parse("artifacts/android-manifest.xml")
           ns = "{http://schemas.android.com/apk/res/android}"
           permissions = {entry.get(ns + "name") for entry in manifest.findall("uses-permission")}
-          required = {"RECORD_AUDIO", "FOREGROUND_SERVICE", "FOREGROUND_SERVICE_MICROPHONE", "POST_NOTIFICATIONS"}
+          required = {"RECORD_AUDIO", "FOREGROUND_SERVICE", "FOREGROUND_SERVICE_MICROPHONE", "POST_NOTIFICATIONS", "INTERNET"}
           assert {"android.permission." + name for name in required} <= permissions, permissions
           assert "android.permission.RECEIVE_BOOT_COMPLETED" not in permissions
           application = manifest.find("application")
@@ -292,6 +293,12 @@ jobs:
           assert service_type == "microphone" or int(service_type, 0) == 0x80, service.attrib
           assert service.get(ns + "exported") == "false", service.attrib
           assert service.get(ns + "directBootAware") != "true", service.attrib
+          speech, = (
+              item for item in manifest.findall("application/service")
+              if item.get(ns + "name", "").endswith(".speech.SpeechWorkerService")
+          )
+          assert speech.get(ns + "exported") == "false", speech.attrib
+          assert speech.get(ns + "process", "").endswith(":speech"), speech.attrib
           PY
           unzip -Z1 "$apk" | grep -Fx 'lib/arm64-v8a/libvoiceledger_ffi.so'
           for library in voiceledger_whisper voiceledger_sensevoice sherpa-onnx-c-api onnxruntime; do

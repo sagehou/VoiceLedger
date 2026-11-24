@@ -22,6 +22,7 @@ impl From<voiceledger_speech::Error> for Error {
             Speech::Blocked(_) => Self::SpeechBlocked,
             Speech::Transfer => Self::SpeechTransfer,
             Speech::Integrity => Self::SpeechIntegrity,
+            Speech::Busy => Self::SpeechBusy,
         }
     }
 }

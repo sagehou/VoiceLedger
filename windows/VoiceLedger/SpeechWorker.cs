@@ -1,6 +1,8 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.IO.Pipes;
+using System.Text;
 using System.Text.Json;
 using System.Threading;
 using VoiceLedger.Core;
@@ -19,7 +21,7 @@ internal static class SpeechWorker
         action,
     });
 
-    internal static ProcessStartInfo StartInfo(string request)
+    internal static ProcessStartInfo StartInfo(string request, string pipe)
     {
         var info = new ProcessStartInfo(Path.Combine(AppContext.BaseDirectory, "VoiceLedger.exe"))
         {
@@ -28,26 +30,29 @@ internal static class SpeechWorker
         };
         info.ArgumentList.Add("--speech-worker");
         info.ArgumentList.Add(request);
+        info.ArgumentList.Add(pipe);
         return info;
     }
 
-    internal static int Run(string request)
+    internal static int Run(string request, string? pipeName)
     {
-        using var progress = new Timer(_ =>
-        {
-            try
-            {
-                // This stream is an app-private pipe owned by the parent process.
-                Console.Out.WriteLine("VL_PARTIAL " + Convert.ToBase64String(NativeCore.SpeechPartial()));
-            }
-            catch (Exception error) when (error is IOException or InvalidOperationException
-                or TypeInitializationException or EntryPointNotFoundException)
-            {
-            }
-        }, null, 500, 500);
-
         try
         {
+            using var pipe = pipeName is null ? null : new NamedPipeClientStream(
+                ".", pipeName, PipeDirection.Out, PipeOptions.CurrentUserOnly);
+            pipe?.Connect(2000);
+            using var writer = pipe is null ? null : new StreamWriter(pipe, new UTF8Encoding(false)) { AutoFlush = true };
+            using var progress = writer is null ? null : new Timer(_ =>
+            {
+                try
+                {
+                    writer.WriteLine(Encoding.UTF8.GetString(NativeCore.SpeechPartial()));
+                }
+                catch (Exception error) when (error is IOException or InvalidOperationException
+                    or TypeInitializationException or EntryPointNotFoundException)
+                {
+                }
+            }, null, 500, 500);
             _ = NativeCore.SpeechRequest(request);
             return 0;
         }
@@ -55,7 +60,7 @@ internal static class SpeechWorker
         {
             return error.Code;
         }
-        catch (Exception error) when (error is IOException or InvalidOperationException
+        catch (Exception error) when (error is IOException or InvalidOperationException or TimeoutException
             or TypeInitializationException or EntryPointNotFoundException)
         {
             return -31;
