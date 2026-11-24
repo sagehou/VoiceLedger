@@ -5,6 +5,7 @@ on:
     paths:
       - .github/workflows/translation-evaluation.yml
       - contracts/fixtures/translation-en-zh-v1.json
+      - native/translation/ctranslate2-android-affinity.patch
       - scripts/evaluate_translation.py
       - scripts/requirements-translation.txt
   workflow_dispatch:
@@ -67,11 +68,17 @@ jobs:
     defaults:
       run:
         shell: bash
+        working-directory: ctranslate2
     steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        if: matrix.target == 'android-arm64'
+        with:
+          persist-credentials: false
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: OpenNMT/CTranslate2
           ref: 226c95d94e660c48b11c62e108886b7ef76d589d # v4.7.1
+          path: ctranslate2
           persist-credentials: false
       - name: Fetch pinned CPU dependencies
         run: |
@@ -98,6 +105,7 @@ jobs:
       - name: Build and inspect the Android arm64 API 26 CPU runtime
         if: matrix.target == 'android-arm64'
         run: |
+          git apply "$GITHUB_WORKSPACE/native/translation/ctranslate2-android-affinity.patch"
           ndk="$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION"
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
             -DCMAKE_TOOLCHAIN_FILE="$ndk/build/cmake/android.toolchain.cmake" \
