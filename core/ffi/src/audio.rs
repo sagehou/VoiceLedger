@@ -30,6 +30,24 @@ pub struct AudioBuffer {
     length: u32,
 }
 
+impl AudioBuffer {
+    pub(super) fn empty() -> Self {
+        Self {
+            data: std::ptr::null_mut(),
+            length: 0,
+        }
+    }
+
+    pub(super) fn owning(response: Vec<u8>) -> Result<Self, Error> {
+        if response.is_empty() {
+            return Ok(Self::empty());
+        }
+        let length = u32::try_from(response.len()).map_err(|_| Error::Internal)?;
+        let data = Box::into_raw(response.into_boxed_slice()) as *mut u8;
+        Ok(Self { data, length })
+    }
+}
+
 /// Open and reconcile one device-local store.
 ///
 /// # Safety
@@ -96,12 +114,7 @@ pub unsafe extern "C" fn vl_audio_request_v1(
         if result.is_null() {
             return Err(Error::InvalidArgument);
         }
-        unsafe {
-            result.write(AudioBuffer {
-                data: std::ptr::null_mut(),
-                length: 0,
-            })
-        };
+        unsafe { result.write(AudioBuffer::empty()) };
         if json.is_null()
             || length == 0
             || length as usize > MAX_REQUEST_BYTES
@@ -121,9 +134,8 @@ pub unsafe extern "C" fn vl_audio_request_v1(
         let Some(response) = request(handle, json, pcm)? else {
             return Ok(0);
         };
-        let length = u32::try_from(response.len()).map_err(|_| Error::Internal)?;
-        let data = Box::into_raw(response.into_boxed_slice()) as *mut u8;
-        unsafe { result.write(AudioBuffer { data, length }) };
+        let response = AudioBuffer::owning(response)?;
+        unsafe { result.write(response) };
         Ok(0)
     })
 }

@@ -1,0 +1,34 @@
+cmake_minimum_required(VERSION 3.20)
+project(VoiceLedgerSpeech LANGUAGES C CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+set(CMAKE_CXX_VISIBILITY_PRESET hidden)
+set(CMAKE_INSTALL_RPATH "$ORIGIN")
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+foreach(option WHISPER_BUILD_EXAMPLES WHISPER_BUILD_TESTS WHISPER_BUILD_SERVER
+    GGML_NATIVE GGML_OPENMP GGML_SSE42 GGML_AVX GGML_AVX2 GGML_BMI2 GGML_FMA GGML_F16C)
+    set(${option} OFF CACHE BOOL "" FORCE)
+endforeach()
+add_subdirectory("${WHISPER_SOURCE}" whisper EXCLUDE_FROM_ALL)
+
+add_library(voiceledger_whisper SHARED whisper.cpp)
+target_compile_definitions(voiceledger_whisper PRIVATE VL_SPEECH_BUILD)
+target_link_libraries(voiceledger_whisper PRIVATE whisper)
+
+add_library(voiceledger_sensevoice SHARED sensevoice.cpp)
+target_compile_definitions(voiceledger_sensevoice PRIVATE VL_SPEECH_BUILD SHERPA_ONNX_BUILD_SHARED_LIBS)
+target_include_directories(voiceledger_sensevoice PRIVATE "${SHERPA_INCLUDE}")
+target_link_libraries(voiceledger_sensevoice PRIVATE "${SHERPA_LIBRARY}")
+
+install(TARGETS voiceledger_whisper voiceledger_sensevoice RUNTIME DESTINATION . LIBRARY DESTINATION .)
+
+if(NOT ANDROID)
+    enable_testing()
+    foreach(engine whisper sensevoice)
+        add_executable(smoke_${engine} smoke.cpp)
+        target_link_libraries(smoke_${engine} PRIVATE voiceledger_${engine})
+    endforeach()
+    add_test(NAME whisper_runtime COMMAND smoke_whisper 1.8.2)
+    add_test(NAME sensevoice_runtime COMMAND smoke_sensevoice 1.12.20)
+endif()

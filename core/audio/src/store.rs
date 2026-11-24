@@ -12,6 +12,9 @@ use voiceledger_core::contracts::{Source, StableId};
 
 use crate::{Error, MAX_CHANNELS, MAX_CHUNK_BYTES, RATE, Result, opus};
 
+mod reader;
+pub use reader::{CommittedChunk, CommittedReader, FinishedSession};
+
 #[cfg(test)]
 mod tests;
 
@@ -173,12 +176,13 @@ struct Chunk {
     state: String,
     sha256: Option<String>,
     byte_size: Option<u64>,
+    epoch: u32,
 }
 
 impl Chunk {
     const SELECT: &str =
         "SELECT c.id,c.track_id,t.session_id,c.start_ns,c.end_ns,s.channels,s.rate,
-        c.frames,c.state,c.sha256,c.byte_size FROM chunks c JOIN tracks t ON t.id=c.track_id
+        c.frames,c.state,c.sha256,c.byte_size,s.source_epoch FROM chunks c JOIN tracks t ON t.id=c.track_id
         JOIN streams s ON s.id=c.stream_id";
 
     fn read(row: &Row<'_>) -> rusqlite::Result<Self> {
@@ -194,6 +198,7 @@ impl Chunk {
             state: row.get(8)?,
             sha256: row.get(9)?,
             byte_size: row.get::<_, Option<i64>>(10)?.map(|bytes| bytes as u64),
+            epoch: row.get(11)?,
         })
     }
 }
@@ -421,14 +426,7 @@ impl Store {
     }
 
     fn path(&self, chunk: &Chunk, extension: &str) -> Result<PathBuf> {
-        for id in [&chunk.id, &chunk.track_id, &chunk.session_id] {
-            StableId::try_from(id.clone()).map_err(|_| Error::Invalid)?;
-        }
-        Ok(self
-            .root
-            .join(&chunk.session_id)
-            .join(&chunk.track_id)
-            .join(format!("{}.{extension}", chunk.id)))
+        chunk_path(&self.root, chunk, extension)
     }
 
     fn checkpoint(&self, id: &str, end_ns: i64) -> Result<()> {
@@ -593,29 +591,16 @@ impl Store {
                 Chunk::SELECT),
             params![track_id, at], Chunk::read,
         ).optional()?.ok_or(Error::Unavailable)?;
-        let bytes = match inspect(&self.path(&chunk, "opus")?, &chunk)? {
-            Payload::Absent => {
+        let media = match committed_media(&self.root, &chunk)? {
+            CommittedMedia::Absent => {
                 self.mark_missing(&chunk.id, "missing_file")?;
                 return Err(Error::Unavailable);
             }
-            Payload::Corrupt => {
+            CommittedMedia::Corrupt => {
                 self.mark_missing(&chunk.id, "corrupt_file")?;
                 return Err(Error::Unavailable);
             }
-            Payload::Valid(bytes) => bytes,
-        };
-        let media = match opus::decode(Cursor::new(bytes)) {
-            Ok(media)
-                if media.channels == chunk.channels
-                    && media.source_rate == chunk.rate
-                    && Some(media.samples.len() / media.channels) == chunk.frames =>
-            {
-                media
-            }
-            _ => {
-                self.mark_missing(&chunk.id, "corrupt_file")?;
-                return Err(Error::Unavailable);
-            }
+            CommittedMedia::Decoded(media) => media,
         };
         let frame = ((at - chunk.start_ns) as u64 * RATE as u64 / NS) as usize;
         let mut samples = media.samples;
@@ -744,6 +729,40 @@ impl Store {
             }
         }
         Ok(count)
+    }
+}
+
+fn chunk_path(root: &Path, chunk: &Chunk, extension: &str) -> Result<PathBuf> {
+    for id in [&chunk.id, &chunk.track_id, &chunk.session_id] {
+        StableId::try_from(id.clone()).map_err(|_| Error::Invalid)?;
+    }
+    Ok(root
+        .join(&chunk.session_id)
+        .join(&chunk.track_id)
+        .join(format!("{}.{extension}", chunk.id)))
+}
+
+enum CommittedMedia {
+    Absent,
+    Corrupt,
+    Decoded(opus::Decoded),
+}
+
+fn committed_media(root: &Path, chunk: &Chunk) -> Result<CommittedMedia> {
+    let bytes = match inspect(&chunk_path(root, chunk, "opus")?, chunk)? {
+        Payload::Absent => return Ok(CommittedMedia::Absent),
+        Payload::Corrupt => return Ok(CommittedMedia::Corrupt),
+        Payload::Valid(bytes) => bytes,
+    };
+    match opus::decode(Cursor::new(bytes)) {
+        Ok(media)
+            if media.channels == chunk.channels
+                && media.source_rate == chunk.rate
+                && Some(media.samples.len() / media.channels) == chunk.frames =>
+        {
+            Ok(CommittedMedia::Decoded(media))
+        }
+        _ => Ok(CommittedMedia::Corrupt),
     }
 }
 

@@ -117,6 +117,22 @@ pub(super) fn estimate(model: &Model) -> Option<u64> {
     model.peak_ram_estimate.as_ref().map(|value| value.bytes)
 }
 
+pub fn check_candidate(
+    model: &Model,
+    device: &DeviceCapabilityProfile,
+    runtimes: &[RuntimeIdentity<'_>],
+    installed: bool,
+) -> Result<(), Block> {
+    check_pressure(device)?;
+    preflight(
+        model,
+        device,
+        runtimes,
+        if installed { 0 } else { model.download_bytes() },
+        estimate(model),
+    )
+}
+
 pub(super) fn preflight(
     model: &Model,
     device: &DeviceCapabilityProfile,
