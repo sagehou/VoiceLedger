@@ -25,12 +25,19 @@ MODEL = "model.enzh.intgemm.alphas.bin"
 SOURCE_VOCAB = "srcvocab.enzh.spm"
 TARGET_VOCAB = "trgvocab.enzh.spm"
 SHORTLIST = "lex.50.50.enzh.s2t.bin"
-# Remote Settings publishes the same v2.0 model uncompressed.
-FILES = {
-    MODEL: (
+# Remote Settings publishes these models uncompressed. Both versions share
+# the vocabularies and shortlist, with the same SHA-256 digests.
+WEIGHTS = {
+    "2.0": (
         "ff689b9c-0ab6-4562-bfa5-6902a94523bd.bin", 42_992_955,
         "ce4486f728641a36269a245248dcb53405e76d96d9eba68dcb4172f29521e092",
     ),
+    "2.2": (
+        "a7ff7d5e-e67e-406c-a34b-a7edea35b10e.bin", 43_849_787,
+        "4e5accc141373565ddc8fa1565bceaa8d0c3482a82cab8131c719ebcc6c2157c",
+    ),
+}
+SHARED_FILES = {
     SOURCE_VOCAB: (
         "57b4392b-58f1-448f-b968-857e99e1a501.spm", 806_952,
         "bd9b65504acc6d9726dd281f7defc2adb7c2c22d0688fe2f84697de25197c8c5",
@@ -55,17 +62,17 @@ def download(url, path, size, digest):
         raise ValueError(f"Size or SHA-256 mismatch for {path.name}")
 
 
-def fetch(folder):
+def fetch(folder, files):
     folder.mkdir(parents=True, exist_ok=True)
     wheel = folder / WHEEL
     download(WHEEL_URL + WHEEL, wheel, 11_007_126, WHEEL_SHA256)
     with ZipFile(wheel) as archive:
         (folder / MODULE).write_bytes(archive.read(f"bergamot/{MODULE}"))
-    for name, (location, size, digest) in FILES.items():
+    for name, (location, size, digest) in files.items():
         download(ATTACHMENTS + location, folder / name, size, digest)
 
 
-def evaluate(folder, corpus, report):
+def evaluate(folder, version, files, corpus, report):
     interfaces = [name for _, name in socket.if_nameindex()]
     if interfaces != ["lo"]:
         raise RuntimeError(f"Expected an isolated network namespace, got {interfaces}")
@@ -97,7 +104,7 @@ def evaluate(folder, corpus, report):
     for case in cases:
         source = bergamot.VectorString([case["source"]])
         started = perf_counter()
-        response, = engine.translate(model, source, options)
+        (response,) = engine.translate(model, source, options)
         elapsed = (perf_counter() - started) * 1000
         outputs.append({
             **case,
@@ -110,13 +117,18 @@ def evaluate(folder, corpus, report):
         "build_commit": os.environ["GITHUB_SHA"],
         "actions_run_id": os.environ["GITHUB_RUN_ID"],
         "platform": platform.platform(),
+        "cpu": next(
+            line.split(":", 1)[1].strip()
+            for line in Path("/proc/cpuinfo").read_text().splitlines()
+            if line.startswith("model name")
+        ),
         "python": platform.python_version(),
         "network_interfaces": interfaces,
         "runtime": "Bergamot v0.4.5",
         "runtime_sha256": WHEEL_SHA256,
-        "model": "Mozilla en-zh-Hans v2.0",
-        "model_bytes": sum(size for _, size, _ in FILES.values()),
-        "model_sha256": {name: meta[2] for name, meta in FILES.items()},
+        "model": f"Mozilla en-zh-Hans v{version}",
+        "model_bytes": sum(size for _, size, _ in files.values()),
+        "model_sha256": {name: meta[2] for name, meta in files.items()},
         "corpus_sha256": hashlib.sha256(samples).hexdigest(),
         "workers": 1,
         "load_ms": round(load_ms, 2),
@@ -131,17 +143,20 @@ def evaluate(folder, corpus, report):
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("folder", type=Path)
+    parser.add_argument("version", choices=WEIGHTS)
     actions = parser.add_subparsers(dest="action", required=True)
-    actions.add_parser("fetch").add_argument("folder", type=Path)
+    actions.add_parser("fetch")
     run = actions.add_parser("run")
-    run.add_argument("folder", type=Path)
     run.add_argument("--corpus", type=Path, required=True)
     run.add_argument("--report", type=Path, required=True)
     args = parser.parse_args()
+    folder = args.folder.resolve()
+    files = {MODEL: WEIGHTS[args.version], **SHARED_FILES}
     if args.action == "fetch":
-        fetch(args.folder.resolve())
+        fetch(folder, files)
     else:
-        evaluate(args.folder.resolve(), args.corpus, args.report)
+        evaluate(folder, args.version, files, args.corpus, args.report)
 
 
 if __name__ == "__main__":
