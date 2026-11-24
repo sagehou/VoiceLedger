@@ -273,38 +273,32 @@ jobs:
           grep -E "^package: name='com\.voiceledger\.app'" artifacts/android-apk.txt
           grep -E "^launchable-activity: name='com\.voiceledger\.app\.MainActivity'" artifacts/android-apk.txt
           apkanalyzer manifest print "$apk" > artifacts/android-manifest.xml
-          python3 - <<'PY'
-          from xml.etree import ElementTree
-
-          manifest = ElementTree.parse("artifacts/android-manifest.xml")
-          ns = "{http://schemas.android.com/apk/res/android}"
-          permissions = {entry.get(ns + "name") for entry in manifest.findall("uses-permission")}
-          required = {"RECORD_AUDIO", "FOREGROUND_SERVICE", "FOREGROUND_SERVICE_MICROPHONE", "POST_NOTIFICATIONS", "INTERNET"}
-          assert {"android.permission." + name for name in required} <= permissions, permissions
-          assert "android.permission.RECEIVE_BOOT_COMPLETED" not in permissions
-          application = manifest.find("application")
-          assert application.get(ns + "allowBackup") == "false"
-          assert application.get(ns + "dataExtractionRules")
-          service, = (
-              item for item in manifest.findall("application/service")
-              if item.get(ns + "name", "").endswith(".recording.RecordingService")
-          )
-          service_type = service.get(ns + "foregroundServiceType", "")
-          assert service_type == "microphone" or int(service_type, 0) == 0x80, service.attrib
-          assert service.get(ns + "exported") == "false", service.attrib
-          assert service.get(ns + "directBootAware") != "true", service.attrib
-          speech, = (
-              item for item in manifest.findall("application/service")
-              if item.get(ns + "name", "").endswith(".speech.SpeechWorkerService")
-          )
-          assert speech.get(ns + "exported") == "false", speech.attrib
-          assert speech.get(ns + "process", "").endswith(":speech"), speech.attrib
-          PY
-          unzip -Z1 "$apk" | grep -Fx 'lib/arm64-v8a/libvoiceledger_ffi.so'
-          for library in voiceledger_whisper voiceledger_sensevoice sherpa-onnx-c-api onnxruntime; do
-            unzip -Z1 "$apk" | grep -Fx "lib/arm64-v8a/lib${library}.so"
-          done
+          python3 ../scripts/check_android_package.py artifacts/android-manifest.xml "$apk" com.voiceledger.app
           stat -c '%s' app/src/main/jniLibs/arm64-v8a/libvoiceledger_ffi.so > artifacts/android-native-bytes.log
+      - name: Build, sign and verify the Android preview
+        if: github.ref == 'refs/heads/preview/v0.1.0'
+        run: |
+          ./gradlew --no-daemon --stacktrace -PvoiceLedgerPreview=true :app:lintRelease :app:testReleaseUnitTest \
+            :app:assembleRelease 2>&1 | tee artifacts/android-preview-gradle.log
+          sdk_tools="$ANDROID_HOME/build-tools/36.0.0"
+          key_dir="$(mktemp -d "$RUNNER_TEMP/voiceledger-preview.XXXXXX")"
+          trap 'rm -rf -- "$key_dir"' EXIT
+          VOICELEDGER_PREVIEW_PASSWORD="$(openssl rand -hex 24)"
+          export VOICELEDGER_PREVIEW_PASSWORD
+          keytool -genkeypair -storetype PKCS12 -keystore "$key_dir/preview.p12" \
+            -storepass:env VOICELEDGER_PREVIEW_PASSWORD -alias voiceledger-preview \
+            -keyalg RSA -keysize 3072 -validity 3650 -dname "CN=VoiceLedger Developer Preview"
+          unsigned=app/build/outputs/apk/release/app-release-unsigned.apk
+          "$sdk_tools/zipalign" -P 16 -f 4 "$unsigned" "$key_dir/aligned.apk"
+          signed=artifacts/voiceledger-preview.apk
+          "$sdk_tools/apksigner" sign --ks "$key_dir/preview.p12" --ks-key-alias voiceledger-preview \
+            --ks-pass env:VOICELEDGER_PREVIEW_PASSWORD --v4-signing-enabled false --out "$signed" "$key_dir/aligned.apk"
+          "$sdk_tools/apksigner" verify --verbose --print-certs "$signed" | tee artifacts/android-preview-signature.log
+          "$sdk_tools/aapt" dump badging "$signed" > artifacts/android-preview-apk.txt
+          grep -E "^launchable-activity: name='com\.voiceledger\.app\.MainActivity'" artifacts/android-preview-apk.txt
+          apkanalyzer manifest print "$signed" > artifacts/android-preview-manifest.xml
+          python3 ../scripts/check_android_package.py artifacts/android-preview-manifest.xml "$signed" \
+            com.voiceledger.app.preview --preview
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         if: always()
         with:
@@ -391,3 +385,33 @@ jobs:
         env:
           CI_RESULTS: ${{ toJSON(needs) }}
         run: jq -e 'all(.[]; .result == "success")' <<< "$CI_RESULTS"
+
+  preview-packages:
+    if: github.ref == 'refs/heads/preview/v0.1.0'
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: windows-client
+          path: preview-input/windows
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: android-client
+          path: preview-input/android
+      - name: Bundle the verified Windows and Android preview
+        run: |
+          python3 scripts/package_preview.py --windows preview-input/windows/windows \
+            --android preview-input/android/artifacts/voiceledger-preview.apk \
+            --notes docs/engineering/PREVIEW-RELEASE.md --output preview-output
+          cd preview-output
+          sha256sum --check SHA256SUMS.txt
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: voiceledger-preview-0.1.0
+          path: preview-output/
+          if-no-files-found: error

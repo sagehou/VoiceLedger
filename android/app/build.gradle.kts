@@ -7,6 +7,8 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose") version "2.2.21"
 }
 
+val voiceLedgerPreview = providers.gradleProperty("voiceLedgerPreview").map(String::toBoolean).getOrElse(false)
+
 android {
     namespace = "com.voiceledger.app"
     compileSdk = 36
@@ -18,6 +20,17 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "0.1.0"
+        if (voiceLedgerPreview) {
+            ndk.abiFilters += "arm64-v8a"
+        }
+    }
+
+    buildTypes.named("release") {
+        if (voiceLedgerPreview) {
+            applicationIdSuffix = ".preview"
+            versionNameSuffix = "-preview.1"
+            resValue("string", "app_name", "VoiceLedger Preview")
+        }
     }
 
     buildFeatures {
