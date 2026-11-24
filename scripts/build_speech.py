@@ -109,6 +109,16 @@ def notices(work, output, android):
         for notice in ("LICENSE", "PATENTS", "AUTHORS"):
             content = archive.extractfile(f"webrtc-vad-0.4.0/resources/libfvad/{notice}").read()
             (output / f"WEBRTC-VAD-{notice}.txt").write_bytes(content)
+    opus = fetch(work, "opusic-sys.crate",
+        "https://static.crates.io/crates/opusic-sys/opusic-sys-0.7.7.crate",
+        "986d749e9dc12035f11bf3ecc83a2a696ff7534d4143be9469a4a0faa25b9fd1")
+    with tarfile.open(opus) as archive:
+        (output / "OPUS-LICENSE.txt").write_bytes(archive.extractfile("opusic-sys-0.7.7/opus/COPYING").read())
+    if os.name == "nt":
+        naudio = fetch(work, "naudio-license.txt",
+            "https://raw.githubusercontent.com/naudio/NAudio/v2.4.0/license.txt",
+            "303e01786b271eb464b3f43d18a375f2f17d37bc708a37c2fdf45b289fb5bfaa")
+        shutil.copyfile(naudio, output / "NAUDIO-LICENSE.txt")
 
 
 def main():
