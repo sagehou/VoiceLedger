@@ -5,6 +5,7 @@ use voiceledger_audio::CommittedChunk;
 use voiceledger_core::contracts::{
     ChunkSpan, Count, Language, LanguagePolicy, StableId, TimeRange,
 };
+use voiceledger_core::scheduler::Tier;
 use webrtc_vad::{SampleRate, Vad, VadMode};
 
 use crate::{Error, Result};
@@ -63,6 +64,7 @@ struct Window {
     spans: Vec<ChunkSpan>,
     quiet: usize,
     next_partial: usize,
+    last_partial: usize,
     revision: u32,
 }
 
@@ -93,6 +95,7 @@ pub struct Processing<'a> {
     pub language: LanguagePolicy,
     pub cancelled: &'a (dyn Fn() -> bool + Sync),
     pub partials: bool,
+    pub policy: &'a mut dyn FnMut(Option<f64>) -> Result<Tier>,
 }
 
 impl Segmenter {
@@ -105,7 +108,12 @@ impl Segmenter {
         }
     }
 
-    pub fn ingest(&mut self, chunk: CommittedChunk, processing: &mut Processing<'_>) -> Result<()> {
+    pub fn ingest(
+        &mut self,
+        chunk: CommittedChunk,
+        from_ns: i64,
+        processing: &mut Processing<'_>,
+    ) -> Result<()> {
         crate::check_cancel(processing.cancelled)?;
         if self.track.as_ref().is_some_and(|(track, epoch, end)| {
             track != &chunk.track_id || *epoch != chunk.epoch || *end != chunk.start_ns
@@ -133,7 +141,7 @@ impl Segmenter {
                 start + pcm.len(),
                 normalized.len(),
             )?;
-            if range.start_ns == range.end_ns {
+            if range.start_ns == range.end_ns || range.end_ns.get() <= from_ns as u64 {
                 continue;
             }
             let mut input = [0_i16; FRAME];
@@ -176,6 +184,7 @@ impl Segmenter {
                 spans: Vec::new(),
                 quiet: 0,
                 next_partial: PARTIAL_EVERY,
+                last_partial: 0,
                 revision: 0,
             };
             for buffered in self.preroll.drain(..) {
@@ -190,7 +199,14 @@ impl Segmenter {
             return self.flush(processing);
         }
         if processing.partials && window.pcm.len() >= window.next_partial {
-            window.next_partial += PARTIAL_EVERY;
+            let cadence = (processing.policy)(None)?.partial_seconds() * RATE;
+            let due = window.last_partial + cadence;
+            if window.pcm.len() < due {
+                window.next_partial = due;
+                return Ok(());
+            }
+            window.last_partial = window.pcm.len();
+            window.next_partial = window.last_partial + PARTIAL_EVERY;
             if let Some(value) = recognize(processing, &window.pcm)? {
                 window.revision = window.revision.saturating_add(1);
                 processing.output.partial(Some(Partial {
@@ -231,10 +247,15 @@ impl Segmenter {
 
 fn recognize(processing: &mut Processing<'_>, samples: &[f32]) -> Result<Option<Recognition>> {
     crate::check_cancel(processing.cancelled)?;
+    (processing.policy)(None)?;
+    let started = std::time::Instant::now();
     let value = processing
         .engine
         .recognize(samples, processing.language, processing.cancelled)?;
     crate::check_cancel(processing.cancelled)?;
+    (processing.policy)(Some(
+        started.elapsed().as_secs_f64() * RATE as f64 / samples.len() as f64,
+    ))?;
     Ok(value.filter(|value| !value.text.trim().is_empty()))
 }
 
@@ -311,6 +332,19 @@ mod tests {
         }
     }
 
+    fn voiced_frame(frame: i64, chunk: StableId) -> Frame {
+        Frame {
+            pcm: vec![0.5; FRAME],
+            span: ChunkSpan {
+                chunk_id: chunk,
+                range: TimeRange {
+                    start_ns: (frame * 20_000_000).try_into().unwrap(),
+                    end_ns: ((frame + 1) * 20_000_000).try_into().unwrap(),
+                },
+            },
+        }
+    }
+
     #[test]
     fn partial_revisions_share_one_id_and_final_continues_chunk_provenance() {
         let track = uid(1);
@@ -323,24 +357,12 @@ mod tests {
             language: LanguagePolicy::Auto,
             cancelled: &|| false,
             partials: true,
+            policy: &mut |_| Ok(Tier::Normal),
         };
         for frame in 0..325_i64 {
             let chunk = if frame < 200 { uid(2) } else { uid(3) };
             segmenter
-                .accept(
-                    Frame {
-                        pcm: vec![0.5; FRAME],
-                        span: ChunkSpan {
-                            chunk_id: chunk,
-                            range: TimeRange {
-                                start_ns: (frame * 20_000_000).try_into().unwrap(),
-                                end_ns: ((frame + 1) * 20_000_000).try_into().unwrap(),
-                            },
-                        },
-                    },
-                    true,
-                    &mut processing,
-                )
+                .accept(voiced_frame(frame, chunk), true, &mut processing)
                 .unwrap();
         }
         segmenter.flush(&mut processing).unwrap();
@@ -360,6 +382,48 @@ mod tests {
     }
 
     #[test]
+    fn pressure_changes_partial_cadence_and_blocks_an_uncommitted_final() {
+        use std::cell::Cell;
+        use voiceledger_core::scheduler::Reason;
+
+        let stopped = Cell::new(false);
+        let mut sink = Sink::default();
+        let mut segmenter = Segmenter::new();
+        segmenter.track = Some((uid(1), 0, 0));
+        let mut processing = Processing {
+            engine: &mut MockEngine,
+            output: &mut sink,
+            language: LanguagePolicy::Auto,
+            cancelled: &|| false,
+            partials: true,
+            policy: &mut |_| {
+                if stopped.get() {
+                    Err(Error::Deferred(Reason::Memory))
+                } else {
+                    Ok(Tier::ReducePartials)
+                }
+            },
+        };
+        for frame in 0..310_i64 {
+            segmenter
+                .accept(voiced_frame(frame, uid(2)), true, &mut processing)
+                .unwrap();
+        }
+        stopped.set(true);
+        assert!(matches!(
+            segmenter.flush(&mut processing),
+            Err(Error::Deferred(Reason::Memory))
+        ));
+        assert_eq!(sink.updates.len(), 2);
+        assert_eq!(
+            sink.updates[0].as_ref().unwrap().text,
+            (6 * RATE).to_string()
+        );
+        assert!(sink.updates[1].is_none());
+        assert!(sink.results.is_empty());
+    }
+
+    #[test]
     fn web_rtc_silence_does_not_emit_text() {
         let mut sink = Sink::default();
         let mut processing = Processing {
@@ -368,6 +432,7 @@ mod tests {
             language: LanguagePolicy::Auto,
             cancelled: &|| false,
             partials: true,
+            policy: &mut |_| Ok(Tier::Normal),
         };
         let mut segmenter = Segmenter::new();
         segmenter
@@ -381,6 +446,7 @@ mod tests {
                     channels: 2,
                     samples: Some(vec![0.0; 96_000]),
                 },
+                0,
                 &mut processing,
             )
             .unwrap();

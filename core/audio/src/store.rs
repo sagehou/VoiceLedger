@@ -13,7 +13,7 @@ use voiceledger_core::contracts::{Source, StableId};
 use crate::{Error, MAX_CHANNELS, MAX_CHUNK_BYTES, RATE, Result, opus};
 
 mod reader;
-pub use reader::{CommittedChunk, CommittedReader, FinishedSession};
+pub use reader::{CommittedChunk, CommittedReader, FinishedSession, TrackInput};
 
 #[cfg(test)]
 mod tests;

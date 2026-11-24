@@ -64,6 +64,8 @@ internal sealed class ModelsWindow : Window
             content.Children.Clear();
             AddLine("Recording only during capture", bold: true);
             if (status is not null) AddLine(status);
+            else if (speech.RootElement.GetProperty("job") is { ValueKind: JsonValueKind.Object } job
+                && JobStatus(job) is { } text) AddLine(text);
             if (sessionId is not null)
             {
                 var created = DateTimeOffset.FromUnixTimeMilliseconds(session.GetProperty("created_at_ms").GetInt64());
@@ -216,7 +218,16 @@ internal sealed class ModelsWindow : Window
         -35 => "Download interrupted. Retry to resume.",
         -36 => "Model checksum failed.",
         -37 => "Another local speech task is running.",
+        -38 => "Transcription paused by device limits. Saved progress can be resumed.",
         _ => "Local speech task stopped.",
+    };
+
+    private static string? JobStatus(JsonElement job) => Read(job, "state") switch
+    {
+        "deferred" when Read(job, "reason") == "worker_interrupted" => "Transcription was interrupted. Resume from saved progress.",
+        "deferred" => "Transcription paused. Resume from saved progress.",
+        "failed" => "The speech worker failed. Saved progress can be retried.",
+        _ => null,
     };
 
     private void AddLine(string text, bool bold = false)

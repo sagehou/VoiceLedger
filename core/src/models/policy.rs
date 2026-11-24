@@ -5,7 +5,7 @@ use crate::{Compatibility, Recommendation, RecommendationInput, recommend};
 
 use super::{Mode, Model};
 
-const DISK_RESERVE: u64 = 64 * 1024 * 1024;
+pub const DISK_RESERVE_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -166,7 +166,7 @@ pub(super) fn preflight(
         .storage_available_bytes
         .ok_or(Block::StorageUnknown)?
         .get();
-    if disk.saturating_sub(DISK_RESERVE) < download_bytes || disk < DISK_RESERVE {
+    if disk.saturating_sub(DISK_RESERVE_BYTES) < download_bytes || disk < DISK_RESERVE_BYTES {
         return Err(Block::StorageSpace);
     }
     if !runtimes

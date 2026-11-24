@@ -26,4 +26,14 @@ class SpeechBridgeTest {
         assertEquals(-34, (error as CoreException).code)
         assertFalse(File(root, "models").exists())
     }
+
+    @Test
+    fun acceptsResourceObservationAndRejectsInvalidBatteryPercentage() {
+        NativeCore.updateSpeechResources("""{"low_memory":true,"heat":"severe"}""".encodeToByteArray())
+        val result = runCatching {
+            NativeCore.updateSpeechResources("""{"battery_percent":101}""".encodeToByteArray())
+        }
+        assertEquals(-1, (result.exceptionOrNull() as CoreException).code)
+        NativeCore.updateSpeechResources("{}".encodeToByteArray())
+    }
 }

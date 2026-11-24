@@ -13,19 +13,8 @@ import org.json.JSONObject
 internal object DeviceProfiler {
     fun capture(context: Context) {
         val activity = context.getSystemService(ActivityManager::class.java)
-        val memory = activity?.let { manager ->
-            ActivityManager.MemoryInfo().also { manager.getMemoryInfo(it) }.takeIf { it.totalMem > 0 }
-        }
-        val power = context.getSystemService(PowerManager::class.java)
-        val thermal = if (Build.VERSION.SDK_INT >= 29) power?.currentThermalStatus?.let(::thermalState) else null
-        val battery = context.getSystemService(BatteryManager::class.java)
-            ?.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
-            ?.takeIf { it in 0..100 }
-        val storage = try {
-            StatFs(context.filesDir.absolutePath).availableBytes
-        } catch (_: IllegalArgumentException) {
-            null
-        }
+        val resources = readResources(context, activity)
+        val memory = resources.memory
         val measurement = JSONObject(
             mapOf(
                 "id" to UUID.randomUUID().toString(),
@@ -40,14 +29,61 @@ internal object DeviceProfiler {
                 "process_memory_bytes" to Debug.getPss().takeIf { it > 0 }?.times(1024L),
                 "low_memory" to memory?.lowMemory,
                 "low_ram_device" to activity?.isLowRamDevice,
-                "storage_available_bytes" to storage,
-                "thermal_state" to thermal,
-                "power_saver" to power?.isPowerSaveMode,
-                "battery_percent" to battery,
+                "storage_available_bytes" to resources.storage,
+                "thermal_state" to resources.thermal,
+                "power_saver" to resources.powerSaver,
+                "battery_percent" to resources.battery,
             ),
         )
         NativeCore.saveDeviceProfile(context.noBackupFilesDir.absolutePath, measurement.toString().encodeToByteArray())
     }
+
+    fun speechResources(context: Context): ByteArray {
+        val resources = readResources(context, context.getSystemService(ActivityManager::class.java))
+        val memory = resources.memory
+        val heat = when (resources.thermal) {
+            "none", "light" -> "normal"
+            "moderate" -> "moderate"
+            "severe", "critical", "emergency", "shutdown" -> "severe"
+            else -> null
+        }
+        return JSONObject(
+            mapOf(
+                "available_memory_bytes" to memory?.availMem,
+                "low_memory_threshold_bytes" to memory?.threshold?.takeIf { it > 0 },
+                "low_memory" to memory?.lowMemory,
+                "storage_available_bytes" to resources.storage,
+                "heat" to heat,
+                "power_saver" to resources.powerSaver,
+                "battery_percent" to resources.battery,
+            ),
+        ).toString().encodeToByteArray()
+    }
+
+    private fun readResources(context: Context, activity: ActivityManager?): Resources {
+        val memory = activity?.let { manager ->
+            ActivityManager.MemoryInfo().also { manager.getMemoryInfo(it) }.takeIf { it.totalMem > 0 }
+        }
+        val power = context.getSystemService(PowerManager::class.java)
+        val thermal = if (Build.VERSION.SDK_INT >= 29) power?.currentThermalStatus?.let(::thermalState) else null
+        val battery = context.getSystemService(BatteryManager::class.java)
+            ?.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+            ?.takeIf { it in 0..100 }
+        val storage = try {
+            StatFs(context.filesDir.absolutePath).availableBytes
+        } catch (_: IllegalArgumentException) {
+            null
+        }
+        return Resources(memory, storage, thermal, power?.isPowerSaveMode, battery)
+    }
+
+    private data class Resources(
+        val memory: ActivityManager.MemoryInfo?,
+        val storage: Long?,
+        val thermal: String?,
+        val powerSaver: Boolean?,
+        val battery: Int?,
+    )
 }
 
 internal fun thermalState(status: Int): String? = when (status) {
