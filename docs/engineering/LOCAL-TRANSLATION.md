@@ -1,0 +1,13 @@
+# English to Simplified Chinese evaluation
+
+The Actions workflow evaluates 12 synthetic final utterances with the same corpus on isolated Linux x64 runners. Each model and its runtime dependencies are SHA-256 pinned. The inference processes see only the loopback interface. The reports record the source commit, corpus and model hashes, CPU, timings, process peak RSS and all synthetic outputs. The reported model size counts the files used for inference. [Workflow](../../.github/workflows/translation-evaluation.yml) · [Corpus](../../contracts/fixtures/translation-en-zh-v1.json) · [Actions evidence](https://github.com/sagehou/VoiceLedger/actions/runs/45363849951)
+
+| Candidate | Model files | Load / first sentence | Warm median | Peak RSS | Sample findings |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Mozilla v2.0 · Bergamot 0.4.5 | 48.7 MiB | 106 / 345 ms | 8.09 ms | 363 MiB | Reversed the order of joining and recording. Translated “transcript” as a grade report. |
+| Mozilla v2.2 · Bergamot 0.4.5 | 49.5 MiB | 106 / 437 ms | 9.99 ms | 437 MiB | Preserved the recording order and transcript meaning. Mistranslated memory as storage capacity in one sentence. |
+| OPUS-MT eng-zho · CTranslate2 4.7.1 int8 | 81.7 MiB | 191 / 72 ms | 81.04 ms | 169 MiB | Preserved the recording order and memory comparison. Changed “Mei” to “Xiaomei” and used an imprecise term for transcript. |
+
+The Bergamot jobs used one worker and beam size 1 on EPYC 7763 runners. OPUS-MT used one thread, the source archive's beam size 6, and the Simplified Chinese target token on a Xeon 6975P-C runner. Native runtime load, peak memory, latency and battery cost on the target devices remain **BLOCKED** pending #18. Translation remains disabled in both clients. [Device acceptance](https://github.com/sagehou/VoiceLedger/issues/18)
+
+Mozilla's repository carries MPL-2.0 and the pinned v2.0 weights are available in uncompressed form through Remote Settings. The original OPUS-MT archive used here carries CC BY 4.0, as stated in its included license. The Hugging Face conversion has its own Apache-2.0 label. The hosted CTranslate2 run converts the original weights to int8. Any redistribution of those converted weights needs the original attribution, license and conversion disclosure. [Mozilla source and license](https://github.com/mozilla/firefox-translations-models/tree/e7957fc407441a5e3e35bbcbf9d60d9b35764618) · [Remote Settings](https://firefox.settings.services.mozilla.com/v1/buckets/main/collections/translations-models/records?fromLang=en&toLang=zh-Hans) · [OPUS-MT archive and model card](https://huggingface.co/Helsinki-NLP/opus-mt-en-zh/blob/408d9bc410a388e1d9aef112a2daba955b945255/README.md)

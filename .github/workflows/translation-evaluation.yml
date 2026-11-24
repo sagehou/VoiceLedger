@@ -49,3 +49,63 @@ jobs:
         with:
           name: translation-en-zh-evaluation-${{ matrix.candidate }}
           path: artifacts/translation-en-zh.json
+
+  ctranslate2-native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: windows-x64
+            os: windows-latest
+          - target: android-arm64
+            os: ubuntu-24.04
+    name: CTranslate2 (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    env:
+      ANDROID_NDK_VERSION: '28.2.13676358'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: OpenNMT/CTranslate2
+          ref: 226c95d94e660c48b11c62e108886b7ef76d589d # v4.7.1
+          persist-credentials: false
+      - name: Fetch pinned CPU dependencies
+        run: |
+          git submodule update --init --recursive --depth 1 \
+            third_party/cxxopts third_party/cpu_features third_party/ruy third_party/spdlog
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        if: matrix.target == 'android-arm64'
+        with:
+          distribution: temurin
+          java-version: '17.0.18+8'
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+        if: matrix.target == 'android-arm64'
+        with:
+          cmdline-tools-version: '12266719'
+          packages: ndk;${{ env.ANDROID_NDK_VERSION }}
+      - name: Build and smoke check the Windows x64 CPU runtime
+        if: matrix.target == 'windows-x64'
+        run: |
+          cmake -S . -B build -A x64 -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            -DWITH_MKL=OFF -DWITH_RUY=ON -DOPENMP_RUNTIME=NONE
+          cmake --build build --config Release --parallel 3
+          cmake --install build --config Release --prefix install
+          install/bin/ct2-translator.exe --help
+      - name: Build and inspect the Android arm64 API 26 CPU runtime
+        if: matrix.target == 'android-arm64'
+        run: |
+          ndk="$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION"
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            -DCMAKE_TOOLCHAIN_FILE="$ndk/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-26 -DANDROID_STL=c++_static \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DBUILD_CLI=OFF \
+            -DWITH_MKL=OFF -DWITH_RUY=ON -DOPENMP_RUNTIME=NONE
+          cmake --build build --parallel 3
+          readelf="$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+          "$readelf" --file-header build/libctranslate2.so | tee native-header.log
+          grep -E 'Machine:[[:space:]]+AArch64' native-header.log
+          "$readelf" --dynamic-table build/libctranslate2.so
