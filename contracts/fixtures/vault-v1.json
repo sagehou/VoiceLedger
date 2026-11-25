@@ -1,0 +1,10 @@
+{
+  "purpose": "Synthetic key material for interoperability tests",
+  "generation": 7,
+  "vault_id": "000102030405460788090a0b0c0d0e0f",
+  "object_id": "101112131415461798191a1b1c1d1e1f",
+  "nonce": "202122232425262728292a2b",
+  "recovery_code": "vl1_AAECAwQFRgeICQoLDA0ODwAAAAcAAQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eH0WuUGD1Lw",
+  "plaintext": "VoiceLedger 合成",
+  "envelope": "564c4f3100000007101112131415461798191a1b1c1d1e1f202122232425262728292a2b2daffd434d0daf9058fa231333ca135c6ca297e457443bc87a19cf8e729b2b3e6a8c"
+}
