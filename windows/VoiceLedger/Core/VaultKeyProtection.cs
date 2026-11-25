@@ -1,6 +1,8 @@
 using System;
 using System.ComponentModel;
+using System.IO;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 
 namespace VoiceLedger.Core;
 
@@ -10,6 +12,56 @@ internal static class VaultKeyProtection
 
     internal static byte[] Wrap(byte[] recovery) => WithDpapi(recovery, protecting: true);
     internal static byte[] Unwrap(byte[] wrapped) => WithDpapi(wrapped, protecting: false);
+
+    internal static byte[]? ReadLocal(string directory)
+    {
+        byte[] wrapped;
+        try
+        {
+            using var file = File.OpenRead(Path.Combine(directory, "vault-key.v1"));
+            if (file.Length is < 1 or > 4096) throw new InvalidDataException("Invalid wrapped key length.");
+            wrapped = new byte[(int)file.Length];
+            file.ReadExactly(wrapped);
+        }
+        catch (Exception failure) when (failure is FileNotFoundException or DirectoryNotFoundException)
+        {
+            return null;
+        }
+        byte[] recovery = Unwrap(wrapped);
+        try
+        {
+            _ = NativeVault.Identity(recovery);
+            return recovery;
+        }
+        catch
+        {
+            CryptographicOperations.ZeroMemory(recovery);
+            throw;
+        }
+        finally { CryptographicOperations.ZeroMemory(wrapped); }
+    }
+
+    internal static void InstallLocal(string directory, byte[] recovery)
+    {
+        _ = NativeVault.Identity(recovery);
+        Directory.CreateDirectory(directory);
+        byte[] wrapped = Wrap(recovery);
+        string temporary = Path.Combine(directory, $".vault-key-{Guid.NewGuid():N}.partial");
+        try
+        {
+            using (var file = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                file.Write(wrapped);
+                file.Flush(flushToDisk: true);
+            }
+            File.Move(temporary, Path.Combine(directory, "vault-key.v1"));
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(wrapped);
+            File.Delete(temporary);
+        }
+    }
 
     private static byte[] WithDpapi(byte[] bytes, bool protecting)
     {

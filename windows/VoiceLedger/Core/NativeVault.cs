@@ -10,6 +10,8 @@ internal static class NativeVault
     private const int EnvelopeOverhead = 52;
 
     internal static byte[] CreateKey() => Request(1, [], [], [], 128);
+    internal static byte[] Identity(byte[] recovery) => Request(4, recovery, [], [], 20);
+    internal static byte[] Rotate(byte[] recovery) => Request(5, recovery, [], [], 128);
 
     internal static byte[] Seal(byte[] recovery, byte[] data)
     {

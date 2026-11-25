@@ -3,6 +3,10 @@ package com.voiceledger.app.core
 internal object NativeVault {
     fun createKey(): ByteArray = request(1)
 
+    fun identity(recovery: ByteArray): ByteArray = request(4, recovery)
+
+    fun rotate(recovery: ByteArray): ByteArray = request(5, recovery)
+
     fun seal(recovery: ByteArray, data: ByteArray): ByteArray = request(2, recovery, data = data)
 
     fun open(recovery: ByteArray, objectId: ByteArray, envelope: ByteArray): ByteArray =
