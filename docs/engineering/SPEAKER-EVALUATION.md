@@ -1,0 +1,5 @@
+# Speaker diarization evaluation
+
+The first Actions evaluation uses the public FP32 Chinese and English CAM++ weights and the existing sherpa-onnx backend. It synthesizes separate calibration and evaluation utterances with eSpeak NG. The clustering cutoff comes from calibration pairs. Each evaluation starts a new pool of session-local labels and includes short, noisy and overlapping speech. The report includes duration-weighted error and Jaccard error on the supplied windows, split and merge counts, and unknown labels. Only synthetic aggregate results are included in the artifact. [Model weights](https://github.com/k2-fsa/sherpa-onnx/releases/tag/speaker-recongition-models) · [3D-Speaker source and license](https://github.com/modelscope/3D-Speaker)
+
+The experiment is a baseline for #13. Real meeting segmentation, the INT8 comparison, device qualification and app integration remain pending. The core selection policy rejects a machine assignment that would replace a user's confirmed assignment. Cross-session profiles require a separate consent flow. [Issue #13](https://github.com/sagehou/VoiceLedger/issues/13)
