@@ -658,7 +658,7 @@ impl Request {
             check_cancel(&interrupted)?;
             policy(None)?;
             let mut engine = adapter.engine(model, installed.directory(), language)?;
-            let mut publish_partial = |value| publish(value.map(Update::Partial));
+            let mut publish_partial = |value: Option<Partial>| publish(value.map(Update::Partial));
             let mut writer = Writer {
                 transcripts: &transcripts,
                 session: &session,
