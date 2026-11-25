@@ -245,7 +245,7 @@ fn migration_preserves_the_version_one_transcript_database() {
             .0
             .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
             .unwrap(),
-        4
+        5
     );
 }
 
@@ -578,5 +578,188 @@ fn native_translation_app_flow() {
             .unwrap()
             .as_slice(),
         b"[]"
+    );
+}
+
+#[test]
+fn sync_import_preserves_actual_branches_and_recovers_after_device_removal() {
+    use std::cell::{Cell, RefCell};
+    use std::collections::BTreeMap;
+
+    use voiceledger_core::contracts::{DomainBatch, Source, SyncEntity, SyncEvent, SyncOperation};
+    use voiceledger_core::sync::{
+        Journal, ObjectKey, Page, PendingEvent, PutOutcome, SyncBackend, SyncError,
+        SyncedTranscript, VaultSync,
+    };
+    use voiceledger_core::vault::{SealedObject, SyncScopes, Vault};
+
+    #[derive(Default)]
+    struct Storage(RefCell<BTreeMap<ObjectKey, Vec<u8>>>, Cell<bool>);
+    impl SyncBackend for Storage {
+        fn put_immutable(
+            &self,
+            key: &ObjectKey,
+            object: &SealedObject,
+        ) -> std::result::Result<PutOutcome, SyncError> {
+            let mut data = self.0.borrow_mut();
+            if data.contains_key(key) {
+                return Ok(PutOutcome::Exists);
+            }
+            data.insert(key.clone(), object.envelope().to_vec());
+            if key.value().ends_with("/retirement") && self.1.replace(false) {
+                return Err(SyncError::Transport);
+            }
+            Ok(PutOutcome::Created)
+        }
+        fn get(&self, key: &ObjectKey) -> std::result::Result<Vec<u8>, SyncError> {
+            self.0.borrow().get(key).cloned().ok_or(SyncError::NotFound)
+        }
+        fn list(
+            &self,
+            prefix: &ObjectKey,
+            _: Option<&str>,
+        ) -> std::result::Result<Page, SyncError> {
+            let here = format!("{}/", prefix.value());
+            let keys = self
+                .0
+                .borrow()
+                .keys()
+                .filter(|key| key.value().starts_with(&here))
+                .cloned()
+                .collect();
+            Ok(Page {
+                keys,
+                continuation: None,
+            })
+        }
+        fn delete(&self, _: &ObjectKey) -> std::result::Result<(), SyncError> {
+            panic!("Text transfer and rotation retain encrypted history")
+        }
+    }
+
+    let batch: DomainBatch =
+        serde_json::from_str(include_str!("../../../contracts/fixtures/domain-v1.json")).unwrap();
+    let session = batch.sessions[0].id.clone();
+    let lines = batch.utterance_revisions;
+    let entity = lines[1].utterance_id.clone();
+    let remote = Storage::default();
+    let vault = Vault::create().unwrap();
+    let a_root = Directory::new();
+    let b_root = Directory::new();
+    let c_root = Directory::new();
+    let a_text = Transcripts::open(&a_root.0).unwrap();
+    let a_id = a_text.sync_device().unwrap();
+    let b_text = Transcripts::open(&b_root.0).unwrap();
+    let b_id = b_text.sync_device().unwrap();
+    let wrap = |index: usize| SyncedTranscript {
+        session_id: session.clone(),
+        source: Source::Mic,
+        revision: lines[index].clone(),
+        session: None,
+    };
+    let stage = |sync: &mut VaultSync<'_>, text: &Transcripts, items: Vec<SyncedTranscript>| {
+        sync.stage_text(items, || text.id().map_err(|_| SyncError::LocalStorage))
+            .unwrap();
+        sync.publish().unwrap();
+    };
+    let mut first = VaultSync::open(&a_root.0, &vault, &remote, a_id.clone()).unwrap();
+    first.pull().unwrap();
+    stage(&mut first, &a_text, vec![wrap(1), wrap(2)]);
+    let mut second = VaultSync::open(&b_root.0, &vault, &remote, b_id.clone()).unwrap();
+    second.pull().unwrap();
+    // A second device's offline edit shares the same ancestor and ordinal.
+    stage(&mut second, &b_text, vec![wrap(4)]);
+    assert_eq!(b_text.import(second.journal()).unwrap(), 3);
+    assert_eq!(b_text.import(second.journal()).unwrap(), 0);
+    let sessions = crate::library::history(&b_root.0, None, None).unwrap();
+    let sessions = serde_json::to_value(sessions).unwrap();
+    assert_eq!(sessions[0]["id"], serde_json::json!(session));
+    assert_eq!(sessions[0]["text_only"], true);
+    assert!(!b_root.0.join("manifest.sqlite3").exists());
+    let visible = crate::transcript::selected(&b_root.0, &session).unwrap();
+    assert_eq!(visible[0].source, "mic");
+    assert_eq!(visible[0].conflicts.len(), 2);
+    let heads = [lines[2].id.clone(), lines[4].id.clone()];
+    assert!(matches!(
+        b_text.resolve_conflict(
+            &session,
+            &entity,
+            &[heads[0].clone(), heads[0].clone()],
+            "Stale"
+        ),
+        Err(Error::RevisionConflict)
+    ));
+    b_text
+        .resolve_conflict(&session, &entity, &heads, "Reviewed synthetic notes")
+        .unwrap();
+    let outgoing = b_text.outgoing(&b_root.0).unwrap();
+    assert_eq!(outgoing.len(), 1);
+    assert_eq!(outgoing[0].revision.parent_revision_ids, heads);
+    stage(&mut second, &b_text, outgoing);
+    first.pull().unwrap();
+    assert_eq!(a_text.import(first.journal()).unwrap(), 4);
+    assert_eq!(
+        crate::transcript::selected(&a_root.0, &session).unwrap()[0].text,
+        "Reviewed synthetic notes"
+    );
+
+    let replacement = vault.rotate().unwrap();
+    remote.1.set(true);
+    assert_eq!(
+        second.remove(&replacement, &a_id),
+        Err(SyncError::Transport)
+    );
+    assert!(VaultSync::finished_rotation(&vault, &replacement, &remote, &a_id).unwrap());
+    assert!(matches!(
+        VaultSync::verify_key(&vault, &remote, &b_id),
+        Err(SyncError::GenerationRetired)
+    ));
+    assert!(matches!(
+        VaultSync::verify_key(&replacement, &remote, &a_id),
+        Err(SyncError::DeviceRemoved)
+    ));
+    let clean_key = Vault::recover(&replacement.recovery_code()).unwrap();
+    let clean = Transcripts::open(&c_root.0).unwrap();
+    let mut third =
+        VaultSync::open(&c_root.0, &clean_key, &remote, clean.sync_device().unwrap()).unwrap();
+    third.pull().unwrap();
+    assert_eq!(clean.import(third.journal()).unwrap(), 4);
+    let restored = crate::transcript::selected(&c_root.0, &session).unwrap();
+    assert_eq!(restored[0].text, "Reviewed synthetic notes");
+    assert!(restored[0].conflicts.is_empty());
+    assert_eq!(third.devices().unwrap().len(), 1);
+    let tombstone = SyncEvent {
+        id: clean.id().unwrap(),
+        device_id: clean.id().unwrap(),
+        sequence: 0.try_into().unwrap(),
+        entity_kind: SyncEntity::Session,
+        entity_id: session.clone(),
+        operation: SyncOperation::Tombstone,
+        restored_from_tombstone_id: None,
+        revision_id: clean.id().unwrap(),
+        object_refs: Vec::new(),
+        created_at_unix_ms: 1.try_into().unwrap(),
+    };
+    let scopes = SyncScopes {
+        enabled: true,
+        ..SyncScopes::default()
+    };
+    let deletion = PendingEvent::seal(&clean_key, scopes, &tombstone).unwrap();
+    deletion.publish(&remote).unwrap();
+    let mut tombstones = Journal::new(&clean_key);
+    tombstones
+        .receive(&clean_key, &remote, deletion.key())
+        .unwrap();
+    clean.import(&tombstones).unwrap();
+    clean.import(third.journal()).unwrap();
+    assert!(
+        crate::library::history(&c_root.0, None, None)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        crate::transcript::selected(&c_root.0, &session)
+            .unwrap()
+            .is_empty()
     );
 }

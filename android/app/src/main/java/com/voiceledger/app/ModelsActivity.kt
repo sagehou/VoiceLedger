@@ -149,7 +149,9 @@ class ModelsActivity : ComponentActivity() {
                                     val duration = DateUtils.formatElapsedTime(item.getLong("elapsed_ns") / 1_000_000_000)
                                     val state = stringResource(if (item.getBoolean("interrupted")) R.string.session_interrupted else R.string.session_completed)
                                     Button(onClick = { selectedSession = item.getString("id") }) {
-                                        val label = stringResource(R.string.session_row, time, duration, state,
+                                        val label = if (item.optBoolean("text_only"))
+                                            stringResource(R.string.session_synced_row, time, duration)
+                                        else stringResource(R.string.session_row, time, duration, state,
                                             item.getLong("committed"), item.getLong("missing"))
                                         val title = if (item.isNull("title")) "" else item.getString("title")
                                         Text(if (title.isEmpty()) label else "$title\n$label")
@@ -176,9 +178,11 @@ class ModelsActivity : ComponentActivity() {
                         } else {
                             val session = inspection?.optJSONObject("session")
                             val sessionId = session?.getString("id")
+                            val textOnly = inspection?.optBoolean("text_only") == true
                             if (session != null) {
                                 val date = Date(session.getLong("created_at_ms"))
                                 Text(DateFormat.getDateTimeInstance().format(date))
+                                if (textOnly) Text(stringResource(R.string.session_text_only))
                                 if (sessions && sessionId != null) {
                                     val title = inspection?.takeUnless { it.isNull("title") }?.getString("title").orEmpty()
                                     if (title.isNotEmpty()) Text(title, style = MaterialTheme.typography.titleLarge)
@@ -226,7 +230,7 @@ class ModelsActivity : ComponentActivity() {
                                             }
                                         })
                                 }
-                                LanguagePicker(language, !working) { language = it }
+                                if (!textOnly) LanguagePicker(language, !working) { language = it }
                             }
                             val choices = inspection?.getJSONArray("models")
                             val idle = recording.phase == RecordingPhase.Idle
@@ -238,7 +242,7 @@ class ModelsActivity : ComponentActivity() {
                                 val choice = choices?.optJSONObject(index)
                                 val installed = choice?.optBoolean("installed") == true
                                 val allowed = choice?.isNull("blocked_by") == true && idle && !working
-                                val canProcess = sessionId != null && (!translation || hasEnglish)
+                                val canProcess = sessionId != null && !textOnly && (!translation || hasEnglish)
                                 ModelRow(details, choice, allowed && (!installed || canProcess)) {
                                     val action = JSONObject()
                                         .put("model_id", model.getString("id"))
@@ -266,11 +270,28 @@ class ModelsActivity : ComponentActivity() {
                                 val line = lines?.getJSONObject(index) ?: continue
                                 if (trackFilter != null && trackFilter != line.getString("source")) continue
                                 val source = if (line.getString("source") == "mic") R.string.model_mic else R.string.model_loopback
-                                Text(stringResource(R.string.model_line, stringResource(source), line.getLong("start_ns") / 1_000_000_000.0))
+                                val detected = stringResource(detectedLanguage(line.getString("language")))
+                                Text(stringResource(R.string.model_line, stringResource(source),
+                                    line.getLong("start_ns") / 1_000_000_000.0, detected))
                                 Text(line.getString("text"))
                                 if (sessionId != null) {
-                                    Button(enabled = idle && !working, onClick = { editKind = RevisionEditor.Transcript; edit = line }) {
-                                        Text(stringResource(R.string.edit_transcript))
+                                    val conflicts = line.getJSONArray("conflicts")
+                                    val needsReview = conflicts.length() > 1
+                                    if (needsReview) {
+                                        Text(stringResource(R.string.sync_conflicting_revisions), style = MaterialTheme.typography.titleMedium)
+                                        for (version in 0 until conflicts.length()) {
+                                            val conflict = conflicts.getJSONObject(version)
+                                            val author = stringResource(if (conflict.getBoolean("manual")) R.string.sync_manual else R.string.sync_machine)
+                                            val lang = stringResource(detectedLanguage(conflict.getString("language")))
+                                            Text(stringResource(R.string.sync_revision_author, author, lang))
+                                            Text(conflict.getString("text"))
+                                        }
+                                    }
+                                    Button(enabled = idle && !working, onClick = {
+                                        editKind = if (needsReview) RevisionEditor.Conflict else RevisionEditor.Transcript
+                                        edit = line
+                                    }) {
+                                        Text(stringResource(if (needsReview) R.string.sync_resolve_conflict else R.string.edit_transcript))
                                     }
                                 }
                                 val revision = line.optJSONObject("translation")
@@ -299,7 +320,7 @@ class ModelsActivity : ComponentActivity() {
                                 if (sessionId != null) {
                                     val speaker = line.optJSONObject("speaker")
                                     val initial = when (editKind) {
-                                        RevisionEditor.Transcript -> line.getString("text")
+                                        RevisionEditor.Transcript, RevisionEditor.Conflict -> line.getString("text")
                                         RevisionEditor.Translation -> line.optJSONObject("translation")?.getString("text").orEmpty()
                                         RevisionEditor.Speaker -> speaker?.takeUnless { it.isNull("name") }?.getString("name").orEmpty()
                                     }
@@ -313,6 +334,13 @@ class ModelsActivity : ComponentActivity() {
                                         val revision = line.getString("revision_id")
                                         when (editKind) {
                                             RevisionEditor.Transcript -> action.put("op", "save_utterance").put("expected_revision_id", revision)
+                                            RevisionEditor.Conflict -> {
+                                                val conflicts = line.getJSONArray("conflicts")
+                                                val heads = JSONArray()
+                                                for (index in 0 until conflicts.length())
+                                                    heads.put(conflicts.getJSONObject(index).getString("revision_id"))
+                                                action.put("op", "resolve_conflict").put("expected_heads", heads)
+                                            }
                                             RevisionEditor.Translation -> action.put("op", "save_translation").put("source_revision_id", revision)
                                                 .put("expected_translation_id", line.optJSONObject("translation")?.getString("revision_id") ?: JSONObject.NULL)
                                             RevisionEditor.Speaker -> action.put("op", "save_speaker").put("expected_revision_id", revision)
@@ -474,8 +502,15 @@ private fun ExportTranscript(enabled: Boolean, prepare: suspend (String) -> Byte
     outcome?.let { Text(stringResource(it)) }
 }
 
+private fun detectedLanguage(code: String): Int = when (code) {
+    "zh" -> R.string.model_chinese
+    "ja" -> R.string.model_japanese
+    else -> R.string.model_english
+}
+
 private enum class RevisionEditor(val label: Int, val field: Int) {
     Transcript(R.string.edit_transcript, R.string.transcript),
+    Conflict(R.string.sync_resolve_conflict, R.string.transcript),
     Translation(R.string.edit_translation, R.string.chinese_translation),
     Speaker(R.string.session_edit_speaker, R.string.session_speaker_name),
 }

@@ -54,7 +54,7 @@
     <string name="model_japanese">Japanese</string>
     <string name="model_mic">Microphone</string>
     <string name="model_loopback">System loopback</string>
-    <string name="model_line">%1$s · %2$.1fs</string>
+    <string name="model_line">%1$s · %2$.1f s · %3$s</string>
     <string name="sessions">Sessions</string>
     <string name="search_transcripts">Search sessions</string>
     <string name="sessions_empty">No saved sessions.</string>
@@ -96,4 +96,11 @@
     <string name="session_speaker_name">Speaker name</string>
     <string name="session_unknown_speaker">Unknown speaker</string>
     <string name="session_export_audio">Export track audio</string>
+    <string name="session_synced_row">%1$s · %2$s · Synced text</string>
+    <string name="session_text_only">Synced text · Audio unavailable on this device</string>
+    <string name="sync_conflicting_revisions">Conflicting revisions</string>
+    <string name="sync_resolve_conflict">Resolve conflict</string>
+    <string name="sync_manual">Manual</string>
+    <string name="sync_machine">Machine</string>
+    <string name="sync_revision_author">%1$s · %2$s</string>
 </resources>

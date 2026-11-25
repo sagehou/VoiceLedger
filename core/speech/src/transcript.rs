@@ -49,7 +49,7 @@ impl Transcripts {
         )?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let version: i64 = tx.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        if !(0..=4).contains(&version) {
+        if !(0..=5).contains(&version) {
             return Err(Error::Storage);
         }
         if version == 0 {
@@ -63,7 +63,10 @@ impl Transcripts {
         }
         if version < 4 {
             tx.execute_batch(crate::library::SCHEMA)?;
-            tx.execute_batch("PRAGMA user_version=4;")?;
+        }
+        if version < 5 {
+            tx.execute_batch(crate::sync_data::SCHEMA)?;
+            tx.execute_batch("PRAGMA user_version=5;")?;
         }
         tx.commit()?;
         Ok(Self { db })
@@ -138,8 +141,8 @@ impl Transcripts {
             [&utterance], |row| Ok((row.get(0)?, row.get(1)?)),
         ).optional()?;
         let (ordinal, parents) = match prior {
-            Some((id, prior)) => (
-                prior.checked_add(1).ok_or(Error::Invalid)?,
+            Some((id, _)) => (
+                crate::sync_data::next_ordinal(&tx, &utterance)?,
                 vec![id.try_into().map_err(|_| Error::Invalid)?],
             ),
             None => (1, Vec::new()),
@@ -221,6 +224,7 @@ pub struct Line {
     pub text: String,
     pub translation: Option<TranslationLine>,
     pub speaker: Option<crate::library::SpeakerLine>,
+    pub(crate) conflicts: Vec<crate::sync_data::ConflictRevision>,
 }
 
 pub fn selected(root: &Path, session: &StableId) -> Result<Vec<Line>> {
@@ -246,15 +250,22 @@ pub(crate) fn visit_selected(
     let db = Connection::open_with_flags(root.join(PATH), OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     db.busy_timeout(Duration::from_millis(150))?;
     let version: i64 = db.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    // Track labels come from the recording manifest, which stays read-only here.
-    let manifest = root.join("manifest.sqlite3");
-    let audio = Connection::open_with_flags(manifest, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    audio.busy_timeout(Duration::from_millis(150))?;
+    let audio = crate::sync_data::open_audio(root)?;
     let session = String::from(session.clone());
-    let mut query = db.prepare(
+    if version >= 5 && crate::sync_data::hidden(&db, "session", &session)? {
+        return Ok(());
+    }
+    let suffix = if version >= 5 {
+        " AND NOT EXISTS(SELECT 1 FROM synced_tombstones t WHERE t.scope='utterance' AND t.entity_id=u.id)
+          ORDER BY (CASE WHEN ?2<0 THEN 0 ELSE EXISTS(SELECT 1 FROM sync_conflicts c WHERE c.utterance_id=u.id) END) DESC,
+            u.start_ns,u.track_id LIMIT ?2"
+    } else {
+        " ORDER BY u.start_ns,u.track_id LIMIT ?2"
+    };
+    let mut query = db.prepare(&format!(
         "SELECT u.track_id, u.start_ns, r.payload FROM utterances u JOIN revisions r ON r.id=u.selected_revision
-         WHERE u.session_id=?1 ORDER BY u.start_ns,u.track_id LIMIT ?2",
-    )?;
+         WHERE u.session_id=?1{suffix}",
+    ))?;
     let rows = query.query_map(params![session, limit], |row| {
         Ok((
             row.get::<_, String>(0)?,
@@ -262,10 +273,9 @@ pub(crate) fn visit_selected(
             row.get::<_, String>(2)?,
         ))
     })?;
-    let mut labels = audio.prepare("SELECT source FROM tracks WHERE id=?1 AND session_id=?2")?;
     for row in rows {
         let (track, start_ns, payload) = row?;
-        let source = labels.query_row(params![track, session], |row| row.get(0))?;
+        let source = crate::sync_data::source(&db, audio.as_ref(), &session, &track, version)?;
         let value: UtteranceRevision = serde_json::from_str(&payload)?;
         let translation = if version >= 3 {
             translations::display(&db, &value)?
@@ -277,6 +287,11 @@ pub(crate) fn visit_selected(
         } else {
             None
         };
+        let conflicts = if version >= 5 && limit >= 0 {
+            crate::sync_data::conflict(&db, &value.utterance_id)?
+        } else {
+            Vec::new()
+        };
         visit(Line {
             source,
             start_ns: u64::try_from(start_ns).map_err(|_| Error::Storage)?,
@@ -286,6 +301,7 @@ pub(crate) fn visit_selected(
             text: value.text,
             translation,
             speaker,
+            conflicts,
         })?;
     }
     Ok(())

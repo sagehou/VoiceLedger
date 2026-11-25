@@ -36,6 +36,10 @@ enum Connection {
 
 /// Test one configured endpoint with encrypted synthetic data under a new private prefix.
 pub fn check_provider(data: &[u8]) -> Result<(), SyncError> {
+    verify(connect(data)?.as_ref())
+}
+
+pub fn connect(data: &[u8]) -> Result<Box<dyn SyncBackend>, SyncError> {
     if data.len() > 32 * 1024 {
         return Err(SyncError::Configuration);
     }
@@ -46,7 +50,7 @@ pub fn check_provider(data: &[u8]) -> Result<(), SyncError> {
             endpoint,
             name,
             password,
-        } => verify(&WebDav::new(&endpoint, &name, &password.0)?),
+        } => Ok(Box::new(WebDav::new(&endpoint, &name, &password.0)?)),
         Connection::S3 {
             endpoint,
             bucket,
@@ -54,18 +58,18 @@ pub fn check_provider(data: &[u8]) -> Result<(), SyncError> {
             access_key,
             secret_key,
             session_token,
-        } => verify(&S3::new(
+        } => Ok(Box::new(S3::new(
             &endpoint,
             &bucket,
             &region,
             &access_key.0,
             &secret_key.0,
             session_token.as_ref().map(|token| token.0.as_str()),
-        )?),
+        )?)),
     }
 }
 
-fn verify(backend: &impl SyncBackend) -> Result<(), SyncError> {
+fn verify(backend: &dyn SyncBackend) -> Result<(), SyncError> {
     let vault = Vault::create().map_err(|_| SyncError::Integrity)?;
     let namespace = format!("voiceledger-probe/{}", super::hex(vault.id()));
     let prefix = ObjectKey::new(namespace.clone())?;

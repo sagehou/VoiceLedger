@@ -2,6 +2,8 @@ mod engine;
 mod jobs;
 mod library;
 mod pipeline;
+mod sync_data;
+mod sync_request;
 mod transcript;
 mod transfer;
 mod translation_engine;
@@ -30,6 +32,7 @@ use voiceledger_core::scheduler::{Governor, Heat, JobKind, Observation, Reason, 
 use crate::engine::{Adapter, adapter_path};
 pub use crate::pipeline::Partial;
 use crate::pipeline::{Processing, Segmenter};
+pub use crate::sync_request::request as sync_request;
 use crate::transcript::{Transcripts, Writer};
 use crate::translation_engine::TranslationAdapter;
 
@@ -137,6 +140,12 @@ enum Action {
         chunk_id: StableId,
     },
     SaveUtterance(library::UtteranceEdit),
+    ResolveConflict {
+        session_id: StableId,
+        utterance_id: StableId,
+        expected_heads: Vec<StableId>,
+        text: String,
+    },
     RenameSession(library::TitleEdit),
     SaveSpeaker(library::SpeakerEdit),
     Install {
@@ -245,10 +254,7 @@ impl Request {
             format,
         } = self.action
         {
-            let session = reader
-                .as_ref()
-                .ok_or(Error::NoAudio)?
-                .finished(session_id)?
+            let session = sync_data::finished(&self.recordings, reader.as_ref(), session_id)?
                 .ok_or(Error::NoAudio)?;
             return library::export(&self.recordings, &session, format);
         }
@@ -260,7 +266,8 @@ impl Request {
             )?)?);
         }
         if let Action::Inspect { ref session_id } = self.action {
-            let session = reader
+            let recordings = &self.recordings;
+            let local = reader
                 .as_ref()
                 .map(|reader| match session_id {
                     Some(id) => reader.finished(id),
@@ -268,7 +275,14 @@ impl Request {
                 })
                 .transpose()?
                 .flatten();
-            let recordings = &self.recordings;
+            let session = match session_id
+                .as_ref()
+                .or_else(|| local.as_ref().map(|item| &item.id))
+            {
+                Some(id) => sync_data::finished(recordings, reader.as_ref(), id)?,
+                None => None,
+            };
+            let text_only = local.is_none() && session.is_some();
             let title = session
                 .as_ref()
                 .map(|session| library::title(recordings, &session.id))
@@ -335,6 +349,7 @@ impl Request {
                 has_translation_source,
                 tracks,
                 title,
+                text_only,
             })?);
         }
         check_cancel(cancelled)?;
@@ -373,11 +388,22 @@ impl Request {
                 Transcripts::open(&self.recordings)?.save_utterance(edit)?;
                 return processed(1);
             }
+            Action::ResolveConflict {
+                session_id,
+                utterance_id,
+                expected_heads,
+                text,
+            } => {
+                Transcripts::open(&self.recordings)?.resolve_conflict(
+                    &session_id,
+                    &utterance_id,
+                    &expected_heads,
+                    &text,
+                )?;
+                return processed(1);
+            }
             Action::RenameSession(edit) => {
-                reader
-                    .as_ref()
-                    .ok_or(Error::NoAudio)?
-                    .finished(&edit.session_id)?
+                sync_data::finished(&self.recordings, reader.as_ref(), &edit.session_id)?
                     .ok_or(Error::NoAudio)?;
                 Transcripts::open(&self.recordings)?.rename(edit)?;
                 return processed(1);
@@ -405,6 +431,7 @@ impl Request {
             | Action::Translate { model_id, .. } => model_id,
             Action::SaveTranslation(_)
             | Action::SaveUtterance(_)
+            | Action::ResolveConflict { .. }
             | Action::RenameSession(_)
             | Action::SaveSpeaker(_) => {
                 return Err(Error::Invalid);
@@ -760,6 +787,7 @@ struct Inspection<'a> {
     has_translation_source: bool,
     tracks: Vec<HistoryTrack>,
     title: Option<String>,
+    text_only: bool,
 }
 
 const WORKER_LOCK: &str = "speech-worker.lock";

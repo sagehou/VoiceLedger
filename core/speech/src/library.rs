@@ -32,6 +32,7 @@ pub(crate) struct SessionEntry {
     audio: SavedSession,
     has_transcript: bool,
     title: Option<String>,
+    text_only: bool,
 }
 
 pub(crate) fn history(
@@ -43,85 +44,123 @@ pub(crate) fn history(
     if filter.len() > 256 || filter.contains('\0') {
         return Err(Error::Invalid);
     }
-    let Some(reader) = reader else {
-        return Ok(Vec::new());
-    };
     let transcripts = open_readonly(root)?;
     let has_metadata = transcripts
         .as_ref()
         .is_some_and(|(_, version)| *version >= 4);
+    let visible = if transcripts.as_ref().is_some_and(|(_, v)| *v >= 5) {
+        " AND NOT EXISTS(SELECT 1 FROM synced_tombstones t WHERE t.scope='utterance' AND t.entity_id=u.id)"
+    } else {
+        ""
+    };
     let mut match_text = transcripts
         .as_ref()
         .map(|(db, _)| {
-            db.prepare(
+            db.prepare(&format!(
                 "SELECT EXISTS (
             SELECT 1 FROM utterances u JOIN revisions r ON r.id=u.selected_revision
-            WHERE u.session_id=?1
+            WHERE u.session_id=?1{visible}
         ), EXISTS (
             SELECT 1 FROM utterances u JOIN revisions r ON r.id=u.selected_revision
-            WHERE u.session_id=?1 AND instr(lower(json_extract(r.payload,'$.text')), lower(?2)) > 0
+            WHERE u.session_id=?1 AND instr(lower(json_extract(r.payload,'$.text')), lower(?2)) > 0{visible}
         )",
-            )
+            ))
         })
         .transpose()?;
     let mut match_speaker = if has_metadata {
         let (db, _) = transcripts.as_ref().ok_or(Error::Storage)?;
-        Some(db.prepare(
+        Some(db.prepare(&format!(
             "SELECT EXISTS (SELECT 1 FROM utterances u
              WHERE u.session_id=?1 AND instr(lower((
                  SELECT json_extract(s.payload, '$.confirmed_name') FROM speaker_labels s
                  WHERE s.utterance_id=u.id ORDER BY s.revision DESC LIMIT 1
-             )), lower(?2)) > 0)",
-        )?)
+             )), lower(?2)) > 0{visible})",
+        ))?)
     } else {
         None
     };
     let folded_filter = filter.to_lowercase();
     let mut output = Vec::new();
-    let mut cursor = None;
-    while output.len() < 100 {
-        let page = reader.saved_sessions(cursor.as_ref().map(|(at, id)| (*at, id)))?;
-        let Some(last) = page.last() else { break };
-        cursor = Some((last.created_at_ms, last.id.clone()));
-        for audio in page {
-            let id = String::from(audio.id.clone());
-            let (has_transcript, text_match): (bool, bool) = match_text
-                .as_mut()
-                .map(|search| {
-                    search.query_row(params![id, filter], |row| Ok((row.get(0)?, row.get(1)?)))
-                })
-                .transpose()?
-                .unwrap_or_default();
-            let title = transcripts
-                .as_ref()
-                .filter(|(_, version)| *version >= 4)
-                .map(|(db, _)| read_title(db, &id))
-                .transpose()?
-                .flatten();
-            let speaker_match: bool = match_speaker
-                .as_mut()
-                .map(|search| search.query_row(params![id, filter], |row| row.get(0)))
-                .transpose()?
-                .unwrap_or(false);
-            let title_match = title
-                .as_ref()
-                .is_some_and(|title| title.to_lowercase().contains(&folded_filter));
-            if filter.is_empty() || text_match || title_match || speaker_match {
-                output.push(SessionEntry {
-                    audio,
-                    has_transcript,
-                    title,
-                });
-                if output.len() == 100 {
+    let mut add = |audio: SavedSession, text_only: bool| -> Result<bool> {
+        let id = String::from(audio.id.clone());
+        if let Some((db, version)) = transcripts.as_ref()
+            && *version >= 5
+            && crate::sync_data::hidden(db, "session", &id)?
+        {
+            return Ok(false);
+        }
+        let (has_transcript, text_match): (bool, bool) = match_text
+            .as_mut()
+            .map(|search| {
+                search.query_row(params![id, filter], |row| Ok((row.get(0)?, row.get(1)?)))
+            })
+            .transpose()?
+            .unwrap_or_default();
+        let title = transcripts
+            .as_ref()
+            .filter(|(_, version)| *version >= 4)
+            .map(|(db, _)| read_title(db, &id))
+            .transpose()?
+            .flatten();
+        let speaker_match: bool = match_speaker
+            .as_mut()
+            .map(|search| search.query_row(params![id, filter], |row| row.get(0)))
+            .transpose()?
+            .unwrap_or(false);
+        let title_match = title
+            .as_ref()
+            .is_some_and(|title| title.to_lowercase().contains(&folded_filter));
+        if filter.is_empty() || text_match || title_match || speaker_match {
+            output.push(SessionEntry {
+                audio,
+                has_transcript,
+                title,
+                text_only,
+            });
+            return Ok(true);
+        }
+        Ok(false)
+    };
+    if let Some(reader) = reader {
+        let mut cursor = None;
+        let mut matches = 0;
+        while matches < 100 {
+            let page = reader.saved_sessions(cursor.as_ref().map(|(at, id)| (*at, id)))?;
+            let Some(last) = page.last() else {
+                break;
+            };
+            cursor = Some((last.created_at_ms, last.id.clone()));
+            for audio in page {
+                matches += usize::from(add(audio, false)?);
+                if matches == 100 {
                     break;
                 }
             }
         }
     }
+    if let Some((db, version)) = transcripts.as_ref()
+        && *version >= 5
+    {
+        for session in crate::sync_data::imported_sessions(db)? {
+            if reader
+                .map(|reader| reader.finished(&session.id))
+                .transpose()?
+                .flatten()
+                .is_none()
+            {
+                add(session, true)?;
+            }
+        }
+    }
+    output.sort_unstable_by(|left, right| {
+        (right.audio.created_at_ms, &right.audio.id)
+            .cmp(&(left.audio.created_at_ms, &left.audio.id))
+    });
+    output.truncate(100);
     Ok(output)
 }
 
-fn open_readonly(root: &Path) -> Result<Option<(Connection, i64)>> {
+pub(crate) fn open_readonly(root: &Path) -> Result<Option<(Connection, i64)>> {
     match root.join(PATH).metadata() {
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
@@ -133,7 +172,7 @@ fn open_readonly(root: &Path) -> Result<Option<(Connection, i64)>> {
     Ok(Some((db, version)))
 }
 
-fn read_title(db: &Connection, session: &str) -> Result<Option<String>> {
+pub(crate) fn read_title(db: &Connection, session: &str) -> Result<Option<String>> {
     Ok(db
         .query_row(
             "SELECT title FROM session_titles WHERE session_id=?1",
@@ -284,16 +323,17 @@ impl Transcripts {
         let mut revision = selected_source(&tx, &edit.session_id, &edit.utterance_id)?
             .filter(|source| source.id == edit.expected_revision_id && source.is_durable())
             .ok_or(Error::RevisionConflict)?;
-        let utterance = String::from(edit.utterance_id);
-        let ordinal: u32 = tx.query_row(
-            "SELECT max(revision) FROM revisions WHERE utterance_id=?1",
-            [&utterance],
-            |row| row.get(0),
-        )?;
+        let utterance = String::from(edit.utterance_id.clone());
+        if crate::sync_data::hidden(&tx, "session", &String::from(edit.session_id.clone()))?
+            || crate::sync_data::hidden(&tx, "utterance", &utterance)?
+            || !crate::sync_data::conflict(&tx, &edit.utterance_id)?.is_empty()
+        {
+            return Err(Error::RevisionConflict);
+        }
+        let ordinal = crate::sync_data::next_ordinal(&tx, &utterance)?;
         revision.parent_revision_ids = vec![revision.id];
         revision.id = self.id()?;
-        revision.revision =
-            NonZeroU32::new(ordinal.checked_add(1).ok_or(Error::Storage)?).ok_or(Error::Storage)?;
+        revision.revision = NonZeroU32::new(ordinal).ok_or(Error::Storage)?;
         revision.kind = UtteranceKind::Manual;
         revision.text = text.to_owned();
         revision.model = None;

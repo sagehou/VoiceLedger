@@ -1,6 +1,7 @@
 using System;
 using System.Buffers.Binary;
 using System.IO;
+using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -18,6 +19,8 @@ internal sealed class SyncPrivacyWindow : Window
     private readonly StackPanel form = new() { Margin = new Thickness(20) };
     private readonly StackPanel keyActions = new();
     private readonly TextBlock keyStatus = Status();
+    private readonly ComboBox devices = new() { Visibility = Visibility.Collapsed };
+    private readonly StackPanel syncActions = new();
     private readonly TextBlock providerStatus = Status();
     private readonly TextBox shownKey = new() { IsReadOnly = true, TextWrapping = TextWrapping.Wrap, Visibility = Visibility.Collapsed };
     private readonly PasswordBox import = new() { MaxLength = 128 };
@@ -30,6 +33,7 @@ internal sealed class SyncPrivacyWindow : Window
     private readonly ComboBox provider = new() { ItemsSource = new[] { "WebDAV", "S3-compatible" }, SelectedIndex = 0 };
     private bool closed;
     private bool settingUp;
+    private bool updatingKey;
 
     internal SyncPrivacyWindow()
     {
@@ -39,7 +43,6 @@ internal sealed class SyncPrivacyWindow : Window
         MinWidth = 320;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         Content = new ScrollViewer { Content = form, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
-        form.Children.Add(new TextBlock { Text = "Sync disabled", FontWeight = FontWeights.SemiBold });
         form.Children.Add(keyStatus);
         form.Children.Add(keyActions);
         AutomationProperties.SetName(shownKey, "Recovery key");
@@ -65,6 +68,9 @@ internal sealed class SyncPrivacyWindow : Window
         var check = Button("Check provider", CheckAsync);
         check.ToolTip = "Tests an encrypted synthetic object in a separate random folder.";
         form.Children.Add(check);
+        AutomationProperties.SetName(devices, "Other vault devices");
+        form.Children.Add(devices);
+        form.Children.Add(syncActions);
         form.Children.Add(providerStatus);
         Loaded += async (_, _) => await RefreshKeyAsync();
     }
@@ -82,6 +88,7 @@ internal sealed class SyncPrivacyWindow : Window
     private async Task RefreshKeyAsync()
     {
         keyActions.Children.Clear();
+        syncActions.Children.Clear();
         keyStatus.Text = "Checking local vault key…";
         try
         {
@@ -109,7 +116,25 @@ internal sealed class SyncPrivacyWindow : Window
             {
                 uint generation = BinaryPrimitives.ReadUInt32BigEndian(identity.AsSpan(16));
                 keyStatus.Text = $"Vault key ready · Generation {generation}";
-                keyActions.Children.Add(Button("Show recovery key", ShowKeyAsync));
+                keyActions.Children.Add(Button("Show or hide recovery key", ShowKeyAsync));
+                if (updatingKey)
+                {
+                    Field(keyActions, "Updated recovery key", import);
+                    keyActions.Children.Add(Button("Join updated vault", JoinUpdatedAsync));
+                }
+                else
+                {
+                    keyActions.Children.Add(Button("Enter updated recovery key", () =>
+                    {
+                        updatingKey = true;
+                        return RefreshKeyAsync();
+                    }));
+                }
+                syncActions.Children.Add(Button("Sync text", SyncAsync));
+                if (VaultKeyProtection.PendingTarget(KeyDirectory) is { } pending)
+                    syncActions.Children.Add(Button("Resume device removal", () => RemoveAsync(pending)));
+                else
+                    syncActions.Children.Add(Button("Remove selected device", () => RemoveAsync(null)));
             }
         }
         catch (Exception failure) when (KeyError(failure))
@@ -160,7 +185,7 @@ internal sealed class SyncPrivacyWindow : Window
         }
     }
 
-    private async Task CheckAsync()
+    private byte[] ProviderConfig()
     {
         object settings = provider.SelectedIndex == 0
             ? new { provider = "webdav", endpoint = endpoint.Text.Trim(), name = account.Text.Trim(), password = password.Password }
@@ -170,7 +195,119 @@ internal sealed class SyncPrivacyWindow : Window
                 access_key = account.Text.Trim(), secret_key = password.Password,
                 session_token = token.Password.Length == 0 ? null : token.Password,
             };
-        byte[] request = JsonSerializer.SerializeToUtf8Bytes(settings);
+        return JsonSerializer.SerializeToUtf8Bytes(settings);
+    }
+
+    private static object Command(object action) => new
+    {
+        recordings = Path.Combine(SpeechWorker.ProfileDirectory, "Recordings"),
+        directory = KeyDirectory,
+        action,
+    };
+
+    private Task SyncAsync() => RunTransferAsync("Syncing encrypted text…", (configuration, key) =>
+        NativeSync.Transfer(Command(new { op = "synchronize" }), configuration, key), report =>
+        {
+            string? local = report.GetProperty("device").GetString();
+            string[] other = report.GetProperty("devices").EnumerateArray()
+                .Select(item => item.GetString()!)
+                .Where(id => id != local).ToArray();
+            devices.ItemsSource = other;
+            devices.SelectedIndex = -1;
+            devices.Visibility = other.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+            return $"Text synced · {report.GetProperty("imported").GetInt32()} revisions imported\nThis device · {local}";
+        });
+
+    private async Task JoinUpdatedAsync()
+    {
+        byte[] next = Encoding.ASCII.GetBytes(import.Password.Trim());
+        import.Clear();
+        try
+        {
+            await RunTransferAsync("Verifying updated recovery key…", (configuration, key) =>
+            {
+                var report = NativeSync.Transfer(Command(new { op = "verify_key" }), configuration, next);
+                try
+                {
+                    VaultKeyProtection.CommitRotation(KeyDirectory, key, next);
+                    return report;
+                }
+                catch { report.Dispose(); throw; }
+            }, report => $"Vault generation {report.GetProperty("generation").GetUInt32()} joined.", refreshKey: true);
+        }
+        finally { CryptographicOperations.ZeroMemory(next); }
+    }
+
+    private async Task RemoveAsync(Guid? pending)
+    {
+        Guid target;
+        if (pending is { } selected) target = selected;
+        else if (!Guid.TryParse(devices.SelectedItem as string, out target))
+        {
+            providerStatus.Text = "Sync text and select the device to remove.";
+            return;
+        }
+        if (pending is null && MessageBox.Show(this,
+            "Removal creates a new vault key. Share it with trusted devices. Previously copied data remains on those devices.",
+            "Remove device", MessageBoxButton.OKCancel, MessageBoxImage.Warning) != MessageBoxResult.OK)
+            return;
+        await RunTransferAsync("Removing device…", (configuration, key) =>
+        {
+            byte[] next = VaultKeyProtection.PrepareRotation(KeyDirectory, key, target);
+            try
+            {
+                var report = NativeSync.Transfer(Command(new { op = "remove_device", target }), configuration, key, next);
+                try
+                {
+                    VaultKeyProtection.CommitRotation(KeyDirectory, key, next);
+                    return report;
+                }
+                catch { report.Dispose(); throw; }
+            }
+            finally { CryptographicOperations.ZeroMemory(next); }
+        }, report => $"Device removed · Share the generation {report.GetProperty("generation").GetUInt32()} recovery key.", refreshKey: true);
+    }
+
+    private async Task RunTransferAsync(string progress, Func<byte[], byte[], JsonDocument> run,
+        Func<JsonElement, string> success, bool refreshKey = false)
+    {
+        byte[] configuration = ProviderConfig();
+        providerStatus.Text = progress;
+        try
+        {
+            using var report = await Task.Run(() => UseKey(key => run(configuration, key)));
+            if (closed) return;
+            if (report is null)
+            {
+                providerStatus.Text = "Set up the vault key first.";
+                return;
+            }
+            providerStatus.Text = success(report.RootElement);
+            if (refreshKey)
+            {
+                updatingKey = false;
+                shownKey.Clear();
+                shownKey.Visibility = Visibility.Collapsed;
+                devices.ItemsSource = null;
+                devices.Visibility = Visibility.Collapsed;
+                await RefreshKeyAsync();
+            }
+        }
+        catch (CoreException failure)
+        {
+            if (!closed) providerStatus.Text = ProviderError(failure.Code);
+            if (refreshKey && !closed) await RefreshKeyAsync();
+        }
+        catch (Exception failure) when (KeyError(failure) || failure is JsonException)
+        {
+            if (!closed) providerStatus.Text = "The vault operation could not finish. Check the recovery key or retry.";
+        }
+        finally { CryptographicOperations.ZeroMemory(configuration); }
+    }
+
+    private async Task CheckAsync()
+    {
+        byte[] request = ProviderConfig();
         providerStatus.Text = "Checking provider…";
         try
         {
@@ -179,15 +316,7 @@ internal sealed class SyncPrivacyWindow : Window
         }
         catch (CoreException failure)
         {
-            if (!closed) providerStatus.Text = failure.Code switch
-            {
-                -60 => "Check the endpoint and required account fields.",
-                -61 => "The provider rejected the credentials.",
-                -62 => "The provider is out of storage.",
-                -63 => "The provider did not support the required storage operations.",
-                -65 => "The stored test object could not be verified.",
-                _ => "The provider could not be reached. Check the connection and retry.",
-            };
+            if (!closed) providerStatus.Text = ProviderError(failure.Code);
         }
         catch (Exception failure) when (failure is TypeInitializationException or EntryPointNotFoundException)
         {
@@ -195,6 +324,18 @@ internal sealed class SyncPrivacyWindow : Window
         }
         finally { CryptographicOperations.ZeroMemory(request); }
     }
+
+    private static string ProviderError(int code) => code switch
+    {
+        -60 => "Check the endpoint and required account fields.",
+        -61 => "The provider rejected the credentials.",
+        -62 => "The provider is out of storage.",
+        -63 => "The provider did not support the required storage operations.",
+        -65 => "The stored vault data could not be verified.",
+        -66 => "This vault generation has retired. Join with the current recovery key.",
+        -67 => "This device was removed from the vault.",
+        _ => "The provider could not be reached. Check the connection and retry.",
+    };
 
     private static T? UseKey<T>(Func<byte[], T> action) where T : class
     {

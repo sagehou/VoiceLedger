@@ -33,6 +33,33 @@ internal static class VaultSmoke
                 Expect(rejected);
             }
             finally { CryptographicOperations.ZeroMemory(local); }
+            Guid removed = Guid.NewGuid();
+            byte[] pending = VaultKeyProtection.PrepareRotation(directory, generated, removed);
+            byte[] resumed = VaultKeyProtection.PrepareRotation(directory, generated, removed);
+            try
+            {
+                Expect(VaultKeyProtection.PendingTarget(directory) == removed);
+                Expect(pending.AsSpan().SequenceEqual(resumed));
+                VaultKeyProtection.CommitRotation(directory, generated, resumed);
+                byte[] active = VaultKeyProtection.ReadLocal(directory) ?? throw new InvalidDataException("Replacement key missing.");
+                try
+                {
+                    Expect(active.AsSpan().SequenceEqual(pending));
+                    Expect(VaultKeyProtection.PendingTarget(directory) is null);
+                    try
+                    {
+                        using var invalid = NativeSync.Transfer(new { }, [], active);
+                        throw new InvalidOperationException("Malformed sync request was accepted.");
+                    }
+                    catch (CoreException error) when (error.Code == -60) { }
+                }
+                finally { CryptographicOperations.ZeroMemory(active); }
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(pending);
+                CryptographicOperations.ZeroMemory(resumed);
+            }
             byte[] current = NativeVault.Identity(generated);
             byte[] next = NativeVault.Identity(rotated);
             Expect(current[..16].AsSpan().SequenceEqual(next[..16]));
