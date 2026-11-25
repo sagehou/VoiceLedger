@@ -1,5 +1,6 @@
 mod engine;
 mod jobs;
+mod library;
 mod pipeline;
 mod transcript;
 mod transfer;
@@ -107,7 +108,13 @@ pub struct Request {
 #[derive(Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 enum Action {
-    Inspect,
+    Inspect {
+        session_id: Option<StableId>,
+    },
+    History {
+        query: Option<String>,
+    },
+    SaveUtterance(library::UtteranceEdit),
     Install {
         model_id: String,
         approved: bool,
@@ -132,7 +139,7 @@ impl Request {
     }
 
     pub fn read_only(&self) -> bool {
-        matches!(self.action, Action::Inspect)
+        matches!(self.action, Action::Inspect { .. } | Action::History { .. })
     }
 
     pub fn run(
@@ -151,10 +158,20 @@ impl Request {
         let device = device_profile::load(&self.profiles)?;
         let reader = audio_reader(&self.recordings)?;
         let model_root = self.profiles.join("models");
-        if self.read_only() {
+        if let Action::History { ref query } = self.action {
+            return Ok(serde_json::to_vec(&library::history(
+                &self.recordings,
+                reader.as_ref(),
+                query.as_deref(),
+            )?)?);
+        }
+        if let Action::Inspect { ref session_id } = self.action {
             let session = reader
                 .as_ref()
-                .map(CommittedReader::latest)
+                .map(|reader| match session_id {
+                    Some(id) => reader.finished(id),
+                    None => reader.latest(),
+                })
                 .transpose()?
                 .flatten();
             let recordings = &self.recordings;
@@ -247,6 +264,10 @@ impl Request {
             .open(self.profiles.join(WORKER_LOCK))?;
         lock.try_lock().map_err(|_| Error::Busy)?;
         let action = match self.action {
+            Action::SaveUtterance(edit) => {
+                Transcripts::open(&self.recordings)?.save_utterance(edit)?;
+                return processed(1);
+            }
             Action::SaveTranslation(edit) => {
                 Transcripts::open(&self.recordings)?.save_manual_translation(edit)?;
                 return processed(1);
@@ -254,11 +275,11 @@ impl Request {
             action => action,
         };
         let id = match &action {
-            Action::Inspect => return Err(Error::Invalid),
+            Action::Inspect { .. } | Action::History { .. } => return Err(Error::Invalid),
             Action::Install { model_id, .. }
             | Action::Transcribe { model_id, .. }
             | Action::Translate { model_id, .. } => model_id,
-            Action::SaveTranslation(_) => return Err(Error::Invalid),
+            Action::SaveTranslation(_) | Action::SaveUtterance(_) => return Err(Error::Invalid),
         };
         let model = catalog
             .models()

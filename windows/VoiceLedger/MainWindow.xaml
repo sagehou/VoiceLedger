@@ -50,6 +50,7 @@
       <Button Content="Pause" Padding="12,6" Margin="0,0,8,6" IsEnabled="{Binding CanPause}" Click="PauseRecording" />
       <Button Content="Resume" Padding="12,6" Margin="0,0,8,6" IsEnabled="{Binding CanResume}" Click="ResumeRecording" />
       <Button Content="Stop recording" Padding="12,6" Margin="0,0,8,6" IsEnabled="{Binding CanStop}" Click="StopRecording" />
+      <Button Content="Sessions" Padding="12,6" Margin="0,0,8,6" IsEnabled="{Binding CanSelect}" Click="OpenSessions" />
       <Button Content="Models" Padding="12,6" Margin="0,0,8,6" IsEnabled="{Binding CanSelect}" Click="OpenModels" />
     </WrapPanel>
 

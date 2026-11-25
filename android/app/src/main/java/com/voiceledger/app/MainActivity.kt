@@ -64,6 +64,7 @@ class MainActivity : ComponentActivity() {
                             status, ::requestStart,
                             { RecordingService.stop(this@MainActivity) },
                             { startActivity(Intent(this@MainActivity, ModelsActivity::class.java)) },
+                            { startActivity(Intent(this@MainActivity, ModelsActivity::class.java).putExtra("sessions", true)) },
                         )
                     }
                 }
@@ -115,7 +116,13 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun RecordingScreen(status: RecordingStatus, start: () -> Unit, stop: () -> Unit, openModels: () -> Unit) {
+private fun RecordingScreen(
+    status: RecordingStatus,
+    start: () -> Unit,
+    stop: () -> Unit,
+    openModels: () -> Unit,
+    openSessions: () -> Unit,
+) {
     val recording = status.phase == RecordingPhase.Preparing || status.phase == RecordingPhase.Recording
     Column(
         modifier = Modifier.verticalScroll(rememberScrollState()),
@@ -160,6 +167,7 @@ private fun RecordingScreen(status: RecordingStatus, start: () -> Unit, stop: ()
         ) {
             Text(stringResource(if (recording) R.string.stop_recording else R.string.start_recording))
         }
+        Button(onClick = openSessions) { Text(stringResource(R.string.sessions)) }
         Button(onClick = openModels) { Text(stringResource(R.string.models)) }
     }
 }

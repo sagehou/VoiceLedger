@@ -205,7 +205,7 @@ impl Transcripts {
     }
 }
 
-fn selected_source(
+pub(crate) fn selected_source(
     db: &Connection,
     session: &StableId,
     utterance: &StableId,

@@ -15,7 +15,7 @@ use crate::pipeline::{Final, Output, Partial};
 use crate::translations::{self, TranslationLine};
 use crate::{Error, Result};
 
-const PATH: &str = "transcript-v1.sqlite3";
+pub(crate) const PATH: &str = "transcript-v1.sqlite3";
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS utterances (
     id TEXT PRIMARY KEY,

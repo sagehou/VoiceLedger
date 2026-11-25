@@ -23,15 +23,20 @@ internal sealed class ModelsWindow : Window
     {
         ItemsSource = new[] { "Auto", "Chinese", "English", "Japanese" }, SelectedIndex = 0,
     };
+    private readonly bool sessions;
+    private readonly TextBox search = new() { MaxLength = 64 };
+    private string? selectedSession;
+    private int searchVersion;
     private Process? worker;
     private bool cancelled;
     private bool closed;
     private bool working;
 
-    internal ModelsWindow(Func<bool> canWork)
+    internal ModelsWindow(Func<bool> canWork, bool sessions = false)
     {
         this.canWork = canWork;
-        Title = "Models";
+        this.sessions = sessions;
+        Title = sessions ? "Sessions" : "Models";
         Width = 520;
         Height = 400;
         MinWidth = 320;
@@ -48,15 +53,76 @@ internal sealed class ModelsWindow : Window
         base.OnClosed(e);
     }
 
-    private async Task LoadAsync(string? status = null)
+    private async Task BrowseSessionsAsync()
     {
+        content.Children.Clear();
+        AutomationProperties.SetName(search, "Search saved transcript text");
+        var submit = new Button { Content = "Search transcripts", HorizontalAlignment = HorizontalAlignment.Left };
+        submit.Click += async (_, _) => await BrowseSessionsAsync();
+        content.Children.Add(search);
+        content.Children.Add(submit);
+        string query = search.Text;
+        int version = ++searchVersion;
         try
         {
+            byte[] data = await Task.Run(() => NativeCore.SpeechRequest(
+                SpeechWorker.Request(new { op = "history", query })));
+            if (closed || version != searchVersion || selectedSession is not null) return;
+            using var history = JsonDocument.Parse(data);
+            foreach (JsonElement session in history.RootElement.EnumerateArray())
+            {
+                string id = Read(session, "id");
+                var date = DateTimeOffset.FromUnixTimeMilliseconds(session.GetProperty("created_at_ms").GetInt64());
+                var duration = TimeSpan.FromSeconds(session.GetProperty("elapsed_ns").GetInt64() / 1_000_000_000.0);
+                string state = session.GetProperty("interrupted").GetBoolean() ? "Interrupted" : "Completed";
+                long saved = session.GetProperty("committed").GetInt64();
+                long missing = session.GetProperty("missing").GetInt64();
+                string transcript = session.GetProperty("has_transcript").GetBoolean() ? "Transcript saved" : "No transcript";
+                var item = new Button
+                {
+                    Content = new TextBlock
+                    {
+                        Text = $"{date.LocalDateTime:g} · {duration:g} · {state}\nAudio {saved} saved · {missing} missing · {transcript}",
+                        TextWrapping = TextWrapping.Wrap,
+                    },
+                    Margin = new Thickness(0, 6, 0, 0),
+                };
+                item.Click += async (_, _) =>
+                {
+                    selectedSession = id;
+                    await LoadAsync();
+                };
+                content.Children.Add(item);
+            }
+            if (history.RootElement.GetArrayLength() == 0)
+            {
+                AddLine(query.Length == 0 ? "No saved sessions." : "No matching transcripts.");
+                var back = new Button { Content = "Return to recording", HorizontalAlignment = HorizontalAlignment.Left };
+                back.Click += (_, _) => Close();
+                content.Children.Add(back);
+            }
+        }
+        catch (Exception failure) when (failure is InvalidOperationException or JsonException or TypeInitializationException)
+        {
+            if (!closed && version == searchVersion) AddLine("Saved sessions are unavailable.");
+        }
+    }
+
+    private async Task LoadAsync(string? status = null)
+    {
+        if (sessions && selectedSession is null)
+        {
+            await BrowseSessionsAsync();
+            return;
+        }
+        try
+        {
+            string? requestedSession = selectedSession;
             var (catalog, inspection) = await Task.Run(() =>
             {
                 string directory = SpeechWorker.ProfileDirectory;
                 DeviceProfiler.Capture(directory);
-                return (NativeCore.ModelPreview(directory), NativeCore.SpeechRequest(SpeechWorker.Request(new { op = "inspect" })));
+                return (NativeCore.ModelPreview(directory), NativeCore.SpeechRequest(SpeechWorker.Request(new { op = "inspect", session_id = requestedSession })));
             });
             if (closed) return;
             using var report = JsonDocument.Parse(catalog);
@@ -66,14 +132,23 @@ internal sealed class ModelsWindow : Window
             JsonElement lines = speech.RootElement.GetProperty("lines");
             bool hasEnglish = speech.RootElement.GetProperty("has_translation_source").GetBoolean();
             content.Children.Clear();
-            AddLine("Recording only during capture", bold: true);
+            if (sessions)
+            {
+                var back = new Button { Content = "Back to sessions", HorizontalAlignment = HorizontalAlignment.Left };
+                back.Click += async (_, _) =>
+                {
+                    selectedSession = null;
+                    await LoadAsync();
+                };
+                content.Children.Add(back);
+            }
             if (status is not null) AddLine(status);
             else if (speech.RootElement.GetProperty("job") is { ValueKind: JsonValueKind.Object } job
                 && JobStatus(job) is { } text) AddLine(text);
             if (sessionId is not null)
             {
                 var created = DateTimeOffset.FromUnixTimeMilliseconds(session.GetProperty("created_at_ms").GetInt64());
-                AddLine($"Latest saved session · {created.LocalDateTime:g}");
+                AddLine($"{created.LocalDateTime:g}");
                 AddLine("Transcription language");
                 content.Children.Add(language);
             }
@@ -127,7 +202,16 @@ internal sealed class ModelsWindow : Window
                 AddLine($"{source} · {line.GetProperty("start_ns").GetInt64() / 1_000_000_000.0:F1}s", bold: true);
                 AddLine(Read(line, "text"));
                 if (sessionId is not null)
+                {
+                    string utterance = Read(line, "utterance_id");
+                    string revision = Read(line, "revision_id");
+                    ShowTextEditor("Edit transcript", Read(line, "text"), "Transcript saved.", text => new
+                    {
+                        op = "save_utterance", session_id = sessionId, utterance_id = utterance,
+                        expected_revision_id = revision, text,
+                    });
                     ShowTranslation(sessionId, line);
+                }
             }
         }
         catch (Exception failure) when (failure is InvalidOperationException or JsonException
@@ -154,9 +238,19 @@ internal sealed class ModelsWindow : Window
         string utteranceId = Read(line, "utterance_id");
         string sourceRevision = Read(line, "revision_id");
         string? expected = exists ? Read(revision, "revision_id") : null;
+        ShowTextEditor(exists ? "Edit translation" : "Add Chinese translation", initial, "Translation saved.",
+            text => new
+            {
+                op = "save_translation", session_id = sessionId, utterance_id = utteranceId,
+                source_revision_id = sourceRevision, expected_translation_id = expected, text,
+            });
+    }
+
+    private void ShowTextEditor(string label, string initial, string success, Func<string, object> action)
+    {
         var edit = new Button
         {
-            Content = exists ? "Edit translation" : "Add Chinese translation",
+            Content = label,
             HorizontalAlignment = HorizontalAlignment.Left,
             IsEnabled = canWork(),
         };
@@ -165,10 +259,10 @@ internal sealed class ModelsWindow : Window
             Text = initial, TextWrapping = TextWrapping.Wrap, AcceptsReturn = true,
             MaxLength = 8192, MinHeight = 60, Visibility = Visibility.Collapsed,
         };
-        AutomationProperties.SetName(input, "Simplified Chinese translation");
+        AutomationProperties.SetName(input, label);
         var save = new Button
         {
-            Content = "Save translation", HorizontalAlignment = HorizontalAlignment.Left,
+            Content = "Save", HorizontalAlignment = HorizontalAlignment.Left,
             Visibility = Visibility.Collapsed, IsEnabled = !string.IsNullOrWhiteSpace(initial),
         };
         edit.Click += (_, _) =>
@@ -187,11 +281,7 @@ internal sealed class ModelsWindow : Window
             working = true;
             save.IsEnabled = false;
             input.IsReadOnly = true;
-            string request = SpeechWorker.Request(new
-            {
-                op = "save_translation", session_id = sessionId, utterance_id = utteranceId,
-                source_revision_id = sourceRevision, expected_translation_id = expected, text = input.Text,
-            });
+            string request = SpeechWorker.Request(action(input.Text));
             int result = 0;
             try { await Task.Run(() => NativeCore.SpeechRequest(request)); }
             catch (CoreException failure) { result = failure.Code; }
@@ -206,7 +296,7 @@ internal sealed class ModelsWindow : Window
                 input.IsReadOnly = false;
             }
             if (closed) return;
-            if (result == 0) await LoadAsync("Translation saved.");
+            if (result == 0) await LoadAsync(success);
             else
             {
                 error.Text = ResultText(result, "save_translation");

@@ -55,4 +55,18 @@
     <string name="model_mic">Microphone</string>
     <string name="model_loopback">System loopback</string>
     <string name="model_line">%1$s · %2$.1fs</string>
+    <string name="sessions">Sessions</string>
+    <string name="search_transcripts">Search transcripts</string>
+    <string name="sessions_empty">No saved sessions.</string>
+    <string name="sessions_no_match">No matching transcripts.</string>
+    <string name="sessions_loading">Loading sessions…</string>
+    <string name="sessions_unavailable">Saved sessions are unavailable.</string>
+    <string name="return_to_recording">Return to recording</string>
+    <string name="back_to_sessions">Back to sessions</string>
+    <string name="session_interrupted">Interrupted</string>
+    <string name="session_completed">Completed</string>
+    <string name="session_row">%1$s · %2$s · %3$s\nAudio %4$d saved · %5$d missing</string>
+    <string name="transcript">Transcript</string>
+    <string name="edit_transcript">Edit transcript</string>
+    <string name="save_revision">Save</string>
 </resources>

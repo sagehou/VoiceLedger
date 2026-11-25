@@ -15,6 +15,17 @@ pub struct FinishedSession {
     pub created_at_ms: i64,
 }
 
+#[derive(Serialize)]
+pub struct SavedSession {
+    pub id: StableId,
+    pub created_at_ms: i64,
+    pub elapsed_ns: i64,
+    pub interrupted: bool,
+    pub tracks: u32,
+    pub committed: u32,
+    pub missing: u32,
+}
+
 pub struct CommittedChunk {
     pub id: StableId,
     pub track_id: StableId,
@@ -75,6 +86,63 @@ impl CommittedReader {
             })
         })
         .transpose()
+    }
+
+    pub fn finished(&self, session: &StableId) -> Result<Option<FinishedSession>> {
+        let id = String::from(session.clone());
+        let created_at_ms = self
+            .db
+            .query_row(
+                "SELECT created_at_ms FROM sessions WHERE id=?1 AND state IN (5,6)",
+                [&id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(created_at_ms.map(|created_at_ms| FinishedSession {
+            id: session.clone(),
+            created_at_ms,
+        }))
+    }
+
+    pub fn saved_sessions(&self, before: Option<(i64, &StableId)>) -> Result<Vec<SavedSession>> {
+        let before = before.map(|(at, id)| (at, String::from(id.clone())));
+        let (at, id) = before.map_or((None, None), |(at, id)| (Some(at), Some(id)));
+        let mut query = self.db.prepare(
+            "WITH page AS (
+                SELECT id,created_at_ms,elapsed_ns,state,interrupted_tail FROM sessions
+                WHERE state IN (5,6) AND (?1 IS NULL OR (created_at_ms,id)<(?1,?2))
+                ORDER BY created_at_ms DESC,id DESC LIMIT 64
+            )
+            SELECT p.id,p.created_at_ms,p.elapsed_ns,(p.state=6 OR p.interrupted_tail=1),
+                COUNT(DISTINCT t.id),COUNT(CASE WHEN c.state='committed' THEN 1 END),
+                COUNT(CASE WHEN c.state='missing' THEN 1 END)
+            FROM page p LEFT JOIN tracks t ON t.session_id=p.id LEFT JOIN chunks c ON c.track_id=t.id
+            GROUP BY p.id ORDER BY p.created_at_ms DESC,p.id DESC",
+        )?;
+        let rows = query.query_map(params![at, id], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let (id, created_at_ms, elapsed_ns, interrupted, tracks, committed, missing) = row?;
+            Ok(SavedSession {
+                id: stable(id)?,
+                created_at_ms,
+                elapsed_ns,
+                interrupted,
+                tracks,
+                committed,
+                missing,
+            })
+        })
+        .collect()
     }
 
     pub fn recording(&self) -> Result<bool> {

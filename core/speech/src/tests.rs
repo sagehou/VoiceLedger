@@ -531,4 +531,23 @@ fn native_translation_app_flow() {
         inspect()["lines"][0]["translation"]["text"],
         "请保存原始录音。"
     );
+    assert_eq!(inspect()["session"]["id"], json!(session));
+    request(json!({
+        "op": "save_utterance", "session_id": session, "utterance_id": utterance,
+        "expected_revision_id": line["revision_id"], "text": "Save the corrected recording."
+    }))
+    .unwrap();
+    let updated = inspect();
+    assert_eq!(updated["lines"][0]["text"], "Save the corrected recording.");
+    assert_eq!(updated["lines"][0]["translation"]["stale"], true);
+    let matches = request(json!({"op":"history", "query":"CORRECTED"})).unwrap();
+    let sessions: serde_json::Value = serde_json::from_slice(&matches).unwrap();
+    assert_eq!(sessions[0]["id"], json!(session));
+    assert_eq!(sessions[0]["committed"], 1);
+    assert_eq!(
+        request(json!({"op":"history","query":"unmatched"}))
+            .unwrap()
+            .as_slice(),
+        b"[]"
+    );
 }
