@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using NAudio.Wave;
@@ -32,6 +33,21 @@ internal sealed class RecordingViewModel : INotifyPropertyChanged, IAsyncDisposa
     private bool refreshing;
     private TrackRow[] rows = Array.Empty<TrackRow>();
     private string? error;
+    private CancellationTokenSource? liveWorker;
+    private bool liveEnabled;
+
+    public string[] SpeechLanguages => SpeechWorker.Languages;
+    public int SpeechLanguage { get; set; }
+    public bool TranslateLive { get; set; }
+    public bool LiveEnabled
+    {
+        get => liveEnabled;
+        set { liveEnabled = value; Update(); }
+    }
+    public bool CanConfigureSpeech => CanSelect && LiveEnabled;
+    public string? LiveStatus { get; private set; }
+    public string? LiveTranslationStatus { get; private set; }
+    public LiveLine[] LiveLines { get; private set; } = Array.Empty<LiveLine>();
 
     public event PropertyChangedEventHandler? PropertyChanged;
     public SourceMode[] Modes { get; } = Enum.GetValues<SourceMode>();
@@ -175,6 +191,11 @@ internal sealed class RecordingViewModel : INotifyPropertyChanged, IAsyncDisposa
             await session.DisposeAsync();
             Volatile.Write(ref session, null);
         }
+        liveWorker?.Cancel();
+        liveWorker = null;
+        LiveLines = Array.Empty<LiveLine>();
+        LiveStatus = null;
+        LiveTranslationStatus = null;
         RecordingSession recording;
         try { recording = await RecordingSession.StartAsync(library, endpoints); }
         catch (StorageReserveException)
@@ -183,7 +204,10 @@ internal sealed class RecordingViewModel : INotifyPropertyChanged, IAsyncDisposa
             return;
         }
         Volatile.Write(ref session, recording);
-        if (!recording.Active) await RefreshHistoryAsync();
+        if (recording.Active && LiveEnabled)
+            _ = WatchSpeechAsync(recording, SpeechWorker.LanguageCode(SpeechLanguage), TranslateLive);
+        else if (!recording.Active)
+            await RefreshHistoryAsync();
     }, "Recording could not start. Check the selected endpoints, microphone access and storage.");
 
     internal Task PauseAsync() => ExecuteAsync(() => session?.PauseAsync() ?? Task.CompletedTask, "Recording could not be paused.");
@@ -193,6 +217,7 @@ internal sealed class RecordingViewModel : INotifyPropertyChanged, IAsyncDisposa
     internal Task StopAsync() => ExecuteAsync(async () =>
     {
         if (session is not null) await session.StopAsync();
+        if (!Active) liveWorker?.CancelAfter(TimeSpan.FromSeconds(45));
         await RefreshHistoryAsync();
     }, "Recording could not finish cleanly.");
 
@@ -253,13 +278,78 @@ internal sealed class RecordingViewModel : INotifyPropertyChanged, IAsyncDisposa
         try
         {
             await session.RefreshAsync();
-            if (!session.Active) await RefreshHistoryAsync();
+            if (!session.Active)
+            {
+                liveWorker?.CancelAfter(TimeSpan.FromSeconds(45));
+                await RefreshHistoryAsync();
+            }
         }
         catch (Exception) { error = "Recording state could not be refreshed."; }
         finally
         {
             refreshing = false;
             Update();
+        }
+    }
+
+    private async Task WatchSpeechAsync(RecordingSession recording, string language, bool translate)
+    {
+        using var worker = new CancellationTokenSource();
+        liveWorker = worker;
+        LiveStatus = "Live transcription";
+        Update();
+        string snapshot = SpeechWorker.Request(new { op = "live_transcript", session_id = recording.Id });
+        var sources = recording.Tracks.ToDictionary(track => track.Files.Id, track =>
+            track.Files.Endpoint.Source == CaptureSource.Mic ? "Microphone" : "System loopback");
+        async Task RefreshAsync(string partial)
+        {
+            if (liveWorker != worker) return;
+            try
+            {
+                var (lines, pending) = await Task.Run(() => LiveTranscript.Read(snapshot, partial, sources));
+                if (liveWorker != worker) return;
+                if (!LiveLines.SequenceEqual(lines))
+                {
+                    LiveLines = lines;
+                    PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(LiveLines)));
+                }
+                string? status = translate && pending ? "Simplified Chinese translations pending" : null;
+                if (LiveTranslationStatus != status)
+                {
+                    LiveTranslationStatus = status;
+                    PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(LiveTranslationStatus)));
+                }
+            }
+            catch (Exception error) when (error is InvalidOperationException or JsonException or TypeInitializationException
+                or EntryPointNotFoundException) { }
+        }
+
+        int result = -31;
+        try
+        {
+            bool profiled = await Task.Run(() => DeviceProfiler.Capture(SpeechWorker.ProfileDirectory));
+            if (liveWorker != worker) return;
+            result = profiled
+                ? await SpeechWorker.RunAsync(SpeechWorker.Request(new
+                    { op = "transcribe_live", session_id = recording.Id, language, translate, approved = true }),
+                    RefreshAsync, worker.Token)
+                : -34;
+            await RefreshAsync("");
+        }
+        finally
+        {
+            if (liveWorker == worker)
+            {
+                liveWorker = null;
+                LiveStatus = result switch
+                {
+                    0 => "Transcription complete",
+                    -33 => "Download Whisper Tiny in Models",
+                    -34 or -38 or -4 => "Transcription deferred · Resume in Sessions",
+                    _ => "Transcription paused · Retry in Sessions",
+                };
+                Update();
+            }
         }
     }
 
@@ -335,6 +425,8 @@ internal sealed class RecordingViewModel : INotifyPropertyChanged, IAsyncDisposa
 
     public async ValueTask DisposeAsync()
     {
+        liveWorker?.Cancel();
+        liveWorker = null;
         StopPlayback();
         if (session is not null) await session.DisposeAsync();
         store?.Dispose();

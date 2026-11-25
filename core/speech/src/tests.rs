@@ -52,6 +52,7 @@ fn retry_and_second_language_preserve_the_selected_durable_revision() {
         model,
         language: LanguagePolicy::Auto,
         job: None,
+        translate: None,
         publish_partial: &mut |_| {},
         saved: 0,
     };
@@ -154,6 +155,7 @@ fn interrupted_jobs_resume_with_one_identity_and_atomic_final_progress() {
             model,
             language: LanguagePolicy::Auto,
             job: Some(&asr),
+            translate: None,
             publish_partial: &mut |_| {},
             saved: 0,
         };
@@ -270,6 +272,7 @@ fn translation_versions_keep_manual_edits_and_bind_to_the_selected_source() {
         model,
         language: LanguagePolicy::En,
         job: None,
+        translate: None,
         publish_partial: &mut |_| {},
         saved: 0,
     };
@@ -485,6 +488,7 @@ fn native_translation_app_flow() {
         model: &catalog.models()[0],
         language: LanguagePolicy::En,
         job: None,
+        translate: None,
         publish_partial: &mut |_| {},
         saved: 0,
     }

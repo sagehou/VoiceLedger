@@ -31,11 +31,12 @@ pub trait Engine {
     ) -> Result<Option<Recognition>>;
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub struct Partial {
     pub id: StableId,
     pub track_id: StableId,
     pub revision: u32,
+    pub language: Language,
     pub text: String,
 }
 
@@ -213,6 +214,7 @@ impl Segmenter {
                     id: window.id.clone(),
                     track_id: self.track.as_ref().ok_or(Error::Invalid)?.0.clone(),
                     revision: window.revision,
+                    language: value.language,
                     text: value.text,
                 }))?;
             }

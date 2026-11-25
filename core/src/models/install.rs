@@ -137,6 +137,25 @@ pub fn install<'a>(
     })
 }
 
+/// Verify a published package for inference without provisioning or probing a model.
+pub fn verify_installed<'a>(
+    model: &'a Model,
+    root: &Path,
+    device: &DeviceCapabilityProfile,
+    runtime: RuntimeIdentity<'_>,
+    cancelled: impl Fn() -> bool,
+) -> Result<InstalledModel<'a>, InstallError> {
+    preflight(model, device, &[runtime], 0, estimate(model)).map_err(InstallError::Blocked)?;
+    let directory = root.join(format!("{}-{}", model.id, model.version));
+    for artifact in &model.artifacts {
+        if !verify(&directory.join(&artifact.file), artifact, &cancelled)? {
+            return Err(InstallError::InvalidArtifact);
+        }
+    }
+    check_cancel(&cancelled)?;
+    Ok(InstalledModel { model, directory })
+}
+
 fn partial_bytes(path: &Path, artifact: &Artifact) -> io::Result<u64> {
     match fs::metadata(path) {
         Ok(meta) if meta.is_file() && meta.len() <= artifact.size_bytes => Ok(meta.len()),

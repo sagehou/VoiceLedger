@@ -1,8 +1,6 @@
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO;
-using System.IO.Pipes;
 using System.Linq;
 using System.Text;
 using System.Text.Json;
@@ -23,14 +21,14 @@ internal sealed class ModelsWindow : Window
     private readonly Func<bool> canWork;
     private readonly ComboBox language = new()
     {
-        ItemsSource = new[] { "Auto", "Chinese", "English", "Japanese" }, SelectedIndex = 0,
+        ItemsSource = SpeechWorker.Languages, SelectedIndex = 0,
     };
     private readonly bool sessions;
     private readonly TextBox search = new() { MaxLength = 64 };
     private string? selectedSession;
     private SessionAudioPanel? sessionAudio;
     private int searchVersion;
-    private Process? worker;
+    private CancellationTokenSource? worker;
     private bool cancelled;
     private bool closed;
     private bool working;
@@ -212,7 +210,7 @@ internal sealed class ModelsWindow : Window
                 };
                 action.Click += async (_, _) =>
                 {
-                    var policy = new[] { "auto", "zh", "en", "ja" }[Math.Max(0, language.SelectedIndex)];
+                    var policy = SpeechWorker.LanguageCode(language.SelectedIndex);
                     string operation = !installed ? "install" : translation ? "translate" : "transcribe";
                     object request = operation switch
                     {
@@ -232,7 +230,7 @@ internal sealed class ModelsWindow : Window
                 int first = content.Children.Count;
                 string sourceId = Read(line, "source");
                 string source = sourceId == "mic" ? "Microphone" : "System loopback";
-                string detected = LanguageName(Read(line, "language"));
+                string detected = SpeechWorker.LanguageName(Read(line, "language"));
                 AddLine($"{source} · {line.GetProperty("start_ns").GetInt64() / 1_000_000_000.0:F1}s · {detected}", bold: true);
                 AddLine(Read(line, "text"));
                 if (sessionId is not null)
@@ -246,7 +244,7 @@ internal sealed class ModelsWindow : Window
                         foreach (JsonElement item in conflicts.EnumerateArray())
                         {
                             string author = item.GetProperty("manual").GetBoolean() ? "Manual" : "Machine";
-                            AddLine($"{author} · {LanguageName(Read(item, "language"))}");
+                            AddLine($"{author} · {SpeechWorker.LanguageName(Read(item, "language"))}");
                             AddLine(Read(item, "text"));
                         }
                         string[] heads = conflicts.EnumerateArray().Select(item => Read(item, "revision_id")).ToArray();
@@ -463,30 +461,17 @@ internal sealed class ModelsWindow : Window
                 result = -34;
                 return;
             }
-            string name = $"voiceledger-speech-{Guid.NewGuid():N}";
-            using var pipe = new NamedPipeServerStream(name, PipeDirection.In, 1, PipeTransmissionMode.Byte,
-                PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
-            using var receiveCancelled = new CancellationTokenSource();
-            using var process = new Process { StartInfo = SpeechWorker.StartInfo(SpeechWorker.Request(action), name) };
-            if (!process.Start()) return;
-            worker = process;
-            try { process.PriorityClass = ProcessPriorityClass.BelowNormal; }
-            catch (System.ComponentModel.Win32Exception) { }
-            catch (InvalidOperationException) { }
-            process.BeginOutputReadLine();
-            process.BeginErrorReadLine();
-            Task receive = ReceivePartialsAsync(pipe, receiveCancelled.Token);
-            try { await process.WaitForExitAsync(); }
-            finally
+            using var cancellation = new CancellationTokenSource();
+            worker = cancellation;
+            result = await SpeechWorker.RunAsync(SpeechWorker.Request(action), line =>
             {
-                await receiveCancelled.CancelAsync();
-                await receive;
-            }
-            result = process.ExitCode;
-        }
-        catch (Exception failure) when (failure is InvalidOperationException or IOException
-            or System.ComponentModel.Win32Exception)
-        {
+                if (!closed && !cancelled)
+                {
+                    using var snapshot = line.Length == 0 ? null : JsonDocument.Parse(line);
+                    partial.Text = snapshot is null ? "" : Read(snapshot.RootElement, "text");
+                }
+                return Task.CompletedTask;
+            }, cancellation.Token);
         }
         finally
         {
@@ -500,34 +485,10 @@ internal sealed class ModelsWindow : Window
         }
     }
 
-    private async Task ReceivePartialsAsync(NamedPipeServerStream pipe, CancellationToken cancellation)
-    {
-        try
-        {
-            await pipe.WaitForConnectionAsync(cancellation);
-            using var reader = new StreamReader(pipe);
-            while ((await reader.ReadLineAsync(cancellation)) is { } line)
-            {
-                if (closed || cancelled) return;
-                using var snapshot = line.Length == 0 ? null : JsonDocument.Parse(line);
-                partial.Text = snapshot is null ? "" : Read(snapshot.RootElement, "text");
-            }
-        }
-        catch (Exception failure) when (failure is OperationCanceledException or IOException or JsonException)
-        {
-        }
-    }
-
     private void Cancel()
     {
         cancelled = true;
-        try
-        {
-            if (worker is { HasExited: false } active) active.Kill(entireProcessTree: true);
-        }
-        catch (Exception failure) when (failure is InvalidOperationException or System.ComponentModel.Win32Exception)
-        {
-        }
+        worker?.Cancel();
     }
 
     private static string ResultText(int result, string operation) => result switch
@@ -565,14 +526,6 @@ internal sealed class ModelsWindow : Window
             Margin = new Thickness(0, bold ? 12 : 0, 0, 5),
         });
     }
-
-    private static string LanguageName(string code) => code switch
-    {
-        "zh" => "Chinese",
-        "ja" => "Japanese",
-        "en" => "English",
-        _ => code,
-    };
 
     private static string Read(JsonElement json, string field) => json.GetProperty(field).GetString() ?? "";
     private static string Mib(long bytes) => $"{bytes / 1048576.0:F1} MiB";

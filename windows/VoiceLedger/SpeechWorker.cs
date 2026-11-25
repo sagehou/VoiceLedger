@@ -5,6 +5,7 @@ using System.IO.Pipes;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
+using System.Threading.Tasks;
 using VoiceLedger.Core;
 
 namespace VoiceLedger;
@@ -34,6 +35,70 @@ internal static class SpeechWorker
         return info;
     }
 
+    internal static string[] Languages { get; } = ["Auto", "Chinese", "English", "Japanese"];
+    internal static string LanguageCode(int index) => index switch { 1 => "zh", 2 => "en", 3 => "ja", _ => "auto" };
+    internal static string LanguageName(string code) => code switch
+    {
+        "zh" => "Chinese",
+        "ja" => "Japanese",
+        "en" => "English",
+        _ => code,
+    };
+
+    internal static async Task<int> RunAsync(string request, Func<string, Task> update, CancellationToken cancellation)
+    {
+        try
+        {
+            cancellation.ThrowIfCancellationRequested();
+            string name = $"voiceledger-speech-{Guid.NewGuid():N}";
+            using var pipe = new NamedPipeServerStream(name, PipeDirection.In, 1, PipeTransmissionMode.Byte,
+                PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+            using var receiving = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
+            using var process = new Process { StartInfo = StartInfo(request, name) };
+            if (!process.Start()) return -31;
+            Task receive = Task.CompletedTask;
+            try
+            {
+                try { process.PriorityClass = ProcessPriorityClass.BelowNormal; }
+                catch (System.ComponentModel.Win32Exception) { }
+                catch (InvalidOperationException) { }
+                process.BeginOutputReadLine();
+                process.BeginErrorReadLine();
+                receive = ReceiveAsync(pipe, update, receiving.Token);
+                await process.WaitForExitAsync(cancellation);
+                return process.ExitCode;
+            }
+            finally
+            {
+                try
+                {
+                    if (!process.HasExited) process.Kill(entireProcessTree: true);
+                }
+                catch (Exception error) when (error is System.ComponentModel.Win32Exception or InvalidOperationException) { }
+                await receiving.CancelAsync();
+                await receive;
+            }
+        }
+        catch (OperationCanceledException) { return -4; }
+        catch (Exception error) when (error is IOException or InvalidOperationException
+            or System.ComponentModel.Win32Exception or UnauthorizedAccessException)
+        {
+            return -31;
+        }
+    }
+
+    private static async Task ReceiveAsync(NamedPipeServerStream pipe, Func<string, Task> update, CancellationToken cancellation)
+    {
+        try
+        {
+            await pipe.WaitForConnectionAsync(cancellation);
+            using var reader = new StreamReader(pipe);
+            while ((await reader.ReadLineAsync(cancellation)) is { } line)
+                await update(line);
+        }
+        catch (Exception error) when (error is IOException or JsonException or OperationCanceledException) { }
+    }
+
     internal static int Run(string request, string? pipeName)
     {
         try
@@ -44,17 +109,22 @@ internal static class SpeechWorker
             using var writer = pipe is null ? null : new StreamWriter(pipe, new UTF8Encoding(false)) { AutoFlush = true };
             if (pipe is not null)
                 NativeCore.UpdateSpeechResources(DeviceProfiler.SpeechResources(ProfileDirectory));
+            var sampling = new object();
             using var progress = writer is null ? null : new Timer(_ =>
             {
+                if (!Monitor.TryEnter(sampling)) return;
                 try
                 {
                     NativeCore.UpdateSpeechResources(DeviceProfiler.SpeechResources(ProfileDirectory));
                     writer.WriteLine(Encoding.UTF8.GetString(NativeCore.SpeechPartial()));
                 }
-                catch (Exception error) when (error is IOException or InvalidOperationException
-                    or TypeInitializationException or EntryPointNotFoundException)
+                catch (IOException)
                 {
+                    NativeCore.CancelSpeech();
                 }
+                catch (Exception error) when (error is InvalidOperationException
+                    or TypeInitializationException or EntryPointNotFoundException) { }
+                finally { Monitor.Exit(sampling); }
             }, null, 500, 500);
             _ = NativeCore.SpeechRequest(request);
             return 0;

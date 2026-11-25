@@ -82,6 +82,16 @@ jobs:
           sudo unshare --net --setgid="$(id -g)" --setuid="$(id -u)" -- "$(command -v python3)" \
             ../scripts/check_asr_languages.py "$samples" --library artifacts/speech/libvoiceledger_whisper.so \
             --report artifacts/asr-automatic-languages.json
+      - name: Exercise live committed audio and final-only translation offline
+        run: |
+          sudo unshare --net --setgid="$(id -g)" --setuid="$(id -u)" -- "$(command -v python3)" \
+            ../scripts/check_live_speech.py "$RUNNER_TEMP/voiceledger-asr" "$RUNNER_TEMP/voiceledger-translation/模型" \
+            target/release/libvoiceledger_ffi.so artifacts/speech artifacts/live-speech.json
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: live-speech
+          path: core/artifacts/live-speech.json
+          if-no-files-found: error
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         if: always()
         with:

@@ -45,36 +45,73 @@
                 ToolTip="Captures the selected Windows render endpoint's system mix." />
     </Grid>
 
-    <WrapPanel Grid.Row="2" Margin="0,0,0,14">
-      <Button Content="Start recording" Padding="12,6" Margin="0,0,8,6" IsEnabled="{Binding CanStart}" Click="StartRecording" />
-      <Button Content="Pause" Padding="12,6" Margin="0,0,8,6" IsEnabled="{Binding CanPause}" Click="PauseRecording" />
-      <Button Content="Resume" Padding="12,6" Margin="0,0,8,6" IsEnabled="{Binding CanResume}" Click="ResumeRecording" />
-      <Button Content="Stop recording" Padding="12,6" Margin="0,0,8,6" IsEnabled="{Binding CanStop}" Click="StopRecording" />
-      <Button Content="Sessions" Padding="12,6" Margin="0,0,8,6" IsEnabled="{Binding CanSelect}" Click="OpenSessions" />
-      <Button Content="Models" Padding="12,6" Margin="0,0,8,6" IsEnabled="{Binding CanSelect}" Click="OpenModels" />
-      <Button Content="Sync &amp; privacy" Padding="12,6" Margin="0,0,8,6" Click="OpenSyncPrivacy" />
-    </WrapPanel>
+    <StackPanel Grid.Row="2" Margin="0,0,0,12">
+      <WrapPanel Margin="0,0,0,6">
+        <CheckBox Content="Live transcription" IsChecked="{Binding LiveEnabled}" IsEnabled="{Binding CanSelect}"
+                  VerticalAlignment="Center" Margin="0,0,12,6" ToolTip="Uses the installed Whisper Tiny multilingual model." />
+        <ComboBox ItemsSource="{Binding SpeechLanguages}" SelectedIndex="{Binding SpeechLanguage}"
+                  IsEnabled="{Binding CanConfigureSpeech}" AutomationProperties.Name="Transcription language"
+                  MinWidth="100" Margin="0,0,12,6" />
+        <CheckBox Content="Translate English to Simplified Chinese" IsChecked="{Binding TranslateLive}"
+                  IsEnabled="{Binding CanConfigureSpeech}" VerticalAlignment="Center" Margin="0,0,0,6"
+                  ToolTip="Uses the installed OPUS-MT model after the source text is saved." />
+      </WrapPanel>
+      <WrapPanel>
+        <Button Content="Start recording" Padding="12,6" Margin="0,0,8,6" IsEnabled="{Binding CanStart}" Click="StartRecording" />
+        <Button Content="Pause" Padding="12,6" Margin="0,0,8,6" IsEnabled="{Binding CanPause}" Click="PauseRecording" />
+        <Button Content="Resume" Padding="12,6" Margin="0,0,8,6" IsEnabled="{Binding CanResume}" Click="ResumeRecording" />
+        <Button Content="Stop recording" Padding="12,6" Margin="0,0,8,6" IsEnabled="{Binding CanStop}" Click="StopRecording" />
+        <Button Content="Sessions" Padding="12,6" Margin="0,0,8,6" IsEnabled="{Binding CanSelect}" Click="OpenSessions" />
+        <Button Content="Models" Padding="12,6" Margin="0,0,8,6" IsEnabled="{Binding CanSelect}" Click="OpenModels" />
+        <Button Content="Sync &amp; privacy" Padding="12,6" Margin="0,0,8,6" Click="OpenSyncPrivacy" />
+      </WrapPanel>
+    </StackPanel>
 
     <ScrollViewer Grid.Row="3" VerticalScrollBarVisibility="Auto">
-      <ItemsControl ItemsSource="{Binding Tracks}">
-        <ItemsControl.ItemTemplate>
-          <DataTemplate>
-            <Border BorderBrush="{DynamicResource {x:Static SystemColors.ControlDarkBrushKey}}"
-                    BorderThickness="0,1,0,0" Padding="0,10" Margin="0,0,0,6">
-              <DockPanel LastChildFill="True">
-                <Button DockPanel.Dock="Right" Content="Reconnect endpoint" Padding="10,4" Margin="12,0,0,0"
-                        VerticalAlignment="Center" IsEnabled="{Binding CanReconnect}" Click="ReconnectEndpoint" />
-                <StackPanel>
-                  <TextBlock Text="{Binding Source}" FontWeight="SemiBold" />
-                  <TextBlock Text="{Binding Endpoint}" TextTrimming="CharacterEllipsis" />
-                  <TextBlock Text="{Binding Status}" />
-                  <TextBlock Text="{Binding Saved}" />
-                </StackPanel>
-              </DockPanel>
-            </Border>
-          </DataTemplate>
-        </ItemsControl.ItemTemplate>
-      </ItemsControl>
+      <StackPanel>
+        <ItemsControl ItemsSource="{Binding Tracks}">
+          <ItemsControl.ItemTemplate>
+            <DataTemplate>
+              <Border BorderBrush="{DynamicResource {x:Static SystemColors.ControlDarkBrushKey}}"
+                      BorderThickness="0,1,0,0" Padding="0,10" Margin="0,0,0,6">
+                <DockPanel LastChildFill="True">
+                  <Button DockPanel.Dock="Right" Content="Reconnect endpoint" Padding="10,4" Margin="12,0,0,0"
+                          VerticalAlignment="Center" IsEnabled="{Binding CanReconnect}" Click="ReconnectEndpoint" />
+                  <StackPanel>
+                    <TextBlock Text="{Binding Source}" FontWeight="SemiBold" />
+                    <TextBlock Text="{Binding Endpoint}" TextTrimming="CharacterEllipsis" />
+                    <TextBlock Text="{Binding Status}" />
+                    <TextBlock Text="{Binding Saved}" />
+                  </StackPanel>
+                </DockPanel>
+              </Border>
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+        <TextBlock Text="{Binding LiveStatus}" TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
+        <TextBlock Text="{Binding LiveTranslationStatus}" TextWrapping="Wrap" />
+        <ItemsControl ItemsSource="{Binding LiveLines}">
+          <ItemsControl.ItemTemplate>
+            <DataTemplate>
+              <StackPanel Margin="0,8,0,0">
+                <TextBlock Text="{Binding Caption}" FontWeight="SemiBold" TextWrapping="Wrap" />
+                <TextBlock Text="{Binding Text}" TextWrapping="Wrap">
+                  <TextBlock.Style>
+                    <Style TargetType="TextBlock">
+                      <Style.Triggers>
+                        <DataTrigger Binding="{Binding IsPartial}" Value="True">
+                          <Setter Property="FontStyle" Value="Italic" />
+                        </DataTrigger>
+                      </Style.Triggers>
+                    </Style>
+                  </TextBlock.Style>
+                </TextBlock>
+                <TextBlock Text="{Binding Translation}" TextWrapping="Wrap" />
+              </StackPanel>
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+      </StackPanel>
     </ScrollViewer>
 
     <Grid Grid.Row="4" Margin="0,10,0,0">

@@ -126,6 +126,19 @@ fn speech_reader_uses_committed_completed_audio_without_the_writer_lock() {
     assert!(reader.latest().unwrap().is_none());
     assert!(reader.next_chunk(&id, None).unwrap().is_none());
     let track = stable(TRACK);
+    assert_eq!(reader.live_backlog(&track, 0).unwrap(), 1);
+    assert_eq!(reader.session_tracks(&id).unwrap(), vec![track.clone()]);
+    assert_eq!(
+        reader.live_chunk(&id, &track, 0).unwrap().unwrap().id,
+        stable(FIRST)
+    );
+    assert!(reader.live_chunk(&id, &track, END).unwrap().is_none());
+    assert!(
+        reader
+            .live_chunk(&stable(SECOND), &track, 0)
+            .unwrap()
+            .is_none()
+    );
     assert!(reader.tracks(&id).unwrap().is_empty());
     assert!(matches!(
         reader.playback(&id, &track, 0),

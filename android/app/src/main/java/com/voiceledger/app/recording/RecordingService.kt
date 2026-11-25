@@ -20,6 +20,8 @@ import android.os.SystemClock
 import com.voiceledger.app.MainActivity
 import com.voiceledger.app.R
 import com.voiceledger.app.core.AudioLibrary
+import com.voiceledger.app.speech.LiveSpeech
+import com.voiceledger.app.speech.LiveSpeechOptions
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
@@ -33,7 +35,12 @@ class RecordingService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            START -> if (active == null) startRecording()
+            START -> if (active == null) {
+                val options = intent.getStringExtra(LIVE_LANGUAGE)?.let {
+                    LiveSpeechOptions(it, intent.getBooleanExtra(LIVE_TRANSLATE, false))
+                }
+                startRecording(options)
+            }
             STOP -> {
                 val recording = active
                 if (recording == null) {
@@ -52,11 +59,14 @@ class RecordingService : Service() {
 
     override fun onDestroy() {
         destroyed = true
-        active?.request(CaptureEnd.Service)
+        active?.let {
+            it.request(CaptureEnd.Service)
+            LiveSpeech.interrupt()
+        }
         super.onDestroy()
     }
 
-    private fun startRecording() {
+    private fun startRecording(speech: LiveSpeechOptions?) {
         if (RecordingStatusStore.state.value.phase != RecordingPhase.Preparing) {
             stopSelf()
             return
@@ -87,11 +97,12 @@ class RecordingService : Service() {
             RecordingStatusStore.update { it.copy(phase = RecordingPhase.Idle, failure = failure) }
             return
         }
+        LiveSpeech.reset()
         active = control
-        thread(name = "VoiceLedger recording writer") { record(control) }
+        thread(name = "VoiceLedger recording writer") { record(control, speech) }
     }
 
-    private fun record(control: RecordingControl) {
+    private fun record(control: RecordingControl, speech: LiveSpeechOptions?) {
         val directory = libraryDirectory(applicationContext)
         var saved = RecordingStatusStore.state.value.saved
         var recovery = RecordingStatusStore.state.value.recovery
@@ -109,7 +120,13 @@ class RecordingService : Service() {
                         saved = SavedAudio()
                         try {
                             manifest.prepare(control.origin)
-                            MicrophoneCapture(applicationContext, control).run(manifest)
+                            MicrophoneCapture(applicationContext, control).run(manifest) {
+                                if (speech != null) main.post {
+                                    if (!destroyed && active === control) {
+                                        LiveSpeech.start(applicationContext, manifest.sessionId, speech)
+                                    }
+                                }
+                            }
                             RecordingStatusStore.update { it.copy(phase = RecordingPhase.Stopping) }
                             saved = manifest.finish(requireNotNull(control.stop))
                         } catch (failure: Exception) {
@@ -145,6 +162,7 @@ class RecordingService : Service() {
             main.post {
                 active = null
                 if (!destroyed) {
+                    LiveSpeech.drain()
                     stopForeground(STOP_FOREGROUND_REMOVE)
                     stopSelf()
                 }
@@ -193,6 +211,8 @@ class RecordingService : Service() {
         private const val START = "com.voiceledger.app.recording.START"
         private const val STOP = "com.voiceledger.app.recording.STOP"
         private const val RECORDING_ORIGIN = "recording_origin"
+        private const val LIVE_LANGUAGE = "live_language"
+        private const val LIVE_TRANSLATE = "live_translate"
         private const val CHANNEL = "recording"
         private const val NOTIFICATION_ID = 1
         private val recoveryStarted = AtomicBoolean()
@@ -231,11 +251,15 @@ class RecordingService : Service() {
                 NotificationManager.IMPORTANCE_NONE
         }
 
-        internal fun start(context: Context) {
+        internal fun start(context: Context, speech: LiveSpeechOptions?) {
             if (RecordingStatusStore.state.value.phase != RecordingPhase.Idle) return
             RecordingStatusStore.update { it.copy(phase = RecordingPhase.Preparing, elapsedNs = 0, failure = null) }
             try {
-                context.startForegroundService(Intent(context, RecordingService::class.java).setAction(START))
+                val request = Intent(context, RecordingService::class.java).setAction(START)
+                if (speech != null) {
+                    request.putExtra(LIVE_LANGUAGE, speech.language).putExtra(LIVE_TRANSLATE, speech.translate)
+                }
+                context.startForegroundService(request)
             } catch (_: SecurityException) {
                 RecordingStatusStore.update { it.copy(phase = RecordingPhase.Idle, failure = CaptureEnd.Permission) }
             } catch (_: IllegalStateException) {

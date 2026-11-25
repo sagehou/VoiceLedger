@@ -282,6 +282,59 @@ impl CommittedReader {
         )?)
     }
 
+    pub fn session_state(&self, session: &StableId) -> Result<Option<i32>> {
+        Ok(self
+            .db
+            .query_row(
+                "SELECT state FROM sessions WHERE id=?1",
+                [String::from(session.clone())],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
+    pub fn session_tracks(&self, session: &StableId) -> Result<Vec<StableId>> {
+        let mut query = self
+            .db
+            .prepare("SELECT id FROM tracks WHERE session_id=?1 ORDER BY id")?;
+        let rows = query.query_map([String::from(session.clone())], |row| row.get(0))?;
+        rows.map(|row| stable(row?)).collect()
+    }
+
+    pub fn live_backlog(&self, track: &StableId, from_ns: i64) -> Result<u32> {
+        Ok(self.db.query_row(
+            "SELECT count(*) FROM (SELECT 1 FROM chunks WHERE track_id=?1 AND state='committed'
+                AND end_ns>?2 LIMIT 3)",
+            params![String::from(track.clone()), from_ns],
+            |row| row.get(0),
+        )?)
+    }
+
+    pub fn live_chunk(
+        &self,
+        session: &StableId,
+        track: &StableId,
+        from_ns: i64,
+    ) -> Result<Option<CommittedChunk>> {
+        let row = self
+            .db
+            .query_row(
+                &format!(
+                    "{} WHERE t.session_id=?1 AND c.track_id=?2
+                AND c.state='committed' AND c.end_ns>?3 ORDER BY c.start_ns LIMIT 1",
+                    Chunk::SELECT
+                ),
+                params![
+                    String::from(session.clone()),
+                    String::from(track.clone()),
+                    from_ns
+                ],
+                Chunk::read,
+            )
+            .optional()?;
+        row.map(|chunk| self.decode_chunk(chunk)).transpose()
+    }
+
     pub fn inputs(&self, session: &StableId) -> Result<Vec<TrackInput>> {
         let mut query = self.db.prepare(
             "WITH indexed AS (

@@ -38,7 +38,7 @@ internal class RecordingManifest(
     private val progress: (SavedAudio, Long) -> Unit,
 ) : AutoCloseable {
     private val session = CoreSession()
-    private val sessionId = UUID.randomUUID().toString()
+    val sessionId = UUID.randomUUID().toString()
     private val trackId = UUID.randomUUID().toString()
     private val transitions = JSONArray()
     private val pcm = FloatArray(2 * SAMPLE_RATE)

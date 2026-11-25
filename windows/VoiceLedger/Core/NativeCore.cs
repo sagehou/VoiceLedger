@@ -153,6 +153,9 @@ internal static class NativeCore
     [DllImport(Library, EntryPoint = "vl_speech_partial_v1", ExactSpelling = true, CallingConvention = CallingConvention.Cdecl)]
     private static extern int SpeechPartialNative(out AudioBuffer buffer);
 
+    [DllImport(Library, EntryPoint = "vl_speech_cancel_v1", ExactSpelling = true, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern void CancelSpeech();
+
     [DllImport(Library, EntryPoint = "vl_speech_resources_v1", ExactSpelling = true, CallingConvention = CallingConvention.Cdecl)]
     private static extern int SpeechResourcesNative([In] byte[] data, uint length);
 

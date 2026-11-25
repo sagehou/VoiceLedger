@@ -42,7 +42,7 @@ import com.voiceledger.app.core.NativeCore
 import com.voiceledger.app.recording.RecordingPhase
 import com.voiceledger.app.recording.RecordingStatusStore
 import com.voiceledger.app.speech.SpeechConnection
-import java.io.File
+import com.voiceledger.app.speech.speechRequest
 import java.text.DateFormat
 import java.util.Date
 import kotlinx.coroutines.CancellationException
@@ -381,7 +381,7 @@ class ModelsActivity : ComponentActivity() {
                 finishRequest(-34)
                 return@launch
             }
-            val request = SpeechConnection(this@ModelsActivity, query(action), ::finishRequest) { bytes ->
+            val request = SpeechConnection(this@ModelsActivity, query(action), ::finishRequest) { bytes, _ ->
                 partial = bytes?.takeIf { it.isNotEmpty() }?.let {
                     runCatching { JSONObject(it.decodeToString()).getString("text") }.getOrNull()
                 }
@@ -417,12 +417,7 @@ class ModelsActivity : ComponentActivity() {
         }
     }
 
-    private fun query(action: JSONObject): String = JSONObject()
-        .put("recordings", File(filesDir, "recordings").absolutePath)
-        .put("profiles", noBackupFilesDir.absolutePath)
-        .put("adapters", applicationInfo.nativeLibraryDir)
-        .put("action", action)
-        .toString()
+    private fun query(action: JSONObject): String = speechRequest(this, action)
 }
 
 @Composable
@@ -502,7 +497,7 @@ private fun ExportTranscript(enabled: Boolean, prepare: suspend (String) -> Byte
     outcome?.let { Text(stringResource(it)) }
 }
 
-private fun detectedLanguage(code: String): Int = when (code) {
+internal fun detectedLanguage(code: String): Int = when (code) {
     "zh" -> R.string.model_chinese
     "ja" -> R.string.model_japanese
     else -> R.string.model_english
@@ -596,7 +591,7 @@ private fun ModelRow(candidate: JSONObject, choice: JSONObject?, enabled: Boolea
 }
 
 @Composable
-private fun LanguagePicker(policy: String, enabled: Boolean, selected: (String) -> Unit) {
+internal fun LanguagePicker(policy: String, enabled: Boolean, selected: (String) -> Unit) {
     val labels = mapOf(
         "auto" to R.string.model_auto,
         "zh" to R.string.model_chinese,

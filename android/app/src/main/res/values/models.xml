@@ -103,4 +103,14 @@
     <string name="sync_manual">Manual</string>
     <string name="sync_machine">Machine</string>
     <string name="sync_revision_author">%1$s · %2$s</string>
+    <string name="live_transcription">Live transcription</string>
+    <string name="live_translate">Translate English to Simplified Chinese</string>
+    <string name="live_complete">Transcription complete</string>
+    <string name="live_install">Download Whisper Tiny in Models</string>
+    <string name="live_resume">Transcription paused · Resume in Sessions</string>
+    <string name="live_translation_pending">Simplified Chinese translations pending</string>
+    <string name="live_line">Microphone · %1$s</string>
+    <string name="live_partial">Microphone · %1$s · Partial</string>
+    <string name="live_zh">Simplified Chinese · %1$s</string>
+    <string name="live_stale_zh">Simplified Chinese (outdated) · %1$s</string>
 </resources>

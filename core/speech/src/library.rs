@@ -392,7 +392,7 @@ pub(crate) fn export(
         write_text(&mut output, name, format)?;
     }
     let mut first = true;
-    visit_selected(root, &session.id, -1, |line| {
+    visit_selected(root, &session.id, -1, false, |line| {
         if matches!(format, ExportFormat::Json) {
             if !first {
                 output.push(b',');

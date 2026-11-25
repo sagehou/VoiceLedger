@@ -12,21 +12,29 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import com.voiceledger.app.recording.CaptureEnd
@@ -35,9 +43,13 @@ import com.voiceledger.app.recording.RecordingService
 import com.voiceledger.app.recording.RecordingStatus
 import com.voiceledger.app.recording.RecordingStatusStore
 import com.voiceledger.app.recording.SECOND_NS
+import com.voiceledger.app.speech.LiveSpeech
+import com.voiceledger.app.speech.LiveSpeechOptions
+import com.voiceledger.app.speech.LiveSpeechStatus
 
 class MainActivity : ComponentActivity() {
     private var startRequested = false
+    private var pendingSpeech: LiveSpeechOptions? = null
     private val microphonePermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             if (startRequested) {
@@ -57,11 +69,12 @@ class MainActivity : ComponentActivity() {
         RecordingService.recoverOnLaunch(this)
         setContent {
             val status by RecordingStatusStore.state.collectAsState()
+            val liveSpeech by LiveSpeech.state.collectAsState()
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     Box(Modifier.safeDrawingPadding().padding(24.dp), contentAlignment = Alignment.Center) {
                         RecordingScreen(
-                            status, ::requestStart,
+                            status, liveSpeech, ::requestStart,
                             { RecordingService.stop(this@MainActivity) },
                             { startActivity(Intent(this@MainActivity, ModelsActivity::class.java)) },
                             { startActivity(Intent(this@MainActivity, ModelsActivity::class.java).putExtra("sessions", true)) },
@@ -73,9 +86,10 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun requestStart() {
+    private fun requestStart(speech: LiveSpeechOptions?) {
         if (startRequested || !lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) return
         startRequested = true
+        pendingSpeech = speech
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             microphonePermission.launch(Manifest.permission.RECORD_AUDIO)
         } else {
@@ -86,6 +100,7 @@ class MainActivity : ComponentActivity() {
     private fun allowNotificationsAndStart() {
         if (!lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
             startRequested = false
+            pendingSpeech = null
             return
         }
         if (Build.VERSION.SDK_INT >= 33 &&
@@ -99,17 +114,20 @@ class MainActivity : ComponentActivity() {
 
     private fun startIfVisible() {
         startRequested = false
+        val speech = pendingSpeech
+        pendingSpeech = null
         if (!lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) return
         when {
             checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED ->
                 rejectStart(CaptureEnd.Permission)
             !RecordingService.notificationsEnabled(this) -> rejectStart(CaptureEnd.Notification)
-            else -> RecordingService.start(this)
+            else -> RecordingService.start(this, speech)
         }
     }
 
     private fun rejectStart(failure: CaptureEnd) {
         startRequested = false
+        pendingSpeech = null
         RecordingStatusStore.update {
             if (it.phase == RecordingPhase.Idle) it.copy(failure = failure) else it
         }
@@ -119,12 +137,17 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun RecordingScreen(
     status: RecordingStatus,
-    start: () -> Unit,
+    speech: LiveSpeechStatus,
+    start: (LiveSpeechOptions?) -> Unit,
     stop: () -> Unit,
     openModels: () -> Unit,
     openSessions: () -> Unit,
     openSyncPrivacy: () -> Unit,
 ) {
+    var transcribe by rememberSaveable { mutableStateOf(false) }
+    var language by rememberSaveable { mutableStateOf("auto") }
+    var translate by rememberSaveable { mutableStateOf(false) }
+    val idle = status.phase == RecordingPhase.Idle
     val recording = status.phase == RecordingPhase.Preparing || status.phase == RecordingPhase.Recording
     Column(
         modifier = Modifier.verticalScroll(rememberScrollState()),
@@ -163,15 +186,63 @@ private fun RecordingScreen(
         if (status.thermal) Text(stringResource(R.string.thermal_pressure))
         if (status.lowMemory) Text(stringResource(R.string.memory_pressure))
         status.failure?.let { Text(stringResource(it.message()), color = MaterialTheme.colorScheme.error) }
+        if (idle) {
+            RecordingOption(R.string.live_transcription, transcribe) { transcribe = it }
+            if (transcribe) {
+                LanguagePicker(language, enabled = true) { language = it }
+                RecordingOption(R.string.live_translate, translate) { translate = it }
+            }
+        }
         Button(
-            onClick = if (recording) stop else start,
-            enabled = recording || status.phase == RecordingPhase.Idle,
+            onClick = if (recording) stop else {
+                { start(if (transcribe) LiveSpeechOptions(language, translate) else null) }
+            },
+            enabled = recording || idle,
         ) {
             Text(stringResource(if (recording) R.string.stop_recording else R.string.start_recording))
         }
         Button(onClick = openSessions) { Text(stringResource(R.string.sessions)) }
         Button(onClick = openModels) { Text(stringResource(R.string.models)) }
         Button(onClick = openSyncPrivacy) { Text(stringResource(R.string.sync_privacy)) }
+        LiveTranscript(speech)
+    }
+}
+
+@Composable
+private fun RecordingOption(label: Int, checked: Boolean, onChange: (Boolean) -> Unit) {
+    Row(
+        modifier = Modifier.toggleable(checked, role = Role.Checkbox, onValueChange = onChange).padding(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Checkbox(checked, onCheckedChange = null)
+        Text(stringResource(label))
+    }
+}
+
+@Composable
+private fun LiveTranscript(status: LiveSpeechStatus) {
+    val message = when {
+        status.running -> R.string.live_transcription
+        status.result == null -> null
+        status.result == 0 -> R.string.live_complete
+        status.result == -33 -> R.string.live_install
+        else -> R.string.live_resume
+    }
+    message?.let { Text(stringResource(it)) }
+    if (status.translationPending) Text(stringResource(R.string.live_translation_pending))
+    for (line in status.lines + status.partials) {
+        val language = stringResource(detectedLanguage(line.language))
+        Column {
+            Text(
+                stringResource(if (line.partial) R.string.live_partial else R.string.live_line, language),
+                style = MaterialTheme.typography.labelMedium,
+            )
+            Text(line.text, fontStyle = if (line.partial) FontStyle.Italic else null)
+            line.translation?.let {
+                Text(stringResource(if (line.stale) R.string.live_stale_zh else R.string.live_zh, it))
+            }
+        }
     }
 }
 

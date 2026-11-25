@@ -95,13 +95,14 @@ impl Transcripts {
 
     fn save(
         &self,
-        session: &StableId,
+        session_id: &StableId,
         model: &Model,
         language: LanguagePolicy,
         job: Option<&str>,
+        translate: Option<&ModelRef>,
         value: Final,
     ) -> Result<bool> {
-        let session = String::from(session.clone());
+        let session = String::from(session_id.clone());
         let track = String::from(value.track_id.clone());
         let start = value.range.start_ns.get() as i64;
         let end = value.range.end_ns.get() as i64;
@@ -173,10 +174,21 @@ impl Transcripts {
             "INSERT INTO revisions(id,utterance_id,revision,machine_key,payload) VALUES (?1,?2,?3,?4,?5)",
             params![id, utterance, ordinal, machine_key, serde_json::to_string(&revision)?],
         )?;
-        tx.execute(
+        let selected = tx.execute(
             "UPDATE utterances SET selected_revision=?1 WHERE id=?2 AND selected_revision IS NULL",
             params![id, utterance],
         )?;
+        if selected != 0
+            && revision.language == Language::En
+            && let Some(model) = translate
+        {
+            Queue(&tx).enqueue(
+                self.id()?,
+                session_id,
+                voiceledger_core::scheduler::JobKind::Translation,
+                &(&revision.id, Language::Zh, model),
+            )?;
+        }
         tx.commit()?;
         Ok(true)
     }
@@ -188,6 +200,7 @@ pub(crate) struct Writer<'a> {
     pub model: &'a Model,
     pub language: LanguagePolicy,
     pub job: Option<&'a str>,
+    pub translate: Option<&'a ModelRef>,
     pub publish_partial: &'a mut dyn FnMut(Option<Partial>),
     pub saved: u64,
 }
@@ -208,6 +221,7 @@ impl Output for Writer<'_> {
             self.model,
             self.language,
             self.job,
+            self.translate,
             value,
         )?);
         Ok(())
@@ -229,7 +243,7 @@ pub struct Line {
 
 pub fn selected(root: &Path, session: &StableId) -> Result<Vec<Line>> {
     let mut lines = Vec::new();
-    visit_selected(root, session, 40, |line| {
+    visit_selected(root, session, 40, false, |line| {
         lines.push(line);
         Ok(())
     })?;
@@ -240,6 +254,7 @@ pub(crate) fn visit_selected(
     root: &Path,
     session: &StableId,
     limit: i64,
+    latest: bool,
     mut visit: impl FnMut(Line) -> Result<()>,
 ) -> Result<()> {
     match root.join(PATH).metadata() {
@@ -255,7 +270,12 @@ pub(crate) fn visit_selected(
     if version >= 5 && crate::sync_data::hidden(&db, "session", &session)? {
         return Ok(());
     }
-    let suffix = if version >= 5 {
+    let suffix = if latest && version >= 5 {
+        " AND NOT EXISTS(SELECT 1 FROM synced_tombstones t WHERE t.scope='utterance' AND t.entity_id=u.id)
+          ORDER BY u.start_ns DESC,u.track_id DESC LIMIT ?2"
+    } else if latest {
+        " ORDER BY u.start_ns DESC,u.track_id DESC LIMIT ?2"
+    } else if version >= 5 {
         " AND NOT EXISTS(SELECT 1 FROM synced_tombstones t WHERE t.scope='utterance' AND t.entity_id=u.id)
           ORDER BY (CASE WHEN ?2<0 THEN 0 ELSE EXISTS(SELECT 1 FROM sync_conflicts c WHERE c.utterance_id=u.id) END) DESC,
             u.start_ns,u.track_id LIMIT ?2"
@@ -282,12 +302,12 @@ pub(crate) fn visit_selected(
         } else {
             None
         };
-        let speaker = if version >= 4 {
+        let speaker = if version >= 4 && !latest {
             crate::library::speaker(&db, &value.utterance_id)?
         } else {
             None
         };
-        let conflicts = if version >= 5 && limit >= 0 {
+        let conflicts = if version >= 5 && limit >= 0 && !latest {
             crate::sync_data::conflict(&db, &value.utterance_id)?
         } else {
             Vec::new()
