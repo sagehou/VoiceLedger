@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
@@ -124,7 +125,7 @@ impl Outbox {
         &mut self,
         vault: &Vault,
         scopes: SyncScopes,
-        backend: &impl SyncBackend,
+        backend: &dyn SyncBackend,
     ) -> Result<Option<ObjectKey>, SyncError> {
         self.check_vault(vault)?;
         if !scopes.enabled {
@@ -133,23 +134,7 @@ impl Outbox {
         if self.retry_after().is_some() {
             return Err(SyncError::Retry);
         }
-        let mut first = None;
-        for item in fs::read_dir(&self.directory).map_err(storage)? {
-            let path = item.map_err(storage)?.path();
-            if path.extension().and_then(|value| value.to_str()) != Some("pending") {
-                continue;
-            }
-            let Some(sequence) = path
-                .file_stem()
-                .and_then(|value| value.to_str())
-                .filter(|value| value.len() == 20)
-                .and_then(|value| value.parse::<u64>().ok())
-            else {
-                return Err(SyncError::Integrity);
-            };
-            first = Some(first.map_or(sequence, |prior: u64| prior.min(sequence)));
-        }
-        let Some(sequence) = first else {
+        let Some(sequence) = self.sequences("pending")?.into_iter().next() else {
             return Ok(None);
         };
         let (pending, event) = self
@@ -175,6 +160,52 @@ impl Outbox {
             }
             Err(error) => Err(error),
         }
+    }
+
+    pub(super) fn inventory(
+        &self,
+        vault: &Vault,
+        first: u64,
+    ) -> Result<(u64, BTreeSet<StableId>), SyncError> {
+        self.check_vault(vault)?;
+        let mut pending = self.sequences("pending")?;
+        pending.extend(self.sequences("sent")?);
+        let mut revisions = BTreeSet::new();
+        for (expected, sequence) in pending.iter().copied().enumerate() {
+            if sequence != first + expected as u64 {
+                return Err(SyncError::Integrity);
+            }
+            let record = match self.load(vault, sequence, "sent")? {
+                Some(record) => record,
+                None => self
+                    .load(vault, sequence, "pending")?
+                    .ok_or(SyncError::LocalStorage)?,
+            };
+            if !revisions.insert(record.1.event.revision_id) {
+                return Err(SyncError::Conflict);
+            }
+        }
+        Ok((first + pending.len() as u64, revisions))
+    }
+
+    fn sequences(&self, state: &str) -> Result<BTreeSet<u64>, SyncError> {
+        let mut sequences = BTreeSet::new();
+        for item in fs::read_dir(&self.directory).map_err(storage)? {
+            let path = item.map_err(storage)?.path();
+            if path.extension().and_then(|value| value.to_str()) != Some(state) {
+                continue;
+            }
+            let Some(sequence) = path
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .filter(|value| value.len() == 20)
+                .and_then(|value| value.parse::<u64>().ok())
+            else {
+                return Err(SyncError::Integrity);
+            };
+            sequences.insert(sequence);
+        }
+        Ok(sequences)
     }
 
     fn check_vault(&self, vault: &Vault) -> Result<(), SyncError> {

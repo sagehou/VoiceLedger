@@ -76,6 +76,7 @@ jobs:
           done
       - name: Verify automatic Chinese, English and Japanese recognition offline
         run: |
+          sudo apt-get install -y --no-install-recommends open-jtalk open-jtalk-mecab-naist-jdic hts-voice-nitech-jp-atr503-m001
           samples="$RUNNER_TEMP/voiceledger-asr"
           python3 ../scripts/check_asr_languages.py "$samples"
           sudo unshare --net --setgid="$(id -g)" --setuid="$(id -u)" -- "$(command -v python3)" \

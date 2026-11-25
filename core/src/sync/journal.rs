@@ -65,7 +65,7 @@ impl Journal {
     pub fn receive(
         &mut self,
         vault: &Vault,
-        backend: &impl SyncBackend,
+        backend: &dyn SyncBackend,
         key: &ObjectKey,
     ) -> Result<Receive, SyncError> {
         self.check_vault(vault)?;
@@ -230,7 +230,45 @@ impl Journal {
             .collect()
     }
 
+    fn seed(&self, next: &Vault) -> Result<Vec<u8>, SyncError> {
+        if self.vault_id != *next.id() || self.generation.checked_add(1) != Some(next.generation())
+        {
+            return Err(SyncError::Integrity);
+        }
+        if self
+            .streams
+            .values()
+            .any(|stream| stream.records.range(stream.next..).next().is_some())
+        {
+            return Err(SyncError::Retry);
+        }
+        self.checkpoint_at(next.generation())
+    }
+
+    pub fn transcripts(&self) -> impl Iterator<Item = &SyncedTranscript> {
+        self.accepted()
+            .filter_map(|item| item.transcript.as_deref())
+    }
+
+    pub fn next_sequence(&self, device: &StableId) -> u64 {
+        self.streams.get(device).map_or(0, |stream| stream.next)
+    }
+
+    pub fn has_revision(&self, id: &StableId) -> bool {
+        self.revisions.contains_key(id)
+    }
+
+    pub fn tombstones(&self) -> impl Iterator<Item = &crate::contracts::SyncEvent> {
+        self.accepted().filter_map(|item| {
+            (item.event.operation == SyncOperation::Tombstone).then_some(&item.event)
+        })
+    }
+
     pub fn checkpoint(&self) -> Result<Vec<u8>, SyncError> {
+        self.checkpoint_at(self.generation)
+    }
+
+    fn checkpoint_at(&self, generation: u32) -> Result<Vec<u8>, SyncError> {
         let records = self
             .streams
             .values()
@@ -239,7 +277,7 @@ impl Journal {
         let checkpoint = Checkpoint {
             version: 1,
             vault_id: self.vault_id,
-            generation: self.generation,
+            generation,
             records,
         };
         let bytes = serde_json::to_vec(&checkpoint).map_err(|_| SyncError::Integrity)?;
@@ -278,6 +316,14 @@ pub struct JournalStore {
 
 impl JournalStore {
     pub fn open(root: &Path, vault: &Vault) -> Result<Self, SyncError> {
+        Self::open_with_seed(root, vault, None)
+    }
+
+    pub(super) fn open_with_seed(
+        root: &Path,
+        vault: &Vault,
+        checkpoint: Option<&[u8]>,
+    ) -> Result<Self, SyncError> {
         if !root.is_absolute() {
             return Err(SyncError::Configuration);
         }
@@ -286,7 +332,10 @@ impl JournalStore {
             .join(hex(vault.id()))
             .join(vault.generation().to_string());
         let lock = lock_directory(&directory, "journal.lock")?;
-        let mut journal = Journal::new(vault);
+        let mut journal = match checkpoint {
+            Some(bytes) => Journal::from_checkpoint(vault, bytes)?,
+            None => Journal::new(vault),
+        };
         let mut files = fs::read_dir(&directory)
             .map_err(storage)?
             .map(|entry| entry.map(|entry| entry.path()).map_err(storage))
@@ -316,10 +365,18 @@ impl JournalStore {
         self.journal.transcript_heads(entity)
     }
 
+    pub fn journal(&self) -> &Journal {
+        &self.journal
+    }
+
+    pub(super) fn seed(&self, next: &Vault) -> Result<Vec<u8>, SyncError> {
+        self.journal.seed(next)
+    }
+
     pub fn receive(
         &mut self,
         vault: &Vault,
-        backend: &impl SyncBackend,
+        backend: &dyn SyncBackend,
         key: &ObjectKey,
     ) -> Result<Receive, SyncError> {
         self.journal.check_vault(vault)?;
@@ -342,7 +399,7 @@ impl JournalStore {
     pub fn pull_device_page(
         &mut self,
         vault: &Vault,
-        backend: &impl SyncBackend,
+        backend: &dyn SyncBackend,
         device: &StableId,
         continuation: Option<&str>,
     ) -> Result<Option<String>, SyncError> {
@@ -625,6 +682,7 @@ mod tests {
                     session_id: session_id.clone(),
                     source: Source::Mic,
                     revision: revision.clone(),
+                    session: None,
                 },
             )?;
             outbox

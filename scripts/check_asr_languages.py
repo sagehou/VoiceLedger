@@ -9,10 +9,11 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 from time import perf_counter
 import wave
 
-from build_speech import fetch
+from build_speech import SHERPA_RELEASE, fetch, unpack
 
 RATE = 16000
 ROOT = Path(__file__).resolve().parents[1]
@@ -34,15 +35,46 @@ def artifact():
 
 
 def prepare(folder):
+    folder = folder.resolve()
     folder.mkdir(parents=True, exist_ok=True)
     model = artifact()
     path = fetch(folder, model["file"], model["url"], model["sha256"])
     if path.stat().st_size != model["size_bytes"]:
         raise RuntimeError("Unexpected model size")
+    cli = "sherpa-onnx-v1.12.20-linux-x64-shared"
+    voice_package = "kokoro-int8-multi-lang-v1_0"
+    unpack(fetch(folder, cli + ".tar.bz2", SHERPA_RELEASE + cli + ".tar.bz2",
+                 "13a2c502f5ef373f514a5fc5c5ad03cc0798dcb564a6f8cbd54f8f6ce9e47462"), folder)
+    unpack(fetch(folder, voice_package + ".tar.bz2",
+                 "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/" + voice_package + ".tar.bz2",
+                 "72c347230107ef8a31098ec4d468a605244beef5f1ed00db97efa13518800653"), folder)
+    runtime = folder / cli
+    voice_model = folder / voice_package
+    weights, = voice_model.glob("*.onnx")
+    sh_env = dict(os.environ, LD_LIBRARY_PATH=str(runtime / "lib"))
+    paths = lambda package: subprocess.check_output(["dpkg", "-L", package], text=True).splitlines()
+    dictionary, = (Path(path).parent for path in paths("open-jtalk-mecab-naist-jdic") if path.endswith("/sys.dic"))
+    japanese, = (path for path in paths("hts-voice-nitech-jp-atr503-m001") if path.endswith(".htsvoice"))
     for language, (voice, *sentences) in SAMPLES.items():
         for index, sentence in enumerate(sentences, 1):
-            audio = subprocess.check_output(["espeak-ng", "-v", voice, "-s", "145", "--stdout", sentence])
-            (folder / f"{language}-{index}.wav").write_bytes(audio)
+            output = folder / f"{language}-{index}.wav"
+            if language == "zh":
+                subprocess.run([
+                    str(runtime / "bin/sherpa-onnx-offline-tts"), "--debug=0", "--num-threads=2",
+                    f"--kokoro-model={weights}", f"--kokoro-voices={voice_model / 'voices.bin'}",
+                    f"--kokoro-tokens={voice_model / 'tokens.txt'}", f"--kokoro-data-dir={voice_model / 'espeak-ng-data'}",
+                    f"--kokoro-lexicon={voice_model / 'lexicon-us-en.txt'},{voice_model / 'lexicon-zh.txt'}",
+                    "--sid=45", f"--output-filename={output}", sentence,
+                ], check=True, env=sh_env)
+            elif language == "ja":
+                with tempfile.TemporaryDirectory(dir=folder) as temp:
+                    text = Path(temp) / "text"
+                    text.write_text(sentence + "\n", encoding="utf-8")
+                    subprocess.run(["open_jtalk", "-x", str(dictionary), "-m", japanese, "-r", "0.95",
+                                    "-ow", str(output), str(text)], check=True)
+            else:
+                audio = subprocess.check_output(["espeak-ng", "-v", voice, "-s", "145", "--stdout", sentence])
+                output.write_bytes(audio)
 
 
 def waveform(path):
@@ -105,7 +137,7 @@ def evaluate(folder, library, report):
         dll.vl_asr_close(engine)
     report.write_text(json.dumps({
         "platform": os.name, "model_sha256": model["sha256"], "runtime": dll.vl_asr_version().decode(),
-        "policy": "auto", "inputs": "eSpeak NG synthetic utterances", "samples": results,
+        "policy": "auto", "inputs": {"zh": "Kokoro 1.0 INT8 / zh sid 45", "ja": "Open JTalk / Nitech ATR503", "en": "eSpeak NG en-us"}, "samples": results,
     }, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     for sample in results:
         print(sample["fixture"], sample["expected"], sample["detected"], bool(sample["text"]))

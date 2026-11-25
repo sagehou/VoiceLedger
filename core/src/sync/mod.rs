@@ -3,11 +3,12 @@ mod journal;
 mod outbox;
 mod probe;
 mod s3;
+mod transfer;
 
 use serde::{Deserialize, Serialize};
 
 use crate::contracts::{
-    Source, StableId, SyncEntity, SyncEvent, SyncOperation, UtteranceKind, UtteranceRevision,
+    Count, Source, StableId, SyncEntity, SyncEvent, SyncOperation, UtteranceKind, UtteranceRevision,
 };
 use crate::vault::{ObjectId, SealedObject, SyncScopes, Vault};
 use zeroize::Zeroizing;
@@ -15,8 +16,9 @@ use zeroize::Zeroizing;
 pub use dav::WebDav;
 pub use journal::{EntityState, Journal, JournalStore, Receive};
 pub use outbox::Outbox;
-pub use probe::check_provider;
+pub use probe::{check_provider, connect};
 pub use s3::S3;
+pub use transfer::VaultSync;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SyncError {
@@ -32,6 +34,7 @@ pub enum SyncError {
     Conflict,
     Integrity,
     LocalStorage,
+    GenerationRetired,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -82,6 +85,17 @@ pub struct SyncedTranscript {
     pub session_id: StableId,
     pub source: Source,
     pub revision: UtteranceRevision,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<SessionTextMetadata>,
+}
+
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionTextMetadata {
+    pub created_at_ms: Count,
+    pub elapsed_ns: Count,
+    pub interrupted: bool,
+    pub title: Option<String>,
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -159,7 +173,7 @@ impl PendingEvent {
 
     fn download(
         vault: &Vault,
-        backend: &impl SyncBackend,
+        backend: &dyn SyncBackend,
         key: &ObjectKey,
     ) -> Result<(Self, LinkedEvent), SyncError> {
         let (pending, record) = Self::reopen(vault, backend.get(key)?)?;
@@ -173,7 +187,7 @@ impl PendingEvent {
         &self.key
     }
 
-    pub fn publish(&self, backend: &impl SyncBackend) -> Result<(), SyncError> {
+    pub fn publish(&self, backend: &dyn SyncBackend) -> Result<(), SyncError> {
         match backend.put_immutable(&self.key, &self.envelope)? {
             PutOutcome::Created => Ok(()),
             PutOutcome::Exists if backend.get(&self.key)? == self.envelope.envelope() => Ok(()),
@@ -208,7 +222,7 @@ fn check_scope(scopes: SyncScopes, kind: SyncEntity) -> Result<(), SyncError> {
 
 pub fn read_event(
     vault: &Vault,
-    backend: &impl SyncBackend,
+    backend: &dyn SyncBackend,
     key: &ObjectKey,
 ) -> Result<SyncEvent, SyncError> {
     Ok(read_linked(vault, backend, key)?.event)
@@ -216,7 +230,7 @@ pub fn read_event(
 
 fn read_linked(
     vault: &Vault,
-    backend: &impl SyncBackend,
+    backend: &dyn SyncBackend,
     key: &ObjectKey,
 ) -> Result<LinkedEvent, SyncError> {
     Ok(PendingEvent::download(vault, backend, key)?.1)
@@ -233,12 +247,12 @@ fn key(
 }
 
 pub fn device_prefix(vault: &Vault, device: &StableId) -> Result<ObjectKey, SyncError> {
-    ObjectKey::new(format!(
-        "voiceledger/{}/g-{}/devices/{}",
-        hex(vault.id()),
-        vault.generation(),
-        String::from(device.clone()),
-    ))
+    let root = generation_path(vault);
+    ObjectKey::new(format!("{root}/devices/{}", String::from(device.clone())))
+}
+
+fn generation_path(vault: &Vault) -> String {
+    format!("voiceledger/{}/g-{}", hex(vault.id()), vault.generation())
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -282,6 +296,13 @@ fn validate(record: &LinkedEvent) -> Result<(), SyncError> {
             || revision.text.len() > 8192
             || revision.text.contains('\0')
             || !revision.range.is_nonempty()
+            || text.session.as_ref().is_some_and(|session| {
+                session.created_at_ms.get() > 253_402_300_799_999
+                    || session.elapsed_ns < revision.range.end_ns
+                    || session.title.as_ref().is_some_and(|title| {
+                        title.chars().count() > 64 || title.chars().any(char::is_control)
+                    })
+            })
             || revision.source.is_empty()
             || revision.source.len() > 1024
             || revision

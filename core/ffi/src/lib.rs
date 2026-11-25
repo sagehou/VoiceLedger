@@ -52,6 +52,7 @@ enum Error {
     SyncProvider = -63,
     SyncConnection = -64,
     SyncIntegrity = -65,
+    SyncGenerationRetired = -66,
 }
 
 #[derive(Default)]
