@@ -11,6 +11,7 @@ set(WITH_MKL OFF CACHE BOOL "Disable MKL")
 set(WITH_RUY ON CACHE BOOL "Use Ruy CPU kernels")
 set(OPENMP_RUNTIME NONE CACHE STRING "OpenMP runtime")
 add_subdirectory("${CTRANSLATE2_SOURCE}" ctranslate2 EXCLUDE_FROM_ALL)
+set_target_properties(ctranslate2 PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 set(SPM_ENABLE_SHARED OFF CACHE BOOL "Build SentencePiece statically")
 set(SPM_ENABLE_TCMALLOC OFF CACHE BOOL "Use the platform allocator")
