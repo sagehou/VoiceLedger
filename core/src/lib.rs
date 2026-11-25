@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 pub mod contracts;
+pub mod sync;
 pub mod track;
 pub mod vault;
 

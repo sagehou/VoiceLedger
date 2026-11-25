@@ -1,0 +1,5 @@
+# Encrypted storage adapter
+
+The shared WebDAV adapter accepts HTTPS endpoints and creates a per-vault, per-generation and per-device collection. PUT uses `If-None-Match: *`. After a duplicate response, the caller checks the exact sealed bytes before treating the retry as successful. PROPFIND walks one collection level. The provider receives the opaque object name and AES-GCM envelope. The reader checks the authenticated event against its vault, device, sequence and object path. [Issue #16](https://github.com/sagehou/VoiceLedger/issues/16)
+
+The hosted contract test uses a loopback WebDAV protocol fixture and synthetic events. It covers conditional creation, duplicate upload, listing, download, explicit deletion, redirect rejection, authentication expiry, quota, and retryable server status. User credentials and real recordings remain outside the test. Production use is pending a configured provider test and the reviewed vault/key workflow. S3 compatibility still requires implementation and tests for signing, pagination and conditional writes. [Vault protocol](VAULT-PROTOCOL.md) · [Device acceptance](https://github.com/sagehou/VoiceLedger/issues/18)
