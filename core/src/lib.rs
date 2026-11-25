@@ -5,7 +5,9 @@ pub mod device_profile;
 pub mod models;
 pub mod scheduler;
 pub mod speakers;
+pub mod sync;
 pub mod track;
+pub mod vault;
 
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")

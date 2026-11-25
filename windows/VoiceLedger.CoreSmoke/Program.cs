@@ -57,6 +57,7 @@ Console.WriteLine($"P/Invoke ABI {NativeCore.AbiVersion} passed {cases} fixture 
 Console.WriteLine($"Fixture SHA-256 {fixtureHash}");
 ValidateDomainFixtures(args[1]);
 DeviceProfileSmoke.Run();
+VaultSmoke.Run(Path.Combine(Path.GetDirectoryName(fixture)!, "vault-v1.json"));
 await RecordingSmoke.RunAsync();
 
 static void ValidateDomainFixtures(string directory)
