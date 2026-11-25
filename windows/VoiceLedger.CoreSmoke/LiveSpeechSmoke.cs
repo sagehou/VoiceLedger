@@ -32,7 +32,7 @@ internal static class LiveSpeechSmoke
         var tracks = new Dictionary<Guid, string> { [track] = "Microphone" };
         var waiting = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var final = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(75));
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         Task<int> worker = SpeechWorker.RunAsync(
             Request(new { op = "transcribe_live", session_id = session, language = "auto", translate = false, approved = true }),
             progress =>
@@ -46,6 +46,7 @@ internal static class LiveSpeechSmoke
         try
         {
             await WaitAsync(waiting.Task, worker, cancellation.Token, "Waiting for saved audio");
+            cancellation.CancelAfter(TimeSpan.FromSeconds(120));
             byte[] bytes = File.ReadAllBytes(sample);
             var samples = new float[bytes.Length / sizeof(float)];
             Buffer.BlockCopy(bytes, 0, samples, 0, bytes.Length);
@@ -67,8 +68,17 @@ internal static class LiveSpeechSmoke
             }
             await WaitAsync(final.Task, worker, cancellation.Token, "English final while the manifest is recording");
             State(5, end);
-            if (await worker.WaitAsync(cancellation.Token) != 0)
-                throw new InvalidOperationException("The Windows speech worker did not drain at Stop.");
+            cancellation.CancelAfter(TimeSpan.FromSeconds(90));
+            try
+            {
+                int code = await worker.WaitAsync(cancellation.Token);
+                if (code != 0)
+                    throw new InvalidOperationException($"The Windows speech worker exited with code {code} at Stop.");
+            }
+            catch (OperationCanceledException error)
+            {
+                throw new TimeoutException("The Windows speech worker did not drain at Stop.", error);
+            }
             Console.WriteLine("Packaged Windows speech worker reported readiness and returned an English final during synthetic capture.");
         }
         finally
@@ -83,7 +93,14 @@ internal static class LiveSpeechSmoke
 
     private static async Task WaitAsync(Task milestone, Task<int> worker, CancellationToken cancellation, string context)
     {
-        if (await Task.WhenAny(milestone, worker).WaitAsync(cancellation) == worker && !milestone.IsCompletedSuccessfully)
-            throw new InvalidOperationException($"{context} was missing. Worker exited with code {await worker}.");
+        try
+        {
+            if (await Task.WhenAny(milestone, worker).WaitAsync(cancellation) == worker && !milestone.IsCompletedSuccessfully)
+                throw new InvalidOperationException($"{context} was missing. Worker exited with code {await worker}.");
+        }
+        catch (OperationCanceledException error)
+        {
+            throw new TimeoutException($"{context} timed out.", error);
+        }
     }
 }
