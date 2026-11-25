@@ -92,7 +92,7 @@ impl Count {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct TimeRange {
     pub start_ns: Count,
@@ -300,14 +300,14 @@ pub struct Silence {
     pub range: TimeRange,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ChunkSpan {
     pub chunk_id: StableId,
     pub range: TimeRange,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ModelRef {
     pub model_id: String,
@@ -324,7 +324,7 @@ pub enum UtteranceKind {
     Manual,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct UtteranceRevision {
     pub id: StableId,
