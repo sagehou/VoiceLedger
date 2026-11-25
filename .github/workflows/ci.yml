@@ -32,7 +32,11 @@ jobs:
           }
           offline --library artifacts/libvoiceledger_whisper.so --report artifacts/whisper-baseline.json
           offline --model sensevoice-small-int8 --library artifacts/libvoiceledger_sensevoice.so --report artifacts/sensevoice.json
-          sed -i '/settings.no_context = true;/a\    settings.audio_ctx = 768;\n    settings.greedy.best_of = 1;\n    settings.temperature_inc = 0.0f;' native/speech/whisper.cpp
+          sed -i '/settings.no_context = true;/a\    settings.audio_ctx = 768;' native/speech/whisper.cpp
+          cmake --build "$RUNNER_TEMP/asr-native/adapters" --config Release --target voiceledger_whisper --parallel 3
+          cmake --install "$RUNNER_TEMP/asr-native/adapters" --config Release --prefix "$PWD/artifacts"
+          offline --library artifacts/libvoiceledger_whisper.so --report artifacts/whisper-context-only.json
+          sed -i '/settings.audio_ctx = 768;/a\    settings.greedy.best_of = 1;\n    settings.temperature_inc = 0.0f;' native/speech/whisper.cpp
           cmake --build "$RUNNER_TEMP/asr-native/adapters" --config Release --target voiceledger_whisper --parallel 3
           cmake --install "$RUNNER_TEMP/asr-native/adapters" --config Release --prefix "$PWD/artifacts"
           offline --library artifacts/libvoiceledger_whisper.so --report artifacts/whisper-tuned.json
