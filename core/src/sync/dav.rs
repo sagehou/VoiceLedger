@@ -45,6 +45,7 @@ impl WebDav {
         STANDARD.encode_string(pair.as_bytes(), &mut auth);
         let mut config = Config::builder()
             .https_only(tls)
+            .allow_non_standard_methods(true)
             .max_redirects(0)
             .max_redirects_will_error(false)
             .http_status_as_error(false)
