@@ -367,6 +367,7 @@ private fun syncError(code: Int): Int = when (code) {
     -63 -> R.string.sync_provider_unsupported
     -65 -> R.string.sync_integrity_error
     -66 -> R.string.sync_generation_retired
+    -67 -> R.string.sync_device_removed
     else -> R.string.sync_connection_error
 }
 

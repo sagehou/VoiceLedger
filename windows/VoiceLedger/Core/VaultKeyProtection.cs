@@ -30,6 +30,8 @@ internal static class VaultKeyProtection
 
     internal static byte[] PrepareRotation(string directory, byte[] current, Guid target)
     {
+        using var access = Lock(directory);
+        RequireCurrent(directory, current);
         if (PendingTarget(directory) is { } existing && existing != target)
             throw new InvalidOperationException("A device removal is already in progress.");
         string pendingName = $"{PendingPrefix}{target:D}.v1";
@@ -55,6 +57,8 @@ internal static class VaultKeyProtection
 
     internal static void CommitRotation(string directory, byte[] current, byte[] next)
     {
+        using var access = Lock(directory);
+        RequireCurrent(directory, current);
         byte[] prior = NativeVault.Identity(current);
         byte[] successor = NativeVault.Identity(next);
         if (!prior.AsSpan(0, 16).SequenceEqual(successor.AsSpan(0, 16))
@@ -94,8 +98,29 @@ internal static class VaultKeyProtection
         finally { CryptographicOperations.ZeroMemory(wrapped); }
     }
 
-    internal static void InstallLocal(string directory, byte[] recovery) =>
+    internal static void InstallLocal(string directory, byte[] recovery)
+    {
+        using var access = Lock(directory);
         Install(directory, ActiveKey, recovery, overwrite: false);
+    }
+
+    private static FileStream Lock(string directory)
+    {
+        Directory.CreateDirectory(directory);
+        return new FileStream(Path.Combine(directory, "vault.lock"), FileMode.OpenOrCreate,
+            FileAccess.ReadWrite, FileShare.None);
+    }
+
+    private static void RequireCurrent(string directory, byte[] expected)
+    {
+        byte[] saved = ReadLocal(directory) ?? throw new InvalidOperationException("Local vault key is unavailable.");
+        try
+        {
+            if (!CryptographicOperations.FixedTimeEquals(expected, saved))
+                throw new InvalidOperationException("Local vault key changed.");
+        }
+        finally { CryptographicOperations.ZeroMemory(saved); }
+    }
 
     private static void Install(string directory, string name, byte[] recovery, bool overwrite)
     {

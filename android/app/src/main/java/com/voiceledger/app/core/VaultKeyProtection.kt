@@ -53,6 +53,7 @@ internal object VaultKeyProtection {
 
     @Synchronized
     fun prepareRotation(directory: File, current: ByteArray, target: String): ByteArray {
+        requireCurrent(directory, current)
         check(UUID.fromString(target).toString() == target)
         val existing = pendingTarget(directory)
         check(existing == null || existing == target)
@@ -75,12 +76,19 @@ internal object VaultKeyProtection {
 
     @Synchronized
     fun commitRotation(directory: File, current: ByteArray, next: ByteArray) {
+        requireCurrent(directory, current)
         val prior = NativeVault.identity(current)
         val successor = NativeVault.identity(next)
         check(prior.copyOfRange(0, 16).contentEquals(successor.copyOfRange(0, 16)) &&
             Integer.compareUnsigned(ByteBuffer.wrap(prior, 16, 4).int, ByteBuffer.wrap(successor, 16, 4).int) < 0)
         install(directory, activeKey, next, overwrite = true)
         pendingTarget(directory)?.let { AtomicFile(File(directory, "$pendingPrefix$it.v1")).delete() }
+    }
+
+    private fun requireCurrent(directory: File, expected: ByteArray) {
+        val saved = checkNotNull(readLocal(directory))
+        try { check(java.security.MessageDigest.isEqual(saved, expected)) }
+        finally { saved.fill(0) }
     }
 
     private fun read(directory: File, name: String): ByteArray? {

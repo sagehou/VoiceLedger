@@ -35,6 +35,7 @@ pub enum SyncError {
     Integrity,
     LocalStorage,
     GenerationRetired,
+    DeviceRemoved,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]

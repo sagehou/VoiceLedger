@@ -21,6 +21,7 @@ fn map_error(failure: SyncError) -> Error {
         SyncError::Retry | SyncError::Transport | SyncError::LocalStorage => Error::SyncConnection,
         SyncError::Conflict | SyncError::Integrity => Error::SyncIntegrity,
         SyncError::GenerationRetired => Error::SyncGenerationRetired,
+        SyncError::DeviceRemoved => Error::SyncDeviceRemoved,
     }
 }
 

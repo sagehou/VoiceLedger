@@ -44,4 +44,5 @@
     <string name="sync_removed">Device removed · Share the generation %1$d recovery key.</string>
     <string name="sync_generation_retired">This vault generation has retired. Join with the current recovery key.</string>
     <string name="sync_this_device">This device · %1$s</string>
+    <string name="sync_device_removed">This device was removed from the vault.</string>
 </resources>

@@ -53,6 +53,7 @@ enum Error {
     SyncConnection = -64,
     SyncIntegrity = -65,
     SyncGenerationRetired = -66,
+    SyncDeviceRemoved = -67,
 }
 
 #[derive(Default)]

@@ -583,17 +583,18 @@ fn native_translation_app_flow() {
 
 #[test]
 fn sync_import_preserves_actual_branches_and_recovers_after_device_removal() {
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
     use std::collections::BTreeMap;
 
-    use voiceledger_core::contracts::{DomainBatch, Source};
+    use voiceledger_core::contracts::{DomainBatch, Source, SyncEntity, SyncEvent, SyncOperation};
     use voiceledger_core::sync::{
-        ObjectKey, Page, PutOutcome, SyncBackend, SyncError, SyncedTranscript, VaultSync,
+        Journal, ObjectKey, Page, PendingEvent, PutOutcome, SyncBackend, SyncError,
+        SyncedTranscript, VaultSync,
     };
-    use voiceledger_core::vault::{SealedObject, Vault};
+    use voiceledger_core::vault::{SealedObject, SyncScopes, Vault};
 
     #[derive(Default)]
-    struct Storage(RefCell<BTreeMap<ObjectKey, Vec<u8>>>);
+    struct Storage(RefCell<BTreeMap<ObjectKey, Vec<u8>>>, Cell<bool>);
     impl SyncBackend for Storage {
         fn put_immutable(
             &self,
@@ -605,6 +606,9 @@ fn sync_import_preserves_actual_branches_and_recovers_after_device_removal() {
                 return Ok(PutOutcome::Exists);
             }
             data.insert(key.clone(), object.envelope().to_vec());
+            if key.value().ends_with("/retirement") && self.1.replace(false) {
+                return Err(SyncError::Transport);
+            }
             Ok(PutOutcome::Created)
         }
         fn get(&self, key: &ObjectKey) -> std::result::Result<Vec<u8>, SyncError> {
@@ -700,7 +704,11 @@ fn sync_import_preserves_actual_branches_and_recovers_after_device_removal() {
     );
 
     let replacement = vault.rotate().unwrap();
-    second.remove(&replacement, &a_id).unwrap();
+    remote.1.set(true);
+    assert_eq!(
+        second.remove(&replacement, &a_id),
+        Err(SyncError::Transport)
+    );
     assert!(VaultSync::finished_rotation(&vault, &replacement, &remote, &a_id).unwrap());
     assert!(matches!(
         VaultSync::verify_key(&vault, &remote, &b_id),
@@ -708,7 +716,7 @@ fn sync_import_preserves_actual_branches_and_recovers_after_device_removal() {
     ));
     assert!(matches!(
         VaultSync::verify_key(&replacement, &remote, &a_id),
-        Err(SyncError::GenerationRetired)
+        Err(SyncError::DeviceRemoved)
     ));
     let clean_key = Vault::recover(&replacement.recovery_code()).unwrap();
     let clean = Transcripts::open(&c_root.0).unwrap();
@@ -720,4 +728,38 @@ fn sync_import_preserves_actual_branches_and_recovers_after_device_removal() {
     assert_eq!(restored[0].text, "Reviewed synthetic notes");
     assert!(restored[0].conflicts.is_empty());
     assert_eq!(third.devices().unwrap().len(), 1);
+    let tombstone = SyncEvent {
+        id: clean.id().unwrap(),
+        device_id: clean.id().unwrap(),
+        sequence: 0.try_into().unwrap(),
+        entity_kind: SyncEntity::Session,
+        entity_id: session.clone(),
+        operation: SyncOperation::Tombstone,
+        restored_from_tombstone_id: None,
+        revision_id: clean.id().unwrap(),
+        object_refs: Vec::new(),
+        created_at_unix_ms: 1.try_into().unwrap(),
+    };
+    let scopes = SyncScopes {
+        enabled: true,
+        ..SyncScopes::default()
+    };
+    let deletion = PendingEvent::seal(&clean_key, scopes, &tombstone).unwrap();
+    deletion.publish(&remote).unwrap();
+    let mut tombstones = Journal::new(&clean_key);
+    tombstones
+        .receive(&clean_key, &remote, deletion.key())
+        .unwrap();
+    clean.import(&tombstones).unwrap();
+    clean.import(third.journal()).unwrap();
+    assert!(
+        crate::library::history(&c_root.0, None, None)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        crate::transcript::selected(&c_root.0, &session)
+            .unwrap()
+            .is_empty()
+    );
 }

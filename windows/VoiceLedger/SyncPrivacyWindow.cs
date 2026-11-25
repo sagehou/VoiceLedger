@@ -333,6 +333,7 @@ internal sealed class SyncPrivacyWindow : Window
         -63 => "The provider did not support the required storage operations.",
         -65 => "The stored vault data could not be verified.",
         -66 => "This vault generation has retired. Join with the current recovery key.",
+        -67 => "This device was removed from the vault.",
         _ => "The provider could not be reached. Check the connection and retry.",
     };
 

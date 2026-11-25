@@ -59,16 +59,14 @@ impl<'a> VaultSync<'a> {
         backend: &dyn SyncBackend,
         device: &StableId,
     ) -> Result<Option<Zeroizing<Vec<u8>>>, SyncError> {
-        if get_record::<Retirement>(vault, backend, &control(vault, "retirement")?)?.is_some() {
-            return Err(SyncError::GenerationRetired);
-        }
+        ensure_active(vault, backend, device)?;
         if vault.generation() == 1 {
             return Ok(None);
         }
         let (_, removed) = get_record::<StableId>(vault, backend, &control(vault, "removed")?)?
             .ok_or(SyncError::Integrity)?;
         if &removed == device {
-            return Err(SyncError::GenerationRetired);
+            return Err(SyncError::DeviceRemoved);
         }
         let bytes = backend.get(&control(vault, "baseline")?)?;
         let (_, checkpoint) = vault.reopen(bytes).map_err(|_| SyncError::Integrity)?;
@@ -178,6 +176,7 @@ impl<'a> VaultSync<'a> {
     }
 
     pub fn publish(&mut self) -> Result<(), SyncError> {
+        ensure_active(self.vault, self.backend, &self.device)?;
         while let Some(key) = self
             .outbox
             .publish_next(self.vault, TEXT_ONLY, self.backend)?
@@ -248,6 +247,26 @@ impl<'a> VaultSync<'a> {
         }
         Ok(true)
     }
+}
+
+fn ensure_active(
+    vault: &Vault,
+    backend: &dyn SyncBackend,
+    device: &StableId,
+) -> Result<(), SyncError> {
+    if let Some((_, retired)) =
+        get_record::<Retirement>(vault, backend, &control(vault, "retirement")?)?
+    {
+        if vault.generation().checked_add(1) != Some(retired.successor) {
+            return Err(SyncError::Integrity);
+        }
+        return Err(if &retired.removed == device {
+            SyncError::DeviceRemoved
+        } else {
+            SyncError::GenerationRetired
+        });
+    }
+    Ok(())
 }
 
 fn now() -> Result<crate::contracts::Count, SyncError> {
