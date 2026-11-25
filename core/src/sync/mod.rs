@@ -152,8 +152,7 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 fn validate(event: &SyncEvent) -> Result<(), SyncError> {
-    if event.sequence.get() == 0
-        || (event.operation == SyncOperation::Restore) != event.restored_from_tombstone_id.is_some()
+    if (event.operation == SyncOperation::Restore) != event.restored_from_tombstone_id.is_some()
         || event.object_refs.len() > 1024
     {
         return Err(SyncError::Integrity);
