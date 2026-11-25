@@ -54,6 +54,31 @@ jobs:
           sudo unshare --net --setgid="$(id -g)" --setuid="$(id -u)" -- env \
             VOICELEDGER_TEST_TRANSLATION_MODEL="$model" VOICELEDGER_TEST_TRANSLATION_ADAPTERS="$PWD/artifacts/speech" \
             "$test_binary" --exact tests::native_translation_app_flow --ignored --nocapture
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.12'
+      - name: Evaluate speaker embeddings without network access
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends espeak-ng
+          python3 -m venv "$RUNNER_TEMP/voiceledger-speaker-venv"
+          converter="$RUNNER_TEMP/voiceledger-speaker-venv/bin/python"
+          "$converter" -m pip install --only-binary=:all: --no-deps \
+            numpy==2.2.6 onnx==1.18.0 protobuf==6.31.1 typing-extensions==4.15.0
+          "$converter" ../scripts/evaluate_speakers.py "$RUNNER_TEMP/voiceledger-speaker"
+          cargo build --locked --example speaker_clusters
+          for candidate in fp32 int8; do
+            sudo unshare --net --setgid="$(id -g)" --setuid="$(id -u)" -- env \
+              LD_LIBRARY_PATH="$PWD/artifacts/speech" "$(command -v python3)" \
+              ../scripts/evaluate_speakers.py "$RUNNER_TEMP/voiceledger-speaker" --candidate "$candidate" \
+              --library artifacts/speech/libvoiceledger_speaker.so --clustering target/debug/examples/speaker_clusters \
+              --report "artifacts/speaker-evaluation-$candidate.json"
+          done
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        if: always()
+        with:
+          name: speaker-evaluation
+          path: core/artifacts/speaker-evaluation-*.json
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: voiceledger-ffi-linux-x64
@@ -208,7 +233,7 @@ jobs:
             }
           }
           (Get-Item artifacts/windows/voiceledger_ffi.dll).Length | Set-Content artifacts/windows-native-bytes.log
-          foreach ($file in 'voiceledger_whisper.dll', 'voiceledger_sensevoice.dll', 'voiceledger_translation.dll', 'sherpa-onnx-c-api.dll', 'onnxruntime.dll') {
+          foreach ($file in 'voiceledger_whisper.dll', 'voiceledger_sensevoice.dll', 'voiceledger_translation.dll', 'voiceledger_speaker.dll', 'sherpa-onnx-c-api.dll', 'onnxruntime.dll') {
             if (-not (Test-Path "artifacts/windows/speech/$file" -PathType Leaf)) {
               throw "Publish output is missing speech/$file"
             }
@@ -332,7 +357,7 @@ jobs:
           assert speech.get(ns + "process", "").endswith(":speech"), speech.attrib
           PY
           unzip -Z1 "$apk" | grep -Fx 'lib/arm64-v8a/libvoiceledger_ffi.so'
-          for library in voiceledger_whisper voiceledger_sensevoice voiceledger_translation sherpa-onnx-c-api onnxruntime; do
+          for library in voiceledger_whisper voiceledger_sensevoice voiceledger_translation voiceledger_speaker sherpa-onnx-c-api onnxruntime; do
             unzip -Z1 "$apk" | grep -Fx "lib/arm64-v8a/lib${library}.so"
           done
           stat -c '%s' app/src/main/jniLibs/arm64-v8a/libvoiceledger_ffi.so > artifacts/android-native-bytes.log
