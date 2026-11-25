@@ -1,5 +1,6 @@
 mod dav;
 mod outbox;
+mod probe;
 mod s3;
 
 use crate::contracts::{StableId, SyncEntity, SyncEvent, SyncOperation};
@@ -8,6 +9,7 @@ use zeroize::Zeroizing;
 
 pub use dav::WebDav;
 pub use outbox::Outbox;
+pub use probe::check_provider;
 pub use s3::S3;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
