@@ -1,8 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::fs::{self, File};
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use super::{LinkedEvent, ObjectKey, SyncBackend, SyncError, read_linked, validate};
+use super::outbox::{lock_directory, read_entry, storage, write_entry};
+use super::{
+    LinkedEvent, ObjectKey, PendingEvent, SyncBackend, SyncError, device_prefix, hex, read_linked,
+    validate,
+};
 use crate::contracts::{StableId, SyncOperation};
 use crate::vault::{MAX_PLAINTEXT_BYTES, Vault};
 
@@ -62,33 +68,48 @@ impl Journal {
         backend: &impl SyncBackend,
         key: &ObjectKey,
     ) -> Result<Receive, SyncError> {
-        if self.vault_id != *vault.id() || self.generation != vault.generation() {
-            return Err(SyncError::Integrity);
-        }
+        self.check_vault(vault)?;
         self.apply(read_linked(vault, backend, key)?)
     }
 
-    fn apply(&mut self, record: LinkedEvent) -> Result<Receive, SyncError> {
-        validate(&record)?;
+    fn check_vault(&self, vault: &Vault) -> Result<(), SyncError> {
+        if self.vault_id == *vault.id() && self.generation == vault.generation() {
+            Ok(())
+        } else {
+            Err(SyncError::Integrity)
+        }
+    }
+
+    fn admit(&self, record: &LinkedEvent) -> Result<bool, SyncError> {
+        validate(record)?;
         let event = &record.event;
         if let Some(prior) = self.events.get(&event.id) {
-            return if prior == &record {
-                Ok(Receive::Duplicate)
+            return if prior == record {
+                Ok(false)
             } else {
                 Err(SyncError::Conflict)
             };
         }
-        if self.revisions.contains(&event.revision_id) {
-            return Err(SyncError::Conflict);
-        }
-        let stream = self.streams.entry(event.device_id.clone()).or_default();
         let sequence = event.sequence.get();
-        if stream.records.contains_key(&sequence) {
+        let stream = self.streams.get(&event.device_id);
+        if self.revisions.contains(&event.revision_id)
+            || stream.is_some_and(|stream| stream.records.contains_key(&sequence))
+        {
             return Err(SyncError::Conflict);
         }
-        if sequence.saturating_sub(stream.next) > MAX_AHEAD {
+        if sequence.saturating_sub(stream.map_or(0, |stream| stream.next)) > MAX_AHEAD {
             return Err(SyncError::Retry);
         }
+        Ok(true)
+    }
+
+    fn apply(&mut self, record: LinkedEvent) -> Result<Receive, SyncError> {
+        if !self.admit(&record)? {
+            return Ok(Receive::Duplicate);
+        }
+        let event = &record.event;
+        let stream = self.streams.entry(event.device_id.clone()).or_default();
+        let sequence = event.sequence.get();
         stream.records.insert(sequence, event.id.clone());
         self.revisions.insert(event.revision_id.clone());
         self.events.insert(event.id.clone(), record);
@@ -222,6 +243,106 @@ impl Journal {
         }
         Ok(journal)
     }
+}
+
+/// A generation-specific device journal backed by the authenticated envelopes received from the provider.
+pub struct JournalStore {
+    directory: PathBuf,
+    journal: Journal,
+    _lock: File,
+}
+
+impl JournalStore {
+    pub fn open(root: &Path, vault: &Vault) -> Result<Self, SyncError> {
+        if !root.is_absolute() {
+            return Err(SyncError::Configuration);
+        }
+        let directory = root
+            .join("journal")
+            .join(hex(vault.id()))
+            .join(vault.generation().to_string());
+        let lock = lock_directory(&directory, "journal.lock")?;
+        let mut journal = Journal::new(vault);
+        let mut files = fs::read_dir(&directory)
+            .map_err(storage)?
+            .map(|entry| entry.map(|entry| entry.path()).map_err(storage))
+            .collect::<Result<Vec<_>, _>>()?;
+        files.retain(|path| path.extension().and_then(|item| item.to_str()) == Some("entry"));
+        files.sort_unstable();
+        for file in files {
+            let (_, record) =
+                PendingEvent::reopen(vault, read_entry(File::open(&file).map_err(storage)?)?)?;
+            if file != entry_path(&directory, &record) {
+                return Err(SyncError::Integrity);
+            }
+            journal.apply(record)?;
+        }
+        Ok(Self {
+            directory,
+            journal,
+            _lock: lock,
+        })
+    }
+
+    pub fn state(&self, entity: &StableId) -> EntityState {
+        self.journal.state(entity)
+    }
+
+    pub fn receive(
+        &mut self,
+        vault: &Vault,
+        backend: &impl SyncBackend,
+        key: &ObjectKey,
+    ) -> Result<Receive, SyncError> {
+        self.journal.check_vault(vault)?;
+        let (pending, record) = PendingEvent::download(vault, backend, key)?;
+        if !self.journal.admit(&record)? {
+            return Ok(Receive::Duplicate);
+        }
+        let path = entry_path(&self.directory, &record);
+        let envelope = pending.envelope.envelope();
+        if path.try_exists().map_err(storage)? {
+            if read_entry(File::open(&path).map_err(storage)?)? != envelope {
+                return Err(SyncError::Integrity);
+            }
+        } else {
+            write_entry(&self.directory, &path, envelope)?;
+        }
+        self.journal.apply(record)
+    }
+
+    pub fn pull_device_page(
+        &mut self,
+        vault: &Vault,
+        backend: &impl SyncBackend,
+        device: &StableId,
+        continuation: Option<&str>,
+    ) -> Result<Option<String>, SyncError> {
+        self.journal.check_vault(vault)?;
+        let prefix = device_prefix(vault, device)?;
+        let parent = format!("{}/", prefix.value());
+        let page = backend.list(&prefix, continuation)?;
+        if page.continuation.is_some() && page.continuation.as_deref() == continuation {
+            return Err(SyncError::ProviderUnsupported);
+        }
+        for key in &page.keys {
+            if key
+                .value()
+                .strip_prefix(&parent)
+                .is_none_or(|name| name.is_empty() || name.contains('/'))
+            {
+                return Err(SyncError::Integrity);
+            }
+            self.receive(vault, backend, key)?;
+        }
+        Ok(page.continuation)
+    }
+}
+
+fn entry_path(directory: &Path, record: &LinkedEvent) -> PathBuf {
+    let device = String::from(record.event.device_id.clone());
+    let sequence = record.event.sequence.get();
+    directory.join(format!("{device}-{sequence:020}.entry"))
 }
 
 #[cfg(test)]
@@ -376,5 +497,63 @@ mod tests {
         );
         assert!(Journal::from_checkpoint(&rotated, &bytes).is_err());
         assert_eq!(server.0.borrow().len(), 8);
+    }
+
+    #[test]
+    fn durable_receive_keeps_offline_branches_across_restart() {
+        let vault = Vault::create().unwrap();
+        let second = Vault::recover(&vault.recovery_code()).unwrap();
+        let root = std::env::temp_dir().join(format!("voiceledger-journal-{}", hex(vault.id())));
+        let scopes = SyncScopes {
+            enabled: true,
+            ..SyncScopes::default()
+        };
+        let server = Server::default();
+
+        let ancestor = event(1, 0, 30, 20);
+        let first = event(1, 1, 31, 20);
+        let other = event(2, 0, 32, 20);
+        let parents = [ancestor.revision_id.clone()];
+        {
+            let mut outgoing =
+                crate::sync::Outbox::open(&root, &vault, ancestor.device_id.clone()).unwrap();
+            outgoing.stage(&vault, scopes, &ancestor).unwrap();
+            outgoing
+                .stage_revision(&vault, scopes, &first, &parents)
+                .unwrap();
+            assert_eq!(
+                outgoing.stage_revision(&vault, scopes, &first, &[]),
+                Err(SyncError::Conflict)
+            );
+            outgoing.publish_next(&vault, scopes, &server).unwrap();
+            outgoing.publish_next(&vault, scopes, &server).unwrap();
+        }
+        let pending = PendingEvent::seal_revision(&vault, scopes, &other, &parents).unwrap();
+        pending.publish(&server).unwrap();
+        {
+            let mut journal = JournalStore::open(&root, &second).unwrap();
+            assert_eq!(
+                journal
+                    .pull_device_page(&second, &server, &other.device_id, None)
+                    .unwrap(),
+                None
+            );
+            assert_eq!(journal.state(&other.entity_id).waiting_for_parents, 1);
+        }
+        let mut journal = JournalStore::open(&root, &second).unwrap();
+        assert_eq!(
+            journal.receive(&second, &server, pending.key()),
+            Ok(Receive::Duplicate)
+        );
+        journal
+            .pull_device_page(&second, &server, &first.device_id, None)
+            .unwrap();
+        let expected = vec![first.revision_id, other.revision_id];
+        assert_eq!(journal.state(&other.entity_id).heads, expected);
+        drop(journal);
+        let journal = JournalStore::open(&root, &second).unwrap();
+        assert_eq!(journal.state(&other.entity_id).heads, expected);
+        drop(journal);
+        fs::remove_dir_all(root).unwrap();
     }
 }

@@ -192,6 +192,15 @@ impl Vault {
         Ok(plaintext)
     }
 
+    pub(crate) fn reopen(
+        &self,
+        envelope: Vec<u8>,
+    ) -> Result<(SealedObject, Zeroizing<Vec<u8>>), VaultError> {
+        let id: ObjectId = read_array(envelope.get(8..24).ok_or(VaultError::Malformed)?)?;
+        let plaintext = self.open(&id, &envelope)?;
+        Ok((SealedObject { id, envelope }, plaintext))
+    }
+
     fn aad(&self, header: &[u8]) -> Vec<u8> {
         [
             b"VoiceLedger/object/v1".as_slice(),

@@ -1,5 +1,6 @@
 mod dav;
 mod journal;
+mod outbox;
 
 use serde::{Deserialize, Serialize};
 
@@ -8,7 +9,8 @@ use crate::vault::{ObjectId, SealedObject, SyncScopes, Vault};
 use zeroize::Zeroizing;
 
 pub use dav::WebDav;
-pub use journal::{EntityState, Journal, Receive};
+pub use journal::{EntityState, Journal, JournalStore, Receive};
+pub use outbox::Outbox;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SyncError {
@@ -23,6 +25,7 @@ pub enum SyncError {
     Retry,
     Conflict,
     Integrity,
+    LocalStorage,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -97,14 +100,7 @@ impl PendingEvent {
         event: &SyncEvent,
         parents: &[StableId],
     ) -> Result<Self, SyncError> {
-        let enabled = match event.entity_kind {
-            SyncEntity::AudioChunk => scopes.raw_audio,
-            SyncEntity::SpeakerProfile => scopes.speaker_profiles,
-            _ => scopes.text,
-        };
-        if !scopes.enabled || !enabled {
-            return Err(SyncError::Scope);
-        }
+        check_scope(scopes, event.entity_kind)?;
         let record = LinkedEvent {
             event: event.clone(),
             parents: parents.to_vec(),
@@ -117,6 +113,33 @@ impl PendingEvent {
         Ok(Self { key, envelope })
     }
 
+    fn reopen(vault: &Vault, bytes: Vec<u8>) -> Result<(Self, LinkedEvent), SyncError> {
+        let (envelope, plaintext) = vault.reopen(bytes).map_err(|_| SyncError::Integrity)?;
+        let record = match serde_json::from_slice(&plaintext).map_err(|_| SyncError::Integrity)? {
+            WireEvent::Linked(record) => record,
+            WireEvent::Original(event) => LinkedEvent {
+                event,
+                parents: Vec::new(),
+            },
+        };
+        validate(&record)?;
+        let event = &record.event;
+        let key = key(vault, &event.device_id, event.sequence.get(), envelope.id())?;
+        Ok((Self { key, envelope }, record))
+    }
+
+    fn download(
+        vault: &Vault,
+        backend: &impl SyncBackend,
+        key: &ObjectKey,
+    ) -> Result<(Self, LinkedEvent), SyncError> {
+        let (pending, record) = Self::reopen(vault, backend.get(key)?)?;
+        if pending.key() != key {
+            return Err(SyncError::Integrity);
+        }
+        Ok((pending, record))
+    }
+
     pub fn key(&self) -> &ObjectKey {
         &self.key
     }
@@ -127,6 +150,19 @@ impl PendingEvent {
             PutOutcome::Exists if backend.get(&self.key)? == self.envelope.envelope() => Ok(()),
             PutOutcome::Exists => Err(SyncError::Conflict),
         }
+    }
+}
+
+fn check_scope(scopes: SyncScopes, kind: SyncEntity) -> Result<(), SyncError> {
+    let included = match kind {
+        SyncEntity::AudioChunk => scopes.raw_audio,
+        SyncEntity::SpeakerProfile => scopes.speaker_profiles,
+        _ => scopes.text,
+    };
+    if scopes.enabled && included {
+        Ok(())
+    } else {
+        Err(SyncError::Scope)
     }
 }
 
@@ -143,36 +179,7 @@ fn read_linked(
     backend: &impl SyncBackend,
     key: &ObjectKey,
 ) -> Result<LinkedEvent, SyncError> {
-    let name = key.value().rsplit('/').next().ok_or(SyncError::Integrity)?;
-    let (sequence, object) = name.split_once('-').ok_or(SyncError::Integrity)?;
-    if object.len() != 32 || sequence.len() != 20 {
-        return Err(SyncError::Integrity);
-    }
-    let mut id = [0_u8; 16];
-    for (index, pair) in object.as_bytes().chunks_exact(2).enumerate() {
-        let pair = std::str::from_utf8(pair).map_err(|_| SyncError::Integrity)?;
-        id[index] = u8::from_str_radix(pair, 16).map_err(|_| SyncError::Integrity)?;
-    }
-    let result = backend.get(key)?;
-    let opened = vault.open(&id, &result).map_err(|_| SyncError::Integrity)?;
-    let record = match serde_json::from_slice(&opened).map_err(|_| SyncError::Integrity)? {
-        WireEvent::Linked(record) => record,
-        WireEvent::Original(event) => LinkedEvent {
-            event,
-            parents: Vec::new(),
-        },
-    };
-    validate(&record)?;
-    if self::key(
-        vault,
-        &record.event.device_id,
-        record.event.sequence.get(),
-        &id,
-    )? != *key
-    {
-        return Err(SyncError::Integrity);
-    }
-    Ok(record)
+    Ok(PendingEvent::download(vault, backend, key)?.1)
 }
 
 fn key(
