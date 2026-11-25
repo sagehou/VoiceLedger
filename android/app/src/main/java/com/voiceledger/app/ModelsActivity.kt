@@ -45,6 +45,7 @@ import com.voiceledger.app.speech.SpeechConnection
 import java.io.File
 import java.text.DateFormat
 import java.util.Date
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -56,6 +57,7 @@ import org.json.JSONObject
 class ModelsActivity : ComponentActivity() {
     private var connection: SpeechConnection? = null
     private var preparing: Job? = null
+    private var playback: Job? = null
     private var working by mutableStateOf(false)
     private var partial by mutableStateOf<String?>(null)
     private var result by mutableStateOf<Int?>(null)
@@ -72,6 +74,7 @@ class ModelsActivity : ComponentActivity() {
             var edit by remember { mutableStateOf<JSONObject?>(null) }
             var editingSource by remember { mutableStateOf(false) }
             var selectedSession by remember { mutableStateOf<String?>(null) }
+            var trackFilter by remember(selectedSession) { mutableStateOf<String?>(null) }
             var search by remember { mutableStateOf("") }
             var requestedSearch by remember { mutableStateOf("") }
             var history by remember { mutableStateOf<JSONArray?>(null) }
@@ -173,6 +176,32 @@ class ModelsActivity : ComponentActivity() {
                             if (session != null) {
                                 val date = Date(session.getLong("created_at_ms"))
                                 Text(DateFormat.getDateTimeInstance().format(date))
+                                if (sessions && sessionId != null) {
+                                    SessionAudio(inspection?.optJSONArray("tracks"), trackFilter,
+                                        onTrack = { trackFilter = it },
+                                        onStop = { playback?.cancel() },
+                                        onPlay = { track, at, finished ->
+                                            playback?.cancel()
+                                            playback = lifecycleScope.launch {
+                                                try {
+                                                    finished(playSavedTrack(at) { position ->
+                                                        NativeCore.speechRequest(query(JSONObject().put("op", "playback")
+                                                            .put("session_id", sessionId).put("track_id", track)
+                                                            .put("position_ns", position)))
+                                                    })
+                                                } catch (error: CancellationException) {
+                                                    finished(null)
+                                                    throw error
+                                                }
+                                            }
+                                        },
+                                        timeline = { track ->
+                                            withContext(Dispatchers.IO) {
+                                                JSONArray(NativeCore.speechRequest(query(JSONObject().put("op", "track_timeline")
+                                                    .put("session_id", sessionId).put("track_id", track))).decodeToString())
+                                            }
+                                        })
+                                }
                                 LanguagePicker(language, !working) { language = it }
                             }
                             val choices = inspection?.getJSONArray("models")
@@ -211,6 +240,7 @@ class ModelsActivity : ComponentActivity() {
                             }
                             for (index in 0 until (lines?.length() ?: 0)) {
                                 val line = lines?.getJSONObject(index) ?: continue
+                                if (trackFilter != null && trackFilter != line.getString("source")) continue
                                 val source = if (line.getString("source") == "mic") R.string.model_mic else R.string.model_loopback
                                 Text(stringResource(R.string.model_line, stringResource(source), line.getLong("start_ns") / 1_000_000_000.0))
                                 Text(line.getString("text"))
@@ -267,6 +297,7 @@ class ModelsActivity : ComponentActivity() {
     }
 
     override fun onStop() {
+        playback?.cancel()
         if (working) finishRequest(-4)
         super.onStop()
     }

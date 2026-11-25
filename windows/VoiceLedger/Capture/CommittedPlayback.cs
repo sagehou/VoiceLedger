@@ -4,7 +4,7 @@ using VoiceLedger.Core;
 
 namespace VoiceLedger.Capture;
 
-internal sealed class CommittedPlayback(AudioStore store, Guid track, PlaybackChunk first) : IWaveProvider
+internal sealed class CommittedPlayback(Func<long, PlaybackChunk> seek, PlaybackChunk first) : IWaveProvider
 {
     private PlaybackChunk chunk = first;
     private int byteOffset;
@@ -24,7 +24,7 @@ internal sealed class CommittedPlayback(AudioStore store, Guid track, PlaybackCh
             {
                 try
                 {
-                    PlaybackChunk next = store.Seek(track, chunk.NextNs);
+                    PlaybackChunk next = seek(chunk.NextNs);
                     if (next.Channels != WaveFormat.Channels)
                     {
                         ended = true;
@@ -33,7 +33,7 @@ internal sealed class CommittedPlayback(AudioStore store, Guid track, PlaybackCh
                     chunk = next;
                     byteOffset = 0;
                 }
-                catch (CoreException failure) when (failure.Code == AudioStore.Unavailable)
+                catch (CoreException failure) when (failure.Code is AudioStore.Unavailable or -32)
                 {
                     ended = true;
                 }

@@ -57,9 +57,11 @@ internal sealed class AudioStore : SafeHandle
     internal HistoryTrack[] History() => Read<HistoryTrack[]>(new { op = "history" });
     internal TimelineRow[] Timeline(Guid trackId) => Read<TimelineRow[]>(new { op = "timeline", trackId });
 
-    internal PlaybackChunk Seek(Guid trackId, long positionNs)
+    internal PlaybackChunk Seek(Guid trackId, long positionNs) =>
+        DecodePlayback(Request(new { op = "seek", trackId, positionNs }), positionNs);
+
+    internal static PlaybackChunk DecodePlayback(byte[] result, long positionNs)
     {
-        byte[] result = Request(new { op = "seek", trackId, positionNs });
         const int header = 12;
         if (result.Length < header || (result.Length - header) % sizeof(float) != 0)
             throw new InvalidDataException("Invalid audio response.");

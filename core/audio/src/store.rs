@@ -128,6 +128,26 @@ impl Response {
     fn json(value: impl Serialize) -> Result<Self> {
         Ok(Self::Json(serde_json::to_vec(&value)?))
     }
+
+    pub fn into_bytes(self) -> Option<Vec<u8>> {
+        match self {
+            Self::Empty => None,
+            Self::Json(bytes) => Some(bytes),
+            Self::Playback {
+                channels,
+                next_ns,
+                samples,
+            } => {
+                let mut bytes = Vec::with_capacity(12 + samples.len() * 4);
+                bytes.extend(channels.to_le_bytes());
+                bytes.extend(next_ns.to_le_bytes());
+                for sample in samples {
+                    bytes.extend(sample.to_le_bytes());
+                }
+                Some(bytes)
+            }
+        }
+    }
 }
 
 #[derive(Default, Serialize)]
@@ -143,7 +163,7 @@ struct Recovery {
 }
 
 #[derive(Serialize)]
-struct HistoryTrack {
+pub struct HistoryTrack {
     id: String,
     session_id: String,
     source: String,
@@ -156,7 +176,7 @@ struct HistoryTrack {
 }
 
 #[derive(Serialize)]
-struct TimelineRow {
+pub struct TimelineRow {
     source_epoch: u32,
     start_ns: i64,
     end_ns: i64,
@@ -542,47 +562,11 @@ impl Store {
     }
 
     fn history(&self) -> Result<Vec<HistoryTrack>> {
-        let db = self.connection()?;
-        let mut statement = db.prepare(
-            "SELECT t.id,s.id,t.source,s.created_at_ms,s.interrupted_tail,
-              COALESCE(MIN(c.start_ns),0),COALESCE(MAX(c.end_ns),0),COUNT(c.id),
-              (SELECT COUNT(*) FROM audio_timeline a WHERE a.track_id=t.id AND a.kind='gap')
-             FROM tracks t JOIN sessions s ON s.id=t.session_id
-             LEFT JOIN chunks c ON c.track_id=t.id AND c.state='committed'
-             WHERE s.state IN (5,6) GROUP BY t.id ORDER BY s.created_at_ms DESC,t.source",
-        )?;
-        let rows = statement.query_map([], |row| {
-            Ok(HistoryTrack {
-                id: row.get(0)?,
-                session_id: row.get(1)?,
-                source: row.get(2)?,
-                created_at_ms: row.get(3)?,
-                interrupted_tail: row.get(4)?,
-                first_ns: row.get(5)?,
-                last_ns: row.get(6)?,
-                committed_chunks: row.get(7)?,
-                loss_intervals: row.get(8)?,
-            })
-        })?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
+        reader::history(&*self.connection()?, None)
     }
 
     fn timeline(&self, track: &str) -> Result<Vec<TimelineRow>> {
-        let db = self.connection()?;
-        let mut statement = db.prepare(
-            "SELECT source_epoch,start_ns,end_ns,kind,cause FROM audio_timeline
-             WHERE track_id=?1 ORDER BY start_ns",
-        )?;
-        let rows = statement.query_map([track], |row| {
-            Ok(TimelineRow {
-                source_epoch: row.get(0)?,
-                start_ns: row.get(1)?,
-                end_ns: row.get(2)?,
-                kind: row.get(3)?,
-                cause: row.get(4)?,
-            })
-        })?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
+        reader::timeline(&*self.connection()?, track)
     }
 
     fn seek(&self, track_id: &str, at: i64) -> Result<Response> {
@@ -602,15 +586,7 @@ impl Store {
             }
             CommittedMedia::Decoded(media) => media,
         };
-        let frame = ((at - chunk.start_ns) as u64 * RATE as u64 / NS) as usize;
-        let mut samples = media.samples;
-        let offset = (frame * media.channels).min(samples.len());
-        samples.drain(..offset);
-        Ok(Response::Playback {
-            channels: media.channels as u32,
-            next_ns: chunk.end_ns,
-            samples,
-        })
+        Ok(playback(&chunk, at, media))
     }
 
     fn reconcile(&self) -> Result<Recovery> {
@@ -771,6 +747,18 @@ fn changed(rows: usize) -> Result<()> {
         return Err(Error::Invalid);
     }
     Ok(())
+}
+
+fn playback(chunk: &Chunk, at: i64, media: opus::Decoded) -> Response {
+    let frame = ((at - chunk.start_ns) as u64 * RATE as u64 / NS) as usize;
+    let mut samples = media.samples;
+    let offset = (frame * media.channels).min(samples.len());
+    samples.drain(..offset);
+    Response::Playback {
+        channels: media.channels as u32,
+        next_ns: chunk.end_ns,
+        samples,
+    }
 }
 
 fn read_bounded(file: &mut File) -> Result<Vec<u8>> {

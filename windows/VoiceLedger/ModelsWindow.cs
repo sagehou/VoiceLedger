@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Pipes;
@@ -27,6 +28,7 @@ internal sealed class ModelsWindow : Window
     private readonly bool sessions;
     private readonly TextBox search = new() { MaxLength = 64 };
     private string? selectedSession;
+    private SessionAudioPanel? sessionAudio;
     private int searchVersion;
     private Process? worker;
     private bool cancelled;
@@ -50,6 +52,7 @@ internal sealed class ModelsWindow : Window
     protected override void OnClosed(EventArgs e)
     {
         closed = true;
+        sessionAudio?.Dispose();
         Cancel();
         base.OnClosed(e);
     }
@@ -111,6 +114,8 @@ internal sealed class ModelsWindow : Window
 
     private async Task LoadAsync(string? status = null)
     {
+        sessionAudio?.Dispose();
+        sessionAudio = null;
         if (sessions && selectedSession is null)
         {
             await BrowseSessionsAsync();
@@ -152,7 +157,12 @@ internal sealed class ModelsWindow : Window
                 AddLine($"{created.LocalDateTime:g}");
                 AddLine("Transcription language");
                 content.Children.Add(language);
-                if (sessions && lines.GetArrayLength() > 0) AddExport(sessionId);
+                if (sessions)
+                {
+                    if (lines.GetArrayLength() > 0) AddExport(sessionId);
+                    sessionAudio = new SessionAudioPanel(sessionId, speech.RootElement.GetProperty("tracks"), canWork);
+                    content.Children.Add(sessionAudio);
+                }
             }
             foreach (JsonElement candidate in report.RootElement.GetProperty("candidates").EnumerateArray())
             {
@@ -176,7 +186,7 @@ internal sealed class ModelsWindow : Window
                 var action = new Button
                 {
                     Content = !installed ? "Download and verify"
-                        : translation ? "Translate English transcript" : "Transcribe latest saved session",
+                        : translation ? "Translate English transcript" : "Transcribe saved session",
                     HorizontalAlignment = HorizontalAlignment.Left,
                     Padding = new Thickness(10, 4, 10, 4),
                     IsEnabled = blockedBy is null && canWork()
@@ -198,9 +208,12 @@ internal sealed class ModelsWindow : Window
                 if (translation && installed && !hasEnglish)
                     action.ToolTip = "Transcribe an English recording first.";
             }
+            var transcriptRows = new List<(string Source, UIElement Element)>();
             foreach (JsonElement line in lines.EnumerateArray())
             {
-                string source = Read(line, "source") == "mic" ? "Microphone" : "System loopback";
+                int first = content.Children.Count;
+                string sourceId = Read(line, "source");
+                string source = sourceId == "mic" ? "Microphone" : "System loopback";
                 AddLine($"{source} · {line.GetProperty("start_ns").GetInt64() / 1_000_000_000.0:F1}s", bold: true);
                 AddLine(Read(line, "text"));
                 if (sessionId is not null)
@@ -214,7 +227,26 @@ internal sealed class ModelsWindow : Window
                     });
                     ShowTranslation(sessionId, line);
                 }
+                if (sessionAudio is not null)
+                {
+                    var group = new StackPanel();
+                    while (content.Children.Count > first)
+                    {
+                        UIElement element = content.Children[first];
+                        content.Children.RemoveAt(first);
+                        group.Children.Add(element);
+                    }
+                    content.Children.Add(group);
+                    transcriptRows.Add((sourceId, group));
+                }
             }
+            if (sessionAudio is not null)
+                sessionAudio.TrackChanged += source =>
+                {
+                    foreach (var row in transcriptRows)
+                        row.Element.Visibility = source is null || row.Source == source
+                            ? Visibility.Visible : Visibility.Collapsed;
+                };
         }
         catch (Exception failure) when (failure is InvalidOperationException or JsonException
             or TypeInitializationException or EntryPointNotFoundException)
@@ -353,6 +385,8 @@ internal sealed class ModelsWindow : Window
         if (working || !canWork() || closed) return;
         working = true;
         cancelled = false;
+        sessionAudio?.Dispose();
+        sessionAudio = null;
         content.Children.Clear();
         AddLine(operation switch
         {

@@ -219,7 +219,7 @@ internal sealed class RecordingViewModel : INotifyPropertyChanged, IAsyncDisposa
         playback = output;
         try
         {
-            output.Init(new CommittedPlayback(library, selected.Id, first));
+            output.Init(new CommittedPlayback(at => library.Seek(selected.Id, at), first));
             output.PlaybackStopped += PlaybackStopped;
             output.Play();
         }

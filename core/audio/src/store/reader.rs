@@ -1,6 +1,8 @@
 use rusqlite::OpenFlags;
 
-use super::{Chunk, CommittedMedia, committed_media};
+use super::{
+    Chunk, CommittedMedia, HistoryTrack, Response, TimelineRow, committed_media, playback,
+};
 use crate::{Error, Result};
 
 use rusqlite::{Connection, OptionalExtension, params};
@@ -145,6 +147,52 @@ impl CommittedReader {
         .collect()
     }
 
+    pub fn tracks(&self, session: &StableId) -> Result<Vec<HistoryTrack>> {
+        history(&self.db, Some(String::from(session.clone()).as_str()))
+    }
+
+    pub fn timeline(&self, session: &StableId, track: &StableId) -> Result<Vec<TimelineRow>> {
+        let track = String::from(track.clone());
+        let available: bool = self.db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM tracks t JOIN sessions s ON s.id=t.session_id
+             WHERE t.id=?1 AND s.id=?2 AND s.state IN (5,6))",
+            params![track, String::from(session.clone())],
+            |row| row.get(0),
+        )?;
+        if !available {
+            return Err(Error::Unavailable);
+        }
+        timeline(&self.db, &track)
+    }
+
+    pub fn playback(&self, session: &StableId, track: &StableId, at: i64) -> Result<Response> {
+        if at < 0 {
+            return Err(Error::Invalid);
+        }
+        let chunk = self
+            .db
+            .query_row(
+                &format!(
+                    "{} JOIN sessions ses ON ses.id=t.session_id
+             WHERE ses.id=?1 AND ses.state IN (5,6) AND c.track_id=?2 AND c.state='committed'
+               AND c.start_ns<=?3 AND c.end_ns>?3",
+                    Chunk::SELECT
+                ),
+                params![
+                    String::from(session.clone()),
+                    String::from(track.clone()),
+                    at
+                ],
+                Chunk::read,
+            )
+            .optional()?
+            .ok_or(Error::Unavailable)?;
+        match committed_media(&self.root, &chunk)? {
+            CommittedMedia::Decoded(media) => Ok(playback(&chunk, at, media)),
+            CommittedMedia::Absent | CommittedMedia::Corrupt => Err(Error::Unavailable),
+        }
+    }
+
     pub fn recording(&self) -> Result<bool> {
         Ok(self.db.query_row(
             "SELECT EXISTS(SELECT 1 FROM sessions WHERE state IN (1,2,3,4))",
@@ -259,6 +307,49 @@ impl CommittedReader {
             samples,
         })
     }
+}
+
+pub(super) fn history(db: &Connection, session: Option<&str>) -> Result<Vec<HistoryTrack>> {
+    let mut statement = db.prepare(
+        "SELECT t.id,s.id,t.source,s.created_at_ms,s.interrupted_tail,
+          COALESCE(MIN(c.start_ns),0),COALESCE(MAX(c.end_ns),0),COUNT(c.id),
+          (SELECT COUNT(*) FROM audio_timeline a WHERE a.track_id=t.id AND a.kind='gap')
+         FROM tracks t JOIN sessions s ON s.id=t.session_id
+         LEFT JOIN chunks c ON c.track_id=t.id AND c.state='committed'
+         WHERE s.state IN (5,6) AND (?1 IS NULL OR s.id=?1)
+         GROUP BY t.id ORDER BY s.created_at_ms DESC,t.source",
+    )?;
+    let rows = statement.query_map([session], |row| {
+        Ok(HistoryTrack {
+            id: row.get(0)?,
+            session_id: row.get(1)?,
+            source: row.get(2)?,
+            created_at_ms: row.get(3)?,
+            interrupted_tail: row.get(4)?,
+            first_ns: row.get(5)?,
+            last_ns: row.get(6)?,
+            committed_chunks: row.get(7)?,
+            loss_intervals: row.get(8)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+pub(super) fn timeline(db: &Connection, track: &str) -> Result<Vec<TimelineRow>> {
+    let mut statement = db.prepare(
+        "SELECT source_epoch,start_ns,end_ns,kind,cause FROM audio_timeline
+         WHERE track_id=?1 ORDER BY start_ns,end_ns,kind",
+    )?;
+    let rows = statement.query_map([track], |row| {
+        Ok(TimelineRow {
+            source_epoch: row.get(0)?,
+            start_ns: row.get(1)?,
+            end_ns: row.get(2)?,
+            kind: row.get(3)?,
+            cause: row.get(4)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
 fn stable(id: String) -> Result<StableId> {

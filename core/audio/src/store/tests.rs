@@ -125,6 +125,12 @@ fn speech_reader_uses_committed_completed_audio_without_the_writer_lock() {
     assert!(reader.recording().unwrap());
     assert!(reader.latest().unwrap().is_none());
     assert!(reader.next_chunk(&id, None).unwrap().is_none());
+    let track = stable(TRACK);
+    assert!(reader.tracks(&id).unwrap().is_empty());
+    assert!(matches!(
+        reader.playback(&id, &track, 0),
+        Err(Error::Unavailable)
+    ));
 
     store
         .execute(
@@ -139,6 +145,20 @@ fn speech_reader_uses_committed_completed_audio_without_the_writer_lock() {
         .unwrap();
     assert!(!reader.recording().unwrap());
     assert_eq!(reader.latest().unwrap().unwrap().id, id);
+    let timeline = reader.timeline(&id, &track).unwrap();
+    assert_eq!(timeline[0].kind, "audio");
+    assert!(reader.timeline(&stable(SECOND), &track).is_err());
+    let playback = reader
+        .playback(&id, &track, END / 2)
+        .unwrap()
+        .into_bytes()
+        .unwrap();
+    assert_eq!(i64::from_le_bytes(playback[4..12].try_into().unwrap()), END);
+    assert_eq!(playback.len(), 12 + FRAMES / 2 * 4);
+    assert!(matches!(
+        reader.playback(&id, &track, END),
+        Err(Error::Unavailable)
+    ));
     let tracks = reader.inputs(&id).unwrap();
     assert_eq!(tracks.len(), 1);
     assert_eq!(tracks[0].first_chunk_id, stable(FIRST));

@@ -2,8 +2,8 @@ mod opus;
 mod store;
 
 pub use store::{
-    Command, CommittedChunk, CommittedReader, FinishedSession, NewTrack, Response, SavedSession,
-    Store, TrackInput,
+    Command, CommittedChunk, CommittedReader, FinishedSession, HistoryTrack, NewTrack, Response,
+    SavedSession, Store, TrackInput,
 };
 
 pub const RATE: usize = 48_000;

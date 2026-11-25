@@ -76,4 +76,18 @@
     <string name="export_plaintext">Export creates an unencrypted file.</string>
     <string name="export_complete">Transcript exported.</string>
     <string name="export_failed">Transcript export failed.</string>
+    <string name="session_all_tracks">All tracks</string>
+    <string name="session_audio">Saved audio</string>
+    <string name="session_pending">Pending audio</string>
+    <string name="session_gap">Gap</string>
+    <string name="session_silence">Silence</string>
+    <string name="session_timeline_row">%1$s · %2$.2f–%3$.2f s</string>
+    <string name="session_timeline_error">The track timeline is unavailable.</string>
+    <string name="session_start_time">Start time (seconds)</string>
+    <string name="session_play">Play track</string>
+    <string name="session_stop_playback">Stop playback</string>
+    <string name="session_playing">Playing saved audio</string>
+    <string name="session_playback_ended">Playback ended.</string>
+    <string name="session_audio_unavailable">No saved audio at that time.</string>
+    <string name="session_playback_error">Could not play the saved track.</string>
 </resources>
