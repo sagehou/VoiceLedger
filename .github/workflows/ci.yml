@@ -378,8 +378,14 @@ jobs:
           grep -E "^package: name='com\.voiceledger\.app'" artifacts/android-apk.txt
           grep -E "^launchable-activity: name='com\.voiceledger\.app\.MainActivity'" artifacts/android-apk.txt
           apkanalyzer manifest print "$apk" > artifacts/android-manifest.xml
-          python3 - <<'PY'
+          python3 - "$apk" <<'PY'
+          import sys
           from xml.etree import ElementTree
+          from zipfile import ZipFile
+
+          with ZipFile(sys.argv[1]) as apk:
+              abi = {p.split("/")[1] for p in apk.namelist() if p.startswith("lib/") and p.endswith(".so")}
+          assert abi == {"arm64-v8a"}, abi
 
           manifest = ElementTree.parse("artifacts/android-manifest.xml")
           ns = "{http://schemas.android.com/apk/res/android}"

@@ -12,7 +12,7 @@ Android backup and device-transfer rules exclude the recording library. [Android
 
 Android battery management, including vendor-specific restrictions, can suspend or terminate a foreground service. The prototype relies on the platform microphone service without a partial wake lock. Screen-off reliability, timing and power use remain subject to measurement on representative phones.
 
-Rust 1.98 provides the Android file locks used by the recording library, device profile and model installer. The Actions emulator loads the packaged ARM64 JNI library, checks exclusive manifest ownership, writes and reopens a synthetic Opus segment, refreshes the device profile and downloads and verifies Whisper through the private speech worker.
+Rust 1.98 provides the Android file locks used by the recording library, device profile and model installer. The APK exposes only the ARM64 ABI so Android selects the matching recorder and speech libraries. The Actions emulator loads that APK, checks exclusive manifest ownership, writes and reopens a synthetic Opus segment, refreshes the device profile and downloads and verifies Whisper through the private speech worker.
 
 ## Acceptance
 

@@ -33,9 +33,9 @@ timeout 220s bash -c '
     done
 ' bash "$emulator_pid"
 adb shell -T getprop ro.product.cpu.abilist | tee artifacts/android-emulator-abis.txt | grep -q arm64-v8a
-adb install app/build/outputs/apk/debug/app-debug.apk
+adb install --abi arm64-v8a app/build/outputs/apk/debug/app-debug.apk
 adb install -t app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
-timeout 220s adb shell -T am instrument -w -r \
+timeout 220s adb shell -T am instrument -w -r --abi arm64-v8a \
     com.voiceledger.app.test/com.voiceledger.app.AndroidRuntimeSmoke | tee artifacts/android-runtime.log
 for stage in recording device_profile model_download; do
     grep -Fx "INSTRUMENTATION_RESULT: $stage=passed" artifacts/android-runtime.log
