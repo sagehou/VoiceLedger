@@ -669,7 +669,7 @@ fn sync_import_preserves_actual_branches_and_recovers_after_device_removal() {
     assert_eq!(b_text.import(second.journal()).unwrap(), 0);
     let sessions = crate::library::history(&b_root.0, None, None).unwrap();
     let sessions = serde_json::to_value(sessions).unwrap();
-    assert_eq!(sessions[0]["id"], json!(session));
+    assert_eq!(sessions[0]["id"], serde_json::json!(session));
     assert_eq!(sessions[0]["text_only"], true);
     assert!(!b_root.0.join("manifest.sqlite3").exists());
     let visible = crate::transcript::selected(&b_root.0, &session).unwrap();

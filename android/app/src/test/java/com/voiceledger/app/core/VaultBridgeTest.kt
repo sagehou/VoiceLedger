@@ -38,6 +38,14 @@ class VaultBridgeTest {
         }
     }
 
+    @Test
+    fun syncBridgeRejectsMalformedRequestsWithoutOpeningStorage() {
+        val failure = assertThrows(CoreException::class.java) {
+            NativeSync.transfer("{}".encodeToByteArray(), byteArrayOf(), byteArrayOf())
+        }
+        assertEquals(-60, failure.code)
+    }
+
     private fun hex(hex: String): ByteArray =
         ByteArray(hex.length / 2) { hex.substring(it * 2, it * 2 + 2).toInt(16).toByte() }
 }

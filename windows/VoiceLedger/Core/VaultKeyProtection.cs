@@ -1,6 +1,7 @@
 using System;
 using System.ComponentModel;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 
@@ -9,16 +10,68 @@ namespace VoiceLedger.Core;
 internal static class VaultKeyProtection
 {
     private const int UiForbidden = 1;
+    private const string ActiveKey = "vault-key.v1";
+    private const string PendingPrefix = "vault-rotation-";
 
     internal static byte[] Wrap(byte[] recovery) => WithDpapi(recovery, protecting: true);
     internal static byte[] Unwrap(byte[] wrapped) => WithDpapi(wrapped, protecting: false);
 
-    internal static byte[]? ReadLocal(string directory)
+    internal static byte[]? ReadLocal(string directory) => Read(directory, ActiveKey);
+
+    internal static Guid? PendingTarget(string directory)
+    {
+        if (!Directory.Exists(directory)) return null;
+        string? name = Directory.EnumerateFiles(directory, $"{PendingPrefix}*.v1").SingleOrDefault();
+        if (name is null) return null;
+        if (!Guid.TryParseExact(Path.GetFileNameWithoutExtension(name)[PendingPrefix.Length..], "D", out Guid target))
+            throw new InvalidDataException("Invalid pending device removal.");
+        return target;
+    }
+
+    internal static byte[] PrepareRotation(string directory, byte[] current, Guid target)
+    {
+        if (PendingTarget(directory) is { } existing && existing != target)
+            throw new InvalidOperationException("A device removal is already in progress.");
+        string pendingName = $"{PendingPrefix}{target:D}.v1";
+        byte[]? pending = Read(directory, pendingName);
+        if (pending is not null)
+        {
+            if (!pending.AsSpan().SequenceEqual(current)) return pending;
+            CryptographicOperations.ZeroMemory(pending);
+            File.Delete(Path.Combine(directory, pendingName));
+        }
+        byte[] next = NativeVault.Rotate(current);
+        try
+        {
+            Install(directory, pendingName, next, overwrite: false);
+            return next;
+        }
+        catch
+        {
+            CryptographicOperations.ZeroMemory(next);
+            throw;
+        }
+    }
+
+    internal static void CommitRotation(string directory, byte[] current, byte[] next)
+    {
+        byte[] prior = NativeVault.Identity(current);
+        byte[] successor = NativeVault.Identity(next);
+        if (!prior.AsSpan(0, 16).SequenceEqual(successor.AsSpan(0, 16))
+            || System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(prior.AsSpan(16))
+                >= System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(successor.AsSpan(16)))
+            throw new InvalidOperationException("The recovery key is not a newer generation of this vault.");
+        Install(directory, ActiveKey, next, overwrite: true);
+        if (PendingTarget(directory) is { } target)
+            File.Delete(Path.Combine(directory, $"{PendingPrefix}{target:D}.v1"));
+    }
+
+    private static byte[]? Read(string directory, string name)
     {
         byte[] wrapped;
         try
         {
-            using var file = File.OpenRead(Path.Combine(directory, "vault-key.v1"));
+            using var file = File.OpenRead(Path.Combine(directory, name));
             if (file.Length is < 1 or > 4096) throw new InvalidDataException("Invalid wrapped key length.");
             wrapped = new byte[(int)file.Length];
             file.ReadExactly(wrapped);
@@ -41,7 +94,10 @@ internal static class VaultKeyProtection
         finally { CryptographicOperations.ZeroMemory(wrapped); }
     }
 
-    internal static void InstallLocal(string directory, byte[] recovery)
+    internal static void InstallLocal(string directory, byte[] recovery) =>
+        Install(directory, ActiveKey, recovery, overwrite: false);
+
+    private static void Install(string directory, string name, byte[] recovery, bool overwrite)
     {
         _ = NativeVault.Identity(recovery);
         Directory.CreateDirectory(directory);
@@ -54,7 +110,7 @@ internal static class VaultKeyProtection
                 file.Write(wrapped);
                 file.Flush(flushToDisk: true);
             }
-            File.Move(temporary, Path.Combine(directory, "vault-key.v1"));
+            File.Move(temporary, Path.Combine(directory, name), overwrite);
         }
         finally
         {

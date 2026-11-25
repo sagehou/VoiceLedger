@@ -323,7 +323,7 @@ impl Transcripts {
         let mut revision = selected_source(&tx, &edit.session_id, &edit.utterance_id)?
             .filter(|source| source.id == edit.expected_revision_id && source.is_durable())
             .ok_or(Error::RevisionConflict)?;
-        let utterance = String::from(edit.utterance_id);
+        let utterance = String::from(edit.utterance_id.clone());
         if crate::sync_data::hidden(&tx, "session", &String::from(edit.session_id.clone()))?
             || crate::sync_data::hidden(&tx, "utterance", &utterance)?
             || !crate::sync_data::conflict(&tx, &edit.utterance_id)?.is_empty()

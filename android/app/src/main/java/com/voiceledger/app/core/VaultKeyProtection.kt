@@ -5,7 +5,9 @@ import android.security.keystore.KeyProperties
 import android.util.AtomicFile
 import java.io.File
 import java.io.FileNotFoundException
+import java.nio.ByteBuffer
 import java.security.KeyStore
+import java.util.UUID
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -14,6 +16,8 @@ import javax.crypto.spec.GCMParameterSpec
 internal object VaultKeyProtection {
     private const val store = "AndroidKeyStore"
     private const val alias = "com.voiceledger.vault.local-wrap.v1"
+    private const val activeKey = "vault-key.v1"
+    private const val pendingPrefix = "vault-rotation-"
     private const val nonceBytes = 12
     private const val tagBits = 128
     private val context = "VoiceLedger/local-wrap/v1".encodeToByteArray()
@@ -36,8 +40,51 @@ internal object VaultKeyProtection {
     }
 
     @Synchronized
-    fun readLocal(directory: File): ByteArray? {
-        val file = AtomicFile(File(directory, "vault-key.v1"))
+    fun readLocal(directory: File): ByteArray? = read(directory, activeKey)
+
+    @Synchronized
+    fun pendingTarget(directory: File): String? {
+        val pending = directory.listFiles()?.filter { it.name.startsWith(pendingPrefix) && it.name.endsWith(".v1") }.orEmpty()
+        check(pending.size < 2)
+        return pending.firstOrNull()?.nameWithoutExtension?.removePrefix(pendingPrefix)?.also {
+            check(UUID.fromString(it).toString() == it)
+        }
+    }
+
+    @Synchronized
+    fun prepareRotation(directory: File, current: ByteArray, target: String): ByteArray {
+        check(UUID.fromString(target).toString() == target)
+        val existing = pendingTarget(directory)
+        check(existing == null || existing == target)
+        val pendingKey = "$pendingPrefix$target.v1"
+        val pending = read(directory, pendingKey)
+        if (pending != null) {
+            if (!pending.contentEquals(current)) return pending
+            pending.fill(0)
+            AtomicFile(File(directory, pendingKey)).delete()
+        }
+        val next = NativeVault.rotate(current)
+        try {
+            install(directory, pendingKey, next, overwrite = false)
+            return next
+        } catch (failure: Throwable) {
+            next.fill(0)
+            throw failure
+        }
+    }
+
+    @Synchronized
+    fun commitRotation(directory: File, current: ByteArray, next: ByteArray) {
+        val prior = NativeVault.identity(current)
+        val successor = NativeVault.identity(next)
+        check(prior.copyOfRange(0, 16).contentEquals(successor.copyOfRange(0, 16)) &&
+            Integer.compareUnsigned(ByteBuffer.wrap(prior, 16, 4).int, ByteBuffer.wrap(successor, 16, 4).int) < 0)
+        install(directory, activeKey, next, overwrite = true)
+        pendingTarget(directory)?.let { AtomicFile(File(directory, "$pendingPrefix$it.v1")).delete() }
+    }
+
+    private fun read(directory: File, name: String): ByteArray? {
+        val file = AtomicFile(File(directory, name))
         val wrapped = try {
             file.openRead().use { input ->
                 check(input.channel.size() in 1L..4096L)
@@ -62,11 +109,13 @@ internal object VaultKeyProtection {
     }
 
     @Synchronized
-    fun installLocal(directory: File, recovery: ByteArray) {
+    fun installLocal(directory: File, recovery: ByteArray) = install(directory, activeKey, recovery, overwrite = false)
+
+    private fun install(directory: File, name: String, recovery: ByteArray, overwrite: Boolean) {
         NativeVault.identity(recovery)
         check(directory.isDirectory || directory.mkdirs())
-        val file = AtomicFile(File(directory, "vault-key.v1"))
-        check(!file.baseFile.exists())
+        val file = AtomicFile(File(directory, name))
+        check(overwrite || !file.baseFile.exists())
         val wrapped = wrap(recovery)
         try {
             val output = file.startWrite()
@@ -77,7 +126,7 @@ internal object VaultKeyProtection {
                 file.failWrite(output)
                 throw failure
             }
-            val saved = checkNotNull(readLocal(directory))
+            val saved = checkNotNull(read(directory, name))
             try {
                 check(saved.contentEquals(recovery))
             } finally {

@@ -295,6 +295,7 @@ fn validate(record: &LinkedEvent) -> Result<(), SyncError> {
             || revision.text.trim().is_empty()
             || revision.text.len() > 8192
             || revision.text.contains('\0')
+            || revision.created_at_unix_ms.get() > 253_402_300_799_999
             || !revision.range.is_nonempty()
             || text.session.as_ref().is_some_and(|session| {
                 session.created_at_ms.get() > 253_402_300_799_999

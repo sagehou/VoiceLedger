@@ -84,11 +84,13 @@ internal sealed class ModelsWindow : Window
                 long saved = session.GetProperty("committed").GetInt64();
                 long missing = session.GetProperty("missing").GetInt64();
                 string transcript = session.GetProperty("has_transcript").GetBoolean() ? "Transcript saved" : "No transcript";
+                string availability = session.GetProperty("text_only").GetBoolean()
+                    ? "Synced text · Audio unavailable on this device" : $"Audio {saved} saved · {missing} missing · {transcript}";
                 var item = new Button
                 {
                     Content = new TextBlock
                     {
-                        Text = $"{name}{date.LocalDateTime:g} · {duration:g} · {state}\nAudio {saved} saved · {missing} missing · {transcript}",
+                        Text = $"{name}{date.LocalDateTime:g} · {duration:g} · {state}\n{availability}",
                         TextWrapping = TextWrapping.Wrap,
                     },
                     Margin = new Thickness(0, 6, 0, 0),
@@ -139,6 +141,7 @@ internal sealed class ModelsWindow : Window
             string? sessionId = session.ValueKind == JsonValueKind.Null ? null : Read(session, "id");
             JsonElement lines = speech.RootElement.GetProperty("lines");
             bool hasEnglish = speech.RootElement.GetProperty("has_translation_source").GetBoolean();
+            bool textOnly = speech.RootElement.GetProperty("text_only").GetBoolean();
             content.Children.Clear();
             if (sessions)
             {
@@ -157,8 +160,12 @@ internal sealed class ModelsWindow : Window
             {
                 var created = DateTimeOffset.FromUnixTimeMilliseconds(session.GetProperty("created_at_ms").GetInt64());
                 AddLine($"{created.LocalDateTime:g}");
-                AddLine("Transcription language");
-                content.Children.Add(language);
+                if (textOnly) AddLine("Synced text · Audio unavailable on this device");
+                else
+                {
+                    AddLine("Transcription language");
+                    content.Children.Add(language);
+                }
                 if (sessions)
                 {
                     string title = Read(speech.RootElement, "title");
@@ -168,8 +175,11 @@ internal sealed class ModelsWindow : Window
                         op = "rename_session", session_id = sessionId, text,
                     }, maxLength: 64, allowBlank: true);
                     if (lines.GetArrayLength() > 0) AddExport(sessionId);
-                    sessionAudio = new SessionAudioPanel(sessionId, speech.RootElement.GetProperty("tracks"), canWork);
-                    content.Children.Add(sessionAudio);
+                    if (!textOnly)
+                    {
+                        sessionAudio = new SessionAudioPanel(sessionId, speech.RootElement.GetProperty("tracks"), canWork);
+                        content.Children.Add(sessionAudio);
+                    }
                 }
             }
             foreach (JsonElement candidate in report.RootElement.GetProperty("candidates").EnumerateArray())
@@ -198,7 +208,7 @@ internal sealed class ModelsWindow : Window
                     HorizontalAlignment = HorizontalAlignment.Left,
                     Padding = new Thickness(10, 4, 10, 4),
                     IsEnabled = blockedBy is null && canWork()
-                        && (!installed || (sessionId is not null && (!translation || hasEnglish))),
+                        && (!installed || (sessionId is not null && !textOnly && (!translation || hasEnglish))),
                 };
                 action.Click += async (_, _) =>
                 {
@@ -222,17 +232,38 @@ internal sealed class ModelsWindow : Window
                 int first = content.Children.Count;
                 string sourceId = Read(line, "source");
                 string source = sourceId == "mic" ? "Microphone" : "System loopback";
-                AddLine($"{source} · {line.GetProperty("start_ns").GetInt64() / 1_000_000_000.0:F1}s", bold: true);
+                string detected = LanguageName(Read(line, "language"));
+                AddLine($"{source} · {line.GetProperty("start_ns").GetInt64() / 1_000_000_000.0:F1}s · {detected}", bold: true);
                 AddLine(Read(line, "text"));
                 if (sessionId is not null)
                 {
                     string utterance = Read(line, "utterance_id");
                     string revision = Read(line, "revision_id");
-                    ShowTextEditor("Edit transcript", Read(line, "text"), "Transcript saved.", text => new
+                    JsonElement conflicts = line.GetProperty("conflicts");
+                    if (conflicts.GetArrayLength() > 1)
                     {
-                        op = "save_utterance", session_id = sessionId, utterance_id = utterance,
-                        expected_revision_id = revision, text,
-                    });
+                        AddLine("Conflicting revisions", bold: true);
+                        foreach (JsonElement item in conflicts.EnumerateArray())
+                        {
+                            string author = item.GetProperty("manual").GetBoolean() ? "Manual" : "Machine";
+                            AddLine($"{author} · {LanguageName(Read(item, "language"))}");
+                            AddLine(Read(item, "text"));
+                        }
+                        string[] heads = conflicts.EnumerateArray().Select(item => Read(item, "revision_id")).ToArray();
+                        ShowTextEditor("Resolve conflict", Read(line, "text"), "Merged revision saved.", text => new
+                        {
+                            op = "resolve_conflict", session_id = sessionId, utterance_id = utterance,
+                            expected_heads = heads, text,
+                        });
+                    }
+                    else
+                    {
+                        ShowTextEditor("Edit transcript", Read(line, "text"), "Transcript saved.", text => new
+                        {
+                            op = "save_utterance", session_id = sessionId, utterance_id = utterance,
+                            expected_revision_id = revision, text,
+                        });
+                    }
                     ShowTranslation(sessionId, line);
                     if (sessions)
                     {
@@ -534,6 +565,14 @@ internal sealed class ModelsWindow : Window
             Margin = new Thickness(0, bold ? 12 : 0, 0, 5),
         });
     }
+
+    private static string LanguageName(string code) => code switch
+    {
+        "zh" => "Chinese",
+        "ja" => "Japanese",
+        "en" => "English",
+        _ => code,
+    };
 
     private static string Read(JsonElement json, string field) => json.GetProperty(field).GetString() ?? "";
     private static string Mib(long bytes) => $"{bytes / 1048576.0:F1} MiB";

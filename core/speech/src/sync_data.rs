@@ -323,7 +323,7 @@ impl Transcripts {
         }
         let revisions = revisions(&tx, &utterance_id)?;
         let heads = valid_heads(&revisions);
-        if heads.len() != expected_heads.len() || !heads.keys().eq(expected_heads.iter()) {
+        if heads.len() != expected_heads.len() || !heads.keys().copied().eq(expected_heads.iter()) {
             return Err(Error::RevisionConflict);
         }
         let mut revision =
