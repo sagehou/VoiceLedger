@@ -95,4 +95,5 @@
     <string name="session_edit_speaker">Edit speaker name</string>
     <string name="session_speaker_name">Speaker name</string>
     <string name="session_unknown_speaker">Unknown speaker</string>
+    <string name="session_export_audio">Export track audio</string>
 </resources>

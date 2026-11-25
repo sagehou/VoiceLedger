@@ -3,7 +3,7 @@ mod store;
 
 pub use store::{
     Command, CommittedChunk, CommittedReader, FinishedSession, HistoryTrack, NewTrack, Response,
-    SavedSession, Store, TrackInput,
+    SavedSession, Store, TrackArchive, TrackInput,
 };
 
 pub const RATE: usize = 48_000;

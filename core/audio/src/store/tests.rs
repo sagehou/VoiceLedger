@@ -159,6 +159,18 @@ fn speech_reader_uses_committed_completed_audio_without_the_writer_lock() {
         reader.playback(&id, &track, END),
         Err(Error::Unavailable)
     ));
+    let archive = serde_json::to_value(reader.archive(&id, &track).unwrap()).unwrap();
+    assert_eq!(archive["source"], "mic");
+    assert_eq!(archive["chunks"].as_array().unwrap().len(), 1);
+    let opus = reader.archive_chunk(&id, &track, &stable(FIRST)).unwrap();
+    assert_eq!(archive["chunks"][0]["sha256"], digest(&opus));
+    assert_eq!(archive["timeline"][0]["end_ns"], END);
+    assert!(reader.archive_chunk(&id, &track, &stable(SECOND)).is_err());
+    assert!(
+        reader
+            .archive_chunk(&stable(SECOND), &track, &stable(FIRST))
+            .is_err()
+    );
     let tracks = reader.inputs(&id).unwrap();
     assert_eq!(tracks.len(), 1);
     assert_eq!(tracks[0].first_chunk_id, stable(FIRST));

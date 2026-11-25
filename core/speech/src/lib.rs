@@ -127,6 +127,15 @@ enum Action {
         track_id: StableId,
         position_ns: i64,
     },
+    TrackArchive {
+        session_id: StableId,
+        track_id: StableId,
+    },
+    TrackArchiveChunk {
+        session_id: StableId,
+        track_id: StableId,
+        chunk_id: StableId,
+    },
     SaveUtterance(library::UtteranceEdit),
     RenameSession(library::TitleEdit),
     SaveSpeaker(library::SpeakerEdit),
@@ -161,6 +170,8 @@ impl Request {
                 | Action::Export { .. }
                 | Action::TrackTimeline { .. }
                 | Action::Playback { .. }
+                | Action::TrackArchive { .. }
+                | Action::TrackArchiveChunk { .. }
         )
     }
 
@@ -201,6 +212,28 @@ impl Request {
                     .map_err(playback_error)?
                     .into_bytes()
                     .ok_or(Error::NoAudio);
+            }
+            Action::TrackArchive {
+                session_id,
+                track_id,
+            } => {
+                let index = reader
+                    .as_ref()
+                    .ok_or(Error::NoAudio)?
+                    .archive(session_id, track_id)
+                    .map_err(playback_error)?;
+                return Ok(serde_json::to_vec(&index)?);
+            }
+            Action::TrackArchiveChunk {
+                session_id,
+                track_id,
+                chunk_id,
+            } => {
+                return reader
+                    .as_ref()
+                    .ok_or(Error::NoAudio)?
+                    .archive_chunk(session_id, track_id, chunk_id)
+                    .map_err(playback_error);
             }
             _ => {}
         }
@@ -364,7 +397,9 @@ impl Request {
             | Action::History { .. }
             | Action::Export { .. }
             | Action::TrackTimeline { .. }
-            | Action::Playback { .. } => return Err(Error::Invalid),
+            | Action::Playback { .. }
+            | Action::TrackArchive { .. }
+            | Action::TrackArchiveChunk { .. } => return Err(Error::Invalid),
             Action::Install { model_id, .. }
             | Action::Transcribe { model_id, .. }
             | Action::Translate { model_id, .. } => model_id,

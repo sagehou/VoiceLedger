@@ -3,38 +3,51 @@ package com.voiceledger.app
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.StringRes
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.voiceledger.app.core.CoreException
+import java.io.File
+import java.io.OutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.UUID
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
+import org.json.JSONObject
 
 private const val RATE = 48_000
 private const val SECOND_NS = 1_000_000_000.0
@@ -47,6 +60,7 @@ internal fun SessionAudio(
     onStop: () -> Unit,
     onPlay: (String, Long, (Int?) -> Unit) -> Unit,
     timeline: suspend (String) -> JSONArray,
+    archive: (String, String?) -> ByteArray,
 ) {
     if (tracks == null || tracks.length() == 0) return
     val choices = (0 until tracks.length()).map(tracks::getJSONObject)
@@ -121,10 +135,90 @@ internal fun SessionAudio(
             onPlay(trackId, start) { status = it }
         }) { Text(stringResource(R.string.session_play)) }
         Button(enabled = status == R.string.session_playing, onClick = onStop) { Text(stringResource(R.string.session_stop_playback)) }
+        ExportTrack(trackId, track.getString("source"), archive)
     } else {
         Text(stringResource(R.string.no_saved_audio))
     }
     status?.let { Text(stringResource(it)) }
+}
+
+@Composable
+private fun ExportTrack(trackId: String, source: String, read: (String, String?) -> ByteArray) {
+    val app = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val request by rememberUpdatedState(read)
+    var preparing by remember { mutableStateOf(false) }
+    var confirmation by remember { mutableStateOf(false) }
+    var pendingTrack by remember { mutableStateOf<String?>(null) }
+    var status by remember { mutableStateOf<Int?>(null) }
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
+        val track = pendingTrack
+        pendingTrack = null
+        if (uri != null && track != null) scope.launch {
+            preparing = true
+            status = try {
+                withContext(Dispatchers.IO) {
+                    val temporary = File.createTempFile("voiceledger-track-", ".partial", app.cacheDir)
+                    try {
+                        temporary.outputStream().use { writeTrackZip(it) { chunk -> request(track, chunk) } }
+                        currentCoroutineContext().ensureActive()
+                        checkNotNull(app.contentResolver.openOutputStream(uri, "wt")).use { output ->
+                            temporary.inputStream().use { it.copyTo(output) }
+                        }
+                    } finally {
+                        temporary.delete()
+                    }
+                }
+                R.string.export_complete
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                R.string.export_failed
+            } catch (_: LinkageError) {
+                R.string.export_failed
+            } finally {
+                preparing = false
+            }
+        }
+    }
+    Button(enabled = !preparing && pendingTrack == null, onClick = { confirmation = true }) {
+        Text(stringResource(R.string.session_export_audio))
+    }
+    if (confirmation) AlertDialog(
+        onDismissRequest = { confirmation = false },
+        text = { Text(stringResource(R.string.export_plaintext)) },
+        confirmButton = {
+            TextButton(onClick = {
+                confirmation = false
+                pendingTrack = trackId
+                status = null
+                val name = if (source == "mic") "microphone" else "system"
+                picker.launch("VoiceLedger-$name.zip")
+            }) { Text(stringResource(R.string.session_export_audio)) }
+        },
+        dismissButton = { TextButton(onClick = { confirmation = false }) { Text(stringResource(R.string.cancel_speech)) } },
+    )
+    status?.let { Text(stringResource(it)) }
+}
+
+private suspend fun writeTrackZip(output: OutputStream, read: (String?) -> ByteArray) {
+    val manifest = read(null)
+    val chunks = JSONObject(manifest.decodeToString()).getJSONArray("chunks")
+    ZipOutputStream(output).use { zip ->
+        fun entry(name: String, bytes: ByteArray) {
+            zip.putNextEntry(ZipEntry(name))
+            zip.write(bytes)
+            zip.closeEntry()
+        }
+        entry("manifest.json", manifest)
+        for (index in 0 until chunks.length()) {
+            currentCoroutineContext().ensureActive()
+            val id = chunks.getJSONObject(index).getString("id")
+            check(UUID.fromString(id).toString() == id)
+            val audio = read(id)
+            try { entry("chunks/$id.opus", audio) } finally { audio.fill(0) }
+        }
+    }
 }
 
 @StringRes

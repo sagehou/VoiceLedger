@@ -3,6 +3,7 @@ use rusqlite::OpenFlags;
 use super::{
     Chunk, CommittedMedia, HistoryTrack, Response, TimelineRow, committed_media, playback,
 };
+use super::{Payload, chunk_path, inspect};
 use crate::{Error, Result};
 
 use rusqlite::{Connection, OptionalExtension, params};
@@ -45,6 +46,27 @@ pub struct TrackInput {
     pub last_chunk_id: StableId,
     pub start_ns: i64,
     pub end_ns: i64,
+}
+
+#[derive(Serialize)]
+pub struct TrackArchive {
+    schema_version: u32,
+    session_id: StableId,
+    track_id: StableId,
+    source: String,
+    playback_rate: usize,
+    chunks: Vec<ArchiveChunk>,
+    timeline: Vec<TimelineRow>,
+}
+
+#[derive(Serialize)]
+struct ArchiveChunk {
+    id: String,
+    start_ns: i64,
+    end_ns: i64,
+    source_epoch: u32,
+    channels: u32,
+    sha256: String,
 }
 
 pub struct CommittedReader {
@@ -190,6 +212,65 @@ impl CommittedReader {
         match committed_media(&self.root, &chunk)? {
             CommittedMedia::Decoded(media) => Ok(playback(&chunk, at, media)),
             CommittedMedia::Absent | CommittedMedia::Corrupt => Err(Error::Unavailable),
+        }
+    }
+
+    pub fn archive(&self, session: &StableId, track: &StableId) -> Result<TrackArchive> {
+        let track_id = String::from(track.clone());
+        let source = self
+            .tracks(session)?
+            .into_iter()
+            .find(|saved| saved.id == track_id)
+            .ok_or(Error::Unavailable)?
+            .source;
+        let mut statement = self.db.prepare(
+            "SELECT c.id,c.start_ns,c.end_ns,s.source_epoch,s.channels,c.sha256
+             FROM chunks c JOIN streams s ON s.id=c.stream_id
+             WHERE c.track_id=?1 AND c.state='committed' ORDER BY c.start_ns",
+        )?;
+        let chunks = statement
+            .query_map([track_id], |row| {
+                Ok(ArchiveChunk {
+                    id: row.get(0)?,
+                    start_ns: row.get(1)?,
+                    end_ns: row.get(2)?,
+                    source_epoch: row.get(3)?,
+                    channels: row.get(4)?,
+                    sha256: row.get(5)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        if chunks.is_empty() {
+            return Err(Error::Unavailable);
+        }
+        Ok(TrackArchive {
+            schema_version: 1,
+            session_id: session.clone(),
+            track_id: track.clone(),
+            source,
+            playback_rate: crate::RATE,
+            chunks,
+            timeline: self.timeline(session, track)?,
+        })
+    }
+
+    pub fn archive_chunk(
+        &self,
+        session: &StableId,
+        track: &StableId,
+        id: &StableId,
+    ) -> Result<Vec<u8>> {
+        let chunk = self.db.query_row(
+            &format!("{} JOIN sessions ses ON ses.id=t.session_id
+             WHERE ses.id=?1 AND ses.state IN (5,6) AND c.track_id=?2 AND c.id=?3 AND c.state='committed'",
+                Chunk::SELECT),
+            params![String::from(session.clone()), String::from(track.clone()), String::from(id.clone())],
+            Chunk::read,
+        ).optional()?.ok_or(Error::Unavailable)?;
+        let path = chunk_path(&self.root, &chunk, "opus")?;
+        match inspect(&path, &chunk)? {
+            Payload::Valid(bytes) => Ok(bytes),
+            Payload::Absent | Payload::Corrupt => Err(Error::Unavailable),
         }
     }
 

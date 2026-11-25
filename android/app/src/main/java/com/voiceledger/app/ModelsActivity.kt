@@ -213,6 +213,12 @@ class ModelsActivity : ComponentActivity() {
                                                 }
                                             }
                                         },
+                                        archive = { track, chunk ->
+                                            val op = if (chunk == null) "track_archive" else "track_archive_chunk"
+                                            val action = JSONObject().put("op", op).put("session_id", sessionId).put("track_id", track)
+                                            if (chunk != null) action.put("chunk_id", chunk)
+                                            NativeCore.speechRequest(query(action))
+                                        },
                                         timeline = { track ->
                                             withContext(Dispatchers.IO) {
                                                 JSONArray(NativeCore.speechRequest(query(JSONObject().put("op", "track_timeline")
