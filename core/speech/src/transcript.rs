@@ -49,7 +49,7 @@ impl Transcripts {
         )?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let version: i64 = tx.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        if !(0..=3).contains(&version) {
+        if !(0..=4).contains(&version) {
             return Err(Error::Storage);
         }
         if version == 0 {
@@ -60,7 +60,10 @@ impl Transcripts {
         }
         if version < 3 {
             tx.execute_batch(translations::SCHEMA)?;
-            tx.execute_batch("PRAGMA user_version=3;")?;
+        }
+        if version < 4 {
+            tx.execute_batch(crate::library::SCHEMA)?;
+            tx.execute_batch("PRAGMA user_version=4;")?;
         }
         tx.commit()?;
         Ok(Self { db })
@@ -217,6 +220,7 @@ pub struct Line {
     pub language: Language,
     pub text: String,
     pub translation: Option<TranslationLine>,
+    pub speaker: Option<crate::library::SpeakerLine>,
 }
 
 pub fn selected(root: &Path, session: &StableId) -> Result<Vec<Line>> {
@@ -268,6 +272,11 @@ pub(crate) fn visit_selected(
         } else {
             None
         };
+        let speaker = if version >= 4 {
+            crate::library::speaker(&db, &value.utterance_id)?
+        } else {
+            None
+        };
         visit(Line {
             source,
             start_ns: u64::try_from(start_ns).map_err(|_| Error::Storage)?,
@@ -276,6 +285,7 @@ pub(crate) fn visit_selected(
             language: value.language,
             text: value.text,
             translation,
+            speaker,
         })?;
     }
     Ok(())

@@ -72,8 +72,9 @@ class ModelsActivity : ComponentActivity() {
             var unavailable by remember { mutableStateOf(false) }
             var language by remember { mutableStateOf("auto") }
             var edit by remember { mutableStateOf<JSONObject?>(null) }
-            var editingSource by remember { mutableStateOf(false) }
+            var editKind by remember { mutableStateOf(RevisionEditor.Transcript) }
             var selectedSession by remember { mutableStateOf<String?>(null) }
+            var rename by remember(selectedSession) { mutableStateOf(false) }
             var trackFilter by remember(selectedSession) { mutableStateOf<String?>(null) }
             var search by remember { mutableStateOf("") }
             var requestedSearch by remember { mutableStateOf("") }
@@ -148,8 +149,10 @@ class ModelsActivity : ComponentActivity() {
                                     val duration = DateUtils.formatElapsedTime(item.getLong("elapsed_ns") / 1_000_000_000)
                                     val state = stringResource(if (item.getBoolean("interrupted")) R.string.session_interrupted else R.string.session_completed)
                                     Button(onClick = { selectedSession = item.getString("id") }) {
-                                        Text(stringResource(R.string.session_row, time, duration, state,
-                                            item.getLong("committed"), item.getLong("missing")))
+                                        val label = stringResource(R.string.session_row, time, duration, state,
+                                            item.getLong("committed"), item.getLong("missing"))
+                                        val title = if (item.isNull("title")) "" else item.getString("title")
+                                        Text(if (title.isEmpty()) label else "$title\n$label")
                                     }
                                 }
                             }
@@ -177,6 +180,21 @@ class ModelsActivity : ComponentActivity() {
                                 val date = Date(session.getLong("created_at_ms"))
                                 Text(DateFormat.getDateTimeInstance().format(date))
                                 if (sessions && sessionId != null) {
+                                    val title = inspection?.takeUnless { it.isNull("title") }?.getString("title").orEmpty()
+                                    if (title.isNotEmpty()) Text(title, style = MaterialTheme.typography.titleLarge)
+                                    Button(enabled = !working, onClick = { rename = true }) {
+                                        Text(stringResource(R.string.session_rename))
+                                    }
+                                    if (rename) {
+                                        TextRevisionEditor(title, R.string.session_rename, !working,
+                                            field = R.string.session_title, maxLength = 64, allowBlank = true,
+                                            onDismiss = { rename = false }) { value ->
+                                            saveRevision(JSONObject().put("op", "rename_session")
+                                                .put("session_id", sessionId).put("text", value)).also { code ->
+                                                if (code == 0) { rename = false; reload++ }
+                                            }
+                                        }
+                                    }
                                     SessionAudio(inspection?.optJSONArray("tracks"), trackFilter,
                                         onTrack = { trackFilter = it },
                                         onStop = { playback?.cancel() },
@@ -245,7 +263,7 @@ class ModelsActivity : ComponentActivity() {
                                 Text(stringResource(R.string.model_line, stringResource(source), line.getLong("start_ns") / 1_000_000_000.0))
                                 Text(line.getString("text"))
                                 if (sessionId != null) {
-                                    Button(enabled = idle && !working, onClick = { editingSource = true; edit = line }) {
+                                    Button(enabled = idle && !working, onClick = { editKind = RevisionEditor.Transcript; edit = line }) {
                                         Text(stringResource(R.string.edit_transcript))
                                     }
                                 }
@@ -258,26 +276,41 @@ class ModelsActivity : ComponentActivity() {
                                     Text(revision.getString("text"))
                                 }
                                 if (sessionId != null && line.getString("language") == "en") {
-                                    Button(enabled = idle && !working, onClick = { editingSource = false; edit = line }) {
+                                    Button(enabled = idle && !working, onClick = { editKind = RevisionEditor.Translation; edit = line }) {
                                         Text(stringResource(if (revision == null) R.string.add_translation else R.string.edit_translation))
+                                    }
+                                }
+                                if (sessions && sessionId != null) {
+                                    val speaker = line.optJSONObject("speaker")
+                                    val name = speaker?.takeUnless { it.isNull("name") }?.getString("name")
+                                    Text(name ?: stringResource(R.string.session_unknown_speaker))
+                                    Button(enabled = idle && !working, onClick = { editKind = RevisionEditor.Speaker; edit = line }) {
+                                        Text(stringResource(R.string.session_edit_speaker))
                                     }
                                 }
                             }
                             edit?.let { line ->
                                 if (sessionId != null) {
-                                    val initial = if (editingSource) line.getString("text")
-                                        else line.optJSONObject("translation")?.getString("text").orEmpty()
-                                    val label = if (editingSource) R.string.edit_transcript else R.string.edit_translation
-                                    TextRevisionEditor(initial, label, idle && !working, onDismiss = { edit = null }) { text ->
+                                    val speaker = line.optJSONObject("speaker")
+                                    val initial = when (editKind) {
+                                        RevisionEditor.Transcript -> line.getString("text")
+                                        RevisionEditor.Translation -> line.optJSONObject("translation")?.getString("text").orEmpty()
+                                        RevisionEditor.Speaker -> speaker?.takeUnless { it.isNull("name") }?.getString("name").orEmpty()
+                                    }
+                                    val isSpeaker = editKind == RevisionEditor.Speaker
+                                    TextRevisionEditor(initial, editKind.label, idle && !working, field = editKind.field,
+                                        maxLength = if (isSpeaker) 64 else 8192, allowBlank = isSpeaker,
+                                        onDismiss = { edit = null }) { text ->
                                         val action = JSONObject().put("session_id", sessionId)
                                             .put("utterance_id", line.getString("utterance_id"))
                                             .put("text", text)
-                                        if (editingSource) {
-                                            action.put("op", "save_utterance").put("expected_revision_id", line.getString("revision_id"))
-                                        } else {
-                                            action.put("op", "save_translation")
-                                                .put("source_revision_id", line.getString("revision_id"))
+                                        val revision = line.getString("revision_id")
+                                        when (editKind) {
+                                            RevisionEditor.Transcript -> action.put("op", "save_utterance").put("expected_revision_id", revision)
+                                            RevisionEditor.Translation -> action.put("op", "save_translation").put("source_revision_id", revision)
                                                 .put("expected_translation_id", line.optJSONObject("translation")?.getString("revision_id") ?: JSONObject.NULL)
+                                            RevisionEditor.Speaker -> action.put("op", "save_speaker").put("expected_revision_id", revision)
+                                                .put("expected_speaker_id", speaker?.getString("revision_id") ?: JSONObject.NULL)
                                         }
                                         saveRevision(action).also { code ->
                                             if (code == 0) {
@@ -435,11 +468,20 @@ private fun ExportTranscript(enabled: Boolean, prepare: suspend (String) -> Byte
     outcome?.let { Text(stringResource(it)) }
 }
 
+private enum class RevisionEditor(val label: Int, val field: Int) {
+    Transcript(R.string.edit_transcript, R.string.transcript),
+    Translation(R.string.edit_translation, R.string.chinese_translation),
+    Speaker(R.string.session_edit_speaker, R.string.session_speaker_name),
+}
+
 @Composable
 private fun TextRevisionEditor(
     initial: String,
     label: Int,
     enabled: Boolean,
+    field: Int,
+    maxLength: Int,
+    allowBlank: Boolean,
     onDismiss: () -> Unit,
     save: suspend (String) -> Int,
 ) {
@@ -454,8 +496,8 @@ private fun TextRevisionEditor(
             Column {
                 OutlinedTextField(
                     value = text,
-                    onValueChange = { if (it.encodeToByteArray().size <= 8192) text = it },
-                    label = { Text(stringResource(if (label == R.string.edit_transcript) R.string.transcript else R.string.chinese_translation)) },
+                    onValueChange = { if (it.length <= maxLength && it.encodeToByteArray().size <= 8192) text = it },
+                    label = { Text(stringResource(field)) }, singleLine = allowBlank,
                     readOnly = saving,
                 )
                 error?.let { Text(stringResource(resultText(it))) }
@@ -463,7 +505,7 @@ private fun TextRevisionEditor(
         },
         confirmButton = {
             TextButton(
-                enabled = enabled && !saving && text.isNotBlank(),
+                enabled = enabled && !saving && (allowBlank || text.isNotBlank()),
                 onClick = {
                     saving = true
                     scope.launch {

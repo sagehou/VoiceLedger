@@ -60,8 +60,8 @@ internal sealed class ModelsWindow : Window
     private async Task BrowseSessionsAsync()
     {
         content.Children.Clear();
-        AutomationProperties.SetName(search, "Search saved transcript text");
-        var submit = new Button { Content = "Search transcripts", HorizontalAlignment = HorizontalAlignment.Left };
+        AutomationProperties.SetName(search, "Search saved sessions");
+        var submit = new Button { Content = "Search sessions", HorizontalAlignment = HorizontalAlignment.Left };
         submit.Click += async (_, _) => await BrowseSessionsAsync();
         content.Children.Add(search);
         content.Children.Add(submit);
@@ -77,6 +77,8 @@ internal sealed class ModelsWindow : Window
             {
                 string id = Read(session, "id");
                 var date = DateTimeOffset.FromUnixTimeMilliseconds(session.GetProperty("created_at_ms").GetInt64());
+                string title = Read(session, "title");
+                string name = string.IsNullOrEmpty(title) ? "" : $"{title}\n";
                 var duration = TimeSpan.FromSeconds(session.GetProperty("elapsed_ns").GetInt64() / 1_000_000_000.0);
                 string state = session.GetProperty("interrupted").GetBoolean() ? "Interrupted" : "Completed";
                 long saved = session.GetProperty("committed").GetInt64();
@@ -86,7 +88,7 @@ internal sealed class ModelsWindow : Window
                 {
                     Content = new TextBlock
                     {
-                        Text = $"{date.LocalDateTime:g} · {duration:g} · {state}\nAudio {saved} saved · {missing} missing · {transcript}",
+                        Text = $"{name}{date.LocalDateTime:g} · {duration:g} · {state}\nAudio {saved} saved · {missing} missing · {transcript}",
                         TextWrapping = TextWrapping.Wrap,
                     },
                     Margin = new Thickness(0, 6, 0, 0),
@@ -100,7 +102,7 @@ internal sealed class ModelsWindow : Window
             }
             if (history.RootElement.GetArrayLength() == 0)
             {
-                AddLine(query.Length == 0 ? "No saved sessions." : "No matching transcripts.");
+                AddLine(query.Length == 0 ? "No saved sessions." : "No matching sessions.");
                 var back = new Button { Content = "Return to recording", HorizontalAlignment = HorizontalAlignment.Left };
                 back.Click += (_, _) => Close();
                 content.Children.Add(back);
@@ -159,6 +161,12 @@ internal sealed class ModelsWindow : Window
                 content.Children.Add(language);
                 if (sessions)
                 {
+                    string title = Read(speech.RootElement, "title");
+                    if (title.Length > 0) AddLine(title, bold: true);
+                    ShowTextEditor("Rename session", title, "Title saved.", text => new
+                    {
+                        op = "rename_session", session_id = sessionId, text,
+                    }, maxLength: 64, allowBlank: true);
                     if (lines.GetArrayLength() > 0) AddExport(sessionId);
                     sessionAudio = new SessionAudioPanel(sessionId, speech.RootElement.GetProperty("tracks"), canWork);
                     content.Children.Add(sessionAudio);
@@ -226,6 +234,20 @@ internal sealed class ModelsWindow : Window
                         expected_revision_id = revision, text,
                     });
                     ShowTranslation(sessionId, line);
+                    if (sessions)
+                    {
+                        JsonElement speaker = line.GetProperty("speaker");
+                        bool labeled = speaker.ValueKind == JsonValueKind.Object;
+                        string name = labeled ? Read(speaker, "name") : "";
+                        AddLine(name.Length > 0 ? name : "Unknown speaker");
+                        ShowTextEditor("Edit speaker name", name, "Speaker saved.", text => new
+                        {
+                            op = "save_speaker", session_id = sessionId, utterance_id = utterance,
+                            expected_revision_id = revision,
+                            expected_speaker_id = labeled ? Read(speaker, "revision_id") : null,
+                            text,
+                        }, maxLength: 64, allowBlank: true);
+                    }
                 }
                 if (sessionAudio is not null)
                 {
@@ -317,7 +339,8 @@ internal sealed class ModelsWindow : Window
             });
     }
 
-    private void ShowTextEditor(string label, string initial, string success, Func<string, object> action)
+    private void ShowTextEditor(string label, string initial, string success, Func<string, object> action,
+        int maxLength = 8192, bool allowBlank = false)
     {
         var edit = new Button
         {
@@ -327,14 +350,14 @@ internal sealed class ModelsWindow : Window
         };
         var input = new TextBox
         {
-            Text = initial, TextWrapping = TextWrapping.Wrap, AcceptsReturn = true,
-            MaxLength = 8192, MinHeight = 60, Visibility = Visibility.Collapsed,
+            Text = initial, TextWrapping = TextWrapping.Wrap, AcceptsReturn = !allowBlank,
+            MaxLength = maxLength, MinHeight = allowBlank ? 0 : 60, Visibility = Visibility.Collapsed,
         };
         AutomationProperties.SetName(input, label);
         var save = new Button
         {
             Content = "Save", HorizontalAlignment = HorizontalAlignment.Left,
-            Visibility = Visibility.Collapsed, IsEnabled = !string.IsNullOrWhiteSpace(initial),
+            Visibility = Visibility.Collapsed, IsEnabled = allowBlank || !string.IsNullOrWhiteSpace(initial),
         };
         edit.Click += (_, _) =>
         {
@@ -344,7 +367,7 @@ internal sealed class ModelsWindow : Window
             input.Focus();
         };
         var error = new TextBlock { TextWrapping = TextWrapping.Wrap, Visibility = Visibility.Collapsed };
-        bool ValidText() => !string.IsNullOrWhiteSpace(input.Text) && Encoding.UTF8.GetByteCount(input.Text) <= 8192;
+        bool ValidText() => (allowBlank || !string.IsNullOrWhiteSpace(input.Text)) && Encoding.UTF8.GetByteCount(input.Text) <= 8192;
         input.TextChanged += (_, _) => save.IsEnabled = ValidText();
         save.Click += async (_, _) =>
         {

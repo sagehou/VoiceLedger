@@ -245,7 +245,7 @@ fn migration_preserves_the_version_one_transcript_database() {
             .0
             .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
             .unwrap(),
-        3
+        4
     );
 }
 
@@ -532,6 +532,17 @@ fn native_translation_app_flow() {
         "请保存原始录音。"
     );
     assert_eq!(inspect()["session"]["id"], json!(session));
+    request(json!({"op":"rename_session","session_id":session,"text":"Synthetic weekly review"}))
+        .unwrap();
+    let speaker_edit = json!({
+        "op": "save_speaker", "session_id": session, "utterance_id": utterance,
+        "expected_revision_id": line["revision_id"], "expected_speaker_id": null, "text": "Synthetic host"
+    });
+    request(speaker_edit.clone()).unwrap();
+    assert!(matches!(
+        request(speaker_edit),
+        Err(Error::RevisionConflict)
+    ));
     request(json!({
         "op": "save_utterance", "session_id": session, "utterance_id": utterance,
         "expected_revision_id": line["revision_id"], "text": "Save the corrected recording."
@@ -540,6 +551,7 @@ fn native_translation_app_flow() {
     let updated = inspect();
     assert_eq!(updated["lines"][0]["text"], "Save the corrected recording.");
     assert_eq!(updated["lines"][0]["translation"]["stale"], true);
+    assert_eq!(updated["lines"][0]["speaker"]["name"], "Synthetic host");
     let json_export = request(json!({"op":"export","session_id":session,"format":"json"})).unwrap();
     let json_export: serde_json::Value = serde_json::from_slice(&json_export).unwrap();
     assert_eq!(
@@ -547,15 +559,20 @@ fn native_translation_app_flow() {
         "Save the corrected recording."
     );
     assert_eq!(json_export["lines"][0]["translation"]["stale"], true);
+    assert_eq!(json_export["title"], "Synthetic weekly review");
+    assert_eq!(json_export["lines"][0]["speaker"]["name"], "Synthetic host");
     for format in ["text", "markdown"] {
         let bytes = request(json!({"op":"export","session_id":session,"format":format})).unwrap();
         let export = std::str::from_utf8(&bytes).unwrap();
         assert!(export.contains("Microphone") && export.contains("请保存原始录音。"));
     }
-    let matches = request(json!({"op":"history", "query":"CORRECTED"})).unwrap();
-    let sessions: serde_json::Value = serde_json::from_slice(&matches).unwrap();
-    assert_eq!(sessions[0]["id"], json!(session));
-    assert_eq!(sessions[0]["committed"], 1);
+    for query in ["CORRECTED", "WEEKLY", "HOST"] {
+        let matches = request(json!({"op":"history", "query":query})).unwrap();
+        let sessions: serde_json::Value = serde_json::from_slice(&matches).unwrap();
+        assert_eq!(sessions[0]["id"], json!(session));
+        assert_eq!(sessions[0]["committed"], 1);
+        assert_eq!(sessions[0]["has_transcript"], true);
+    }
     assert_eq!(
         request(json!({"op":"history","query":"unmatched"}))
             .unwrap()

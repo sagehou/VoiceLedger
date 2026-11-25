@@ -56,9 +56,9 @@
     <string name="model_loopback">System loopback</string>
     <string name="model_line">%1$s · %2$.1fs</string>
     <string name="sessions">Sessions</string>
-    <string name="search_transcripts">Search transcripts</string>
+    <string name="search_transcripts">Search sessions</string>
     <string name="sessions_empty">No saved sessions.</string>
-    <string name="sessions_no_match">No matching transcripts.</string>
+    <string name="sessions_no_match">No matching sessions.</string>
     <string name="sessions_loading">Loading sessions…</string>
     <string name="sessions_unavailable">Saved sessions are unavailable.</string>
     <string name="return_to_recording">Return to recording</string>
@@ -90,4 +90,9 @@
     <string name="session_playback_ended">Playback ended.</string>
     <string name="session_audio_unavailable">No saved audio at that time.</string>
     <string name="session_playback_error">Could not play the saved track.</string>
+    <string name="session_rename">Rename session</string>
+    <string name="session_title">Session title</string>
+    <string name="session_edit_speaker">Edit speaker name</string>
+    <string name="session_speaker_name">Speaker name</string>
+    <string name="session_unknown_speaker">Unknown speaker</string>
 </resources>

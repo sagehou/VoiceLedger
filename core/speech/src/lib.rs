@@ -128,6 +128,8 @@ enum Action {
         position_ns: i64,
     },
     SaveUtterance(library::UtteranceEdit),
+    RenameSession(library::TitleEdit),
+    SaveSpeaker(library::SpeakerEdit),
     Install {
         model_id: String,
         approved: bool,
@@ -234,6 +236,11 @@ impl Request {
                 .transpose()?
                 .flatten();
             let recordings = &self.recordings;
+            let title = session
+                .as_ref()
+                .map(|session| library::title(recordings, &session.id))
+                .transpose()?
+                .flatten();
             let tracks = match (reader.as_ref(), session_id) {
                 (Some(reader), Some(id)) => reader.tracks(id)?,
                 _ => Vec::new(),
@@ -294,6 +301,7 @@ impl Request {
                 job,
                 has_translation_source,
                 tracks,
+                title,
             })?);
         }
         check_cancel(cancelled)?;
@@ -332,6 +340,19 @@ impl Request {
                 Transcripts::open(&self.recordings)?.save_utterance(edit)?;
                 return processed(1);
             }
+            Action::RenameSession(edit) => {
+                reader
+                    .as_ref()
+                    .ok_or(Error::NoAudio)?
+                    .finished(&edit.session_id)?
+                    .ok_or(Error::NoAudio)?;
+                Transcripts::open(&self.recordings)?.rename(edit)?;
+                return processed(1);
+            }
+            Action::SaveSpeaker(edit) => {
+                Transcripts::open(&self.recordings)?.save_speaker(edit)?;
+                return processed(1);
+            }
             Action::SaveTranslation(edit) => {
                 Transcripts::open(&self.recordings)?.save_manual_translation(edit)?;
                 return processed(1);
@@ -347,7 +368,12 @@ impl Request {
             Action::Install { model_id, .. }
             | Action::Transcribe { model_id, .. }
             | Action::Translate { model_id, .. } => model_id,
-            Action::SaveTranslation(_) | Action::SaveUtterance(_) => return Err(Error::Invalid),
+            Action::SaveTranslation(_)
+            | Action::SaveUtterance(_)
+            | Action::RenameSession(_)
+            | Action::SaveSpeaker(_) => {
+                return Err(Error::Invalid);
+            }
         };
         let model = catalog
             .models()
@@ -698,6 +724,7 @@ struct Inspection<'a> {
     job: Option<jobs::Status>,
     has_translation_source: bool,
     tracks: Vec<HistoryTrack>,
+    title: Option<String>,
 }
 
 const WORKER_LOCK: &str = "speech-worker.lock";
