@@ -41,6 +41,9 @@ jobs:
       - run: cargo build --release --locked --package voiceledger-ffi
       - name: Build and exercise native speech adapters with model-free inputs
         run: python3 ../scripts/build_speech.py --work "$RUNNER_TEMP/voiceledger-speech" --output artifacts/speech
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.12'
       - name: Evaluate speaker embeddings without network access
         run: |
           sudo apt-get update -qq
