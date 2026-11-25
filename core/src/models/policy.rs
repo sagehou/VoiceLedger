@@ -189,9 +189,19 @@ pub(super) fn preflight(
 }
 
 fn memory_budget(device: &DeviceCapabilityProfile) -> Option<u64> {
-    let available = device.available_memory_bytes?.get();
+    current_memory_budget(
+        device,
+        device.available_memory_bytes?.get(),
+        device.low_memory_threshold_bytes.map_or(0, Count::get),
+    )
+}
+
+pub fn current_memory_budget(
+    device: &DeviceCapabilityProfile,
+    available: u64,
+    os_reserve: u64,
+) -> Option<u64> {
     let capture = device.process_memory_bytes?.get();
-    let os_reserve = device.low_memory_threshold_bytes.map_or(0, Count::get);
     let after_reserves = available.saturating_sub(capture).saturating_sub(os_reserve);
     Some(after_reserves / 10 * 3)
 }

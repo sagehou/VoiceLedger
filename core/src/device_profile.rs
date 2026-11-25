@@ -81,6 +81,7 @@ fn cpu_features() -> Vec<&'static str> {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     let features = [
         ("sse2", std::is_x86_feature_detected!("sse2")),
+        ("sse41", std::is_x86_feature_detected!("sse4.1")),
         ("avx", std::is_x86_feature_detected!("avx")),
         ("avx2", std::is_x86_feature_detected!("avx2")),
         ("fma", std::is_x86_feature_detected!("fma")),

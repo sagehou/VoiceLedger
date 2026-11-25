@@ -124,6 +124,16 @@ pub enum Language {
     Ja,
 }
 
+impl Language {
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Zh => "zh",
+            Self::En => "en",
+            Self::Ja => "ja",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LanguagePolicy {
@@ -307,7 +317,7 @@ pub struct ChunkSpan {
     pub range: TimeRange,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelRef {
     pub model_id: String,

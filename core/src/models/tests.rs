@@ -103,8 +103,8 @@ fn fetch_body(start: u64, bytes: &[u8]) -> Download {
 #[test]
 fn published_candidates_use_their_own_download_and_memory_metadata() {
     let catalog = Catalog::bundled().unwrap();
-    let [whisper, sensevoice] = catalog.models() else {
-        panic!("Expected two P0 candidates");
+    let [whisper, sensevoice, translation] = catalog.models() else {
+        panic!("Expected two transcription candidates and one translation candidate");
     };
     assert_eq!(whisper.download_bytes(), 32_152_673);
     assert_eq!(
@@ -114,6 +114,10 @@ fn published_candidates_use_their_own_download_and_memory_metadata() {
     assert_eq!(sensevoice.download_bytes(), 239_549_735);
     assert!(sensevoice.peak_ram_estimate.is_none());
     assert_eq!(sensevoice.license.id, "LicenseRef-FunASR-Model");
+    let pair = translation.translation.unwrap();
+    assert_eq!(pair.source.code(), "en");
+    assert_eq!(pair.target.code(), "zh");
+    assert_eq!(translation.download_bytes(), 82_482_780);
 
     let mut altered = json!({"schema_version": 1, "models": [whisper]});
     altered["models"][0]["artifacts"][0]["file"] = json!("../weights");

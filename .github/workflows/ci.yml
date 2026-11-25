@@ -41,6 +41,19 @@ jobs:
       - run: cargo build --release --locked --package voiceledger-ffi
       - name: Build and exercise native speech adapters with model-free inputs
         run: python3 ../scripts/build_speech.py --work "$RUNNER_TEMP/voiceledger-speech" --output artifacts/speech
+      - name: Build and run the native translation adapter without network access
+        run: |
+          model="$RUNNER_TEMP/voiceledger-translation/模型"
+          python3 ../scripts/build_translation.py --work "$RUNNER_TEMP/voiceledger-translation" --output artifacts/speech
+          python3 ../scripts/check_translation.py "$model"
+          sudo unshare --net --setgid="$(id -g)" --setuid="$(id -u)" -- "$(command -v python3)" \
+            ../scripts/check_translation.py "$model" --library artifacts/speech/libvoiceledger_translation.so \
+            --report artifacts/translation.json --offline
+          cargo test --workspace --locked --no-run --message-format=json > "$RUNNER_TEMP/voiceledger-test-binaries.jsonl"
+          test_binary="$(python3 -c 'import json, sys; print(next(item["executable"] for line in sys.stdin if (item := json.loads(line)).get("executable") and item["target"]["name"] == "voiceledger_speech"))' < "$RUNNER_TEMP/voiceledger-test-binaries.jsonl")"
+          sudo unshare --net --setgid="$(id -g)" --setuid="$(id -u)" -- env \
+            VOICELEDGER_TEST_TRANSLATION_MODEL="$model" VOICELEDGER_TEST_TRANSLATION_ADAPTERS="$PWD/artifacts/speech" \
+            "$test_binary" --exact tests::native_translation_app_flow --ignored --nocapture
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: voiceledger-ffi-linux-x64
@@ -50,7 +63,9 @@ jobs:
         if: always()
         with:
           name: rust-core-report
-          path: core/artifacts/rust-core.log
+          path: |
+            core/artifacts/rust-core.log
+            core/artifacts/translation.json
 
   rust-windows:
     runs-on: windows-latest
@@ -71,6 +86,18 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build and exercise native speech adapters on Windows
         run: python ../scripts/build_speech.py --work "$env:RUNNER_TEMP/voiceledger-speech" --output artifacts/speech
+      - name: Build and exercise the Windows translation adapter
+        run: |
+          $model = Join-Path $env:RUNNER_TEMP 'voiceledger-translation/模型'
+          python ../scripts/build_translation.py --work "$env:RUNNER_TEMP/voiceledger-translation" --output artifacts/speech
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python ../scripts/check_translation.py "$model"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python ../scripts/check_translation.py "$model" --library artifacts/speech/voiceledger_translation.dll --report artifacts/translation.json
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: windows-translation-report
+          path: core/artifacts/translation.json
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: voiceledger-speech-windows-x64
@@ -118,6 +145,10 @@ jobs:
           cargo build --workspace --release --locked --target aarch64-linux-android
           python3 ../scripts/build_speech.py --work "$RUNNER_TEMP/voiceledger-speech" \
             --output artifacts/speech --android-ndk "$ANDROID_NDK_HOME"
+          python3 ../scripts/build_translation.py --work "$RUNNER_TEMP/voiceledger-translation" \
+            --output artifacts/speech --android-ndk "$ANDROID_NDK_HOME"
+          "$ndk_tools/llvm-readelf" --file-header artifacts/speech/libvoiceledger_translation.so > artifacts/translation-android.txt
+          grep -E 'Machine:[[:space:]]+AArch64' artifacts/translation-android.txt
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: voiceledger-speech-android-arm64-v8a
@@ -177,7 +208,7 @@ jobs:
             }
           }
           (Get-Item artifacts/windows/voiceledger_ffi.dll).Length | Set-Content artifacts/windows-native-bytes.log
-          foreach ($file in 'voiceledger_whisper.dll', 'voiceledger_sensevoice.dll', 'sherpa-onnx-c-api.dll', 'onnxruntime.dll') {
+          foreach ($file in 'voiceledger_whisper.dll', 'voiceledger_sensevoice.dll', 'voiceledger_translation.dll', 'sherpa-onnx-c-api.dll', 'onnxruntime.dll') {
             if (-not (Test-Path "artifacts/windows/speech/$file" -PathType Leaf)) {
               throw "Publish output is missing speech/$file"
             }
@@ -301,7 +332,7 @@ jobs:
           assert speech.get(ns + "process", "").endswith(":speech"), speech.attrib
           PY
           unzip -Z1 "$apk" | grep -Fx 'lib/arm64-v8a/libvoiceledger_ffi.so'
-          for library in voiceledger_whisper voiceledger_sensevoice sherpa-onnx-c-api onnxruntime; do
+          for library in voiceledger_whisper voiceledger_sensevoice voiceledger_translation sherpa-onnx-c-api onnxruntime; do
             unzip -Z1 "$apk" | grep -Fx "lib/arm64-v8a/lib${library}.so"
           done
           stat -c '%s' app/src/main/jniLibs/arm64-v8a/libvoiceledger_ffi.so > artifacts/android-native-bytes.log

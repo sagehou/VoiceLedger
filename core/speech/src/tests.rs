@@ -2,7 +2,9 @@ use std::fs;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use rusqlite::Connection;
-use voiceledger_core::contracts::{ChunkSpan, Language, TimeRange, UtteranceRevision};
+use voiceledger_core::contracts::{
+    Authorship, ChunkSpan, Language, TimeRange, UtteranceKind, UtteranceRevision,
+};
 
 use super::*;
 use crate::jobs::{Cursor, Outcome};
@@ -221,6 +223,7 @@ fn migration_preserves_the_version_one_transcript_database() {
         let db = Connection::open(&path).unwrap();
         db.execute_batch(
             "CREATE TABLE utterances(id TEXT PRIMARY KEY);
+             CREATE TABLE revisions(id TEXT PRIMARY KEY);
              INSERT INTO utterances VALUES ('synthetic');
              PRAGMA user_version=1;",
         )
@@ -242,6 +245,290 @@ fn migration_preserves_the_version_one_transcript_database() {
             .0
             .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
             .unwrap(),
-        2
+        3
+    );
+}
+
+#[test]
+fn translation_versions_keep_manual_edits_and_bind_to_the_selected_source() {
+    use rusqlite::params;
+
+    let root = Directory::new();
+    let catalog = Catalog::bundled().unwrap();
+    let model = &catalog.models()[0];
+    let translator = &catalog.models()[2];
+    let session = id(1);
+    let track = id(2);
+    let range = TimeRange {
+        start_ns: 0_i64.try_into().unwrap(),
+        end_ns: 40_i64.try_into().unwrap(),
+    };
+    let store = Transcripts::open(&root.0).unwrap();
+    let mut writer = Writer {
+        transcripts: &store,
+        session: &session,
+        model,
+        language: LanguagePolicy::En,
+        job: None,
+        publish_partial: &mut |_| {},
+        saved: 0,
+    };
+    writer
+        .finish(Final {
+            id: id(3),
+            track_id: track,
+            spans: vec![ChunkSpan {
+                chunk_id: id(4),
+                range,
+            }],
+            range,
+            recognition: Recognition {
+                language: Language::En,
+                text: "Save the recording.".into(),
+            },
+        })
+        .unwrap();
+    let mut source = store
+        .translation_sources(&session, "")
+        .unwrap()
+        .pop()
+        .unwrap();
+    let model_ref = ModelRef {
+        model_id: translator.id.clone(),
+        model_version: translator.version.clone(),
+        runtime_version: translator.runtime.version.clone(),
+        sha256: translator.artifacts[0].sha256.clone(),
+    };
+    assert!(
+        store
+            .save_machine_translation(&session, &source, "保存录音。".into(), model_ref.clone())
+            .unwrap()
+    );
+    assert!(
+        !store
+            .save_machine_translation(&session, &source, "保存录音。".into(), model_ref.clone())
+            .unwrap()
+    );
+    let selected = || translations::selected(&store.db, &id(3)).unwrap().unwrap();
+    let machine = selected();
+    assert_eq!(machine.source_revision_id, source.id);
+    assert_eq!(machine.authorship, Authorship::Machine);
+    assert_eq!(
+        machine.model.unwrap().sha256,
+        translator.artifacts[0].sha256
+    );
+    let edit = |source_revision_id, expected_translation_id, text: &str| translations::ManualEdit {
+        session_id: session.clone(),
+        utterance_id: id(3),
+        source_revision_id,
+        expected_translation_id,
+        text: text.into(),
+    };
+    store
+        .save_manual_translation(edit(
+            source.id.clone(),
+            Some(machine.id.clone()),
+            "请保存录音。",
+        ))
+        .unwrap();
+    let manual = selected();
+    assert_eq!(manual.parent_revision_ids, vec![machine.id]);
+    assert_eq!(manual.translation_id, machine.translation_id);
+    assert_eq!(manual.authorship, Authorship::Manual);
+    assert!(matches!(
+        store.save_manual_translation(edit(source.id.clone(), None, "旧编辑")),
+        Err(Error::RevisionConflict)
+    ));
+
+    let original = std::mem::replace(&mut source.id, id(5));
+    source.revision = 2.try_into().unwrap();
+    source.kind = UtteranceKind::Manual;
+    source.model = None;
+    source.parent_revision_ids = vec![original.clone()];
+    source.text = "Save the original recording.".into();
+    store
+        .db
+        .execute(
+            "INSERT INTO revisions (id,utterance_id,revision,payload) VALUES (?1,?2,2,?3)",
+            params![
+                String::from(source.id.clone()),
+                String::from(id(3)),
+                serde_json::to_string(&source).unwrap()
+            ],
+        )
+        .unwrap();
+    store
+        .db
+        .execute(
+            "UPDATE utterances SET selected_revision=?1 WHERE id=?2",
+            params![String::from(source.id.clone()), String::from(id(3))],
+        )
+        .unwrap();
+    assert!(selected().is_stale(&source.id));
+    assert!(matches!(
+        store.save_manual_translation(edit(original, Some(manual.id.clone()), "旧原文")),
+        Err(Error::RevisionConflict)
+    ));
+    assert!(
+        store
+            .save_machine_translation(&session, &source, "保存原始录音。".into(), model_ref)
+            .unwrap()
+    );
+    assert_eq!(selected().id, manual.id);
+    assert_eq!(selected().text, "请保存录音。");
+    store
+        .save_manual_translation(edit(
+            source.id.clone(),
+            Some(manual.id.clone()),
+            "请保存原始录音。",
+        ))
+        .unwrap();
+    assert!(!selected().is_stale(&source.id));
+    drop(store);
+    let reopened = Transcripts::open(&root.0).unwrap();
+    assert_eq!(
+        translations::selected(&reopened.db, &id(3))
+            .unwrap()
+            .unwrap()
+            .text,
+        "请保存原始录音。"
+    );
+}
+
+#[test]
+fn translation_requires_explicit_approval() {
+    let root = Directory::new();
+    let request = Request::decode(&serde_json::to_vec(&serde_json::json!({
+        "recordings": root.0, "profiles": root.0, "adapters": root.0,
+        "action": {"op": "translate", "model_id": "opus-mt-en-zh-int8", "session_id": id(1), "approved": false}
+    })).unwrap()).unwrap();
+    assert!(matches!(
+        request.run(&|| false, &|| None, |_| {}),
+        Err(Error::Blocked(Block::ApprovalRequired))
+    ));
+    assert!(!root.0.join("models").exists());
+    assert!(!root.0.join("speech-worker.lock").exists());
+}
+
+#[test]
+#[ignore = "requires the pinned model and native adapter from GitHub Actions"]
+fn native_translation_app_flow() {
+    use serde_json::json;
+    use voiceledger_audio::Store;
+
+    let root = Directory::new();
+    let catalog = Catalog::bundled().unwrap();
+    let model = &catalog.models()[2];
+    let session = id(1);
+    let track = id(2);
+    let chunk = id(3);
+    let utterance = id(4);
+    let directory = model_dir(&root.0.join("models"), model);
+    fs::create_dir_all(&directory).unwrap();
+    let weights = PathBuf::from(std::env::var_os("VOICELEDGER_TEST_TRANSLATION_MODEL").unwrap());
+    let adapters =
+        PathBuf::from(std::env::var_os("VOICELEDGER_TEST_TRANSLATION_ADAPTERS").unwrap());
+    for artifact in &model.artifacts {
+        fs::copy(weights.join(&artifact.file), directory.join(&artifact.file)).unwrap();
+    }
+    device_profile::save(
+        &root.0,
+        &serde_json::to_vec(&json!({
+            "id": id(5), "device_id": id(6), "observed_at_unix_ms": 1,
+            "platform":"windows", "os_version":"10.0.26100", "logical_cpu_count":2,
+            "process_memory_bytes":128_000_000, "available_memory_bytes":4_000_000_000_u64,
+            "storage_available_bytes":2_000_000_000_u64, "low_memory":false
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let audio = Store::open(&root.0).unwrap();
+    let send = |value, samples: &[f32]| {
+        audio
+            .execute_json(&serde_json::to_vec(&value).unwrap(), samples)
+            .unwrap();
+    };
+    let end_ns = 20_000_000i64;
+    send(
+        json!({"op":"create_session","id":session,"created_at_ms":1,"clock":"synthetic","clock_origin":0,
+                "tracks":[{"id":track,"source":"mic","endpoint_id":"synthetic"}]}),
+        &[],
+    );
+    send(
+        json!({"op":"begin_stream","track_id":track,"epoch":0,"start_ns":0,"rate":48000,
+                "channels":1,"sample_format":"pcm_f32le","native_format":"synthetic"}),
+        &[],
+    );
+    send(
+        json!({"op":"begin_chunk","id":chunk,"track_id":track,"epoch":0,"start_ns":0,"end_ns":end_ns}),
+        &[],
+    );
+    send(
+        json!({"op":"seal_chunk","id":chunk,"end_ns":end_ns,"packets":[
+                {"start_ns":0,"end_ns":end_ns,"frames":960,"device_position_frames":0,"qpc100ns":0,
+                "flags":0,"estimated_timestamp":false}]}),
+        &[0.25; 960],
+    );
+    send(
+        json!({"op":"session_state","id":session,"state":6,"elapsed_ns":end_ns,"snapshot":{}}),
+        &[],
+    );
+    let store = Transcripts::open(&root.0).unwrap();
+    let range = TimeRange {
+        start_ns: 0i64.try_into().unwrap(),
+        end_ns: end_ns.try_into().unwrap(),
+    };
+    Writer {
+        transcripts: &store,
+        session: &session,
+        model: &catalog.models()[0],
+        language: LanguagePolicy::En,
+        job: None,
+        publish_partial: &mut |_| {},
+        saved: 0,
+    }
+    .finish(Final {
+        id: utterance.clone(),
+        track_id: track,
+        spans: vec![ChunkSpan {
+            chunk_id: chunk,
+            range,
+        }],
+        range,
+        recognition: Recognition {
+            language: Language::En,
+            text: "Save the recording.".into(),
+        },
+    })
+    .unwrap();
+    let request = |action| {
+        let value =
+            json!({"action":action,"recordings":root.0,"profiles":root.0,"adapters":adapters});
+        Request::decode(&serde_json::to_vec(&value).unwrap())
+            .unwrap()
+            .run(&|| false, &|| None, |_| {})
+    };
+    let inspect = || {
+        serde_json::from_slice::<serde_json::Value>(&request(json!({"op":"inspect"})).unwrap())
+            .unwrap()
+    };
+    assert!(inspect()["lines"][0]["translation"].is_null());
+    let translate =
+        json!({"op":"translate","model_id":model.id,"session_id":session,"approved":true});
+    assert_eq!(request(translate.clone()).unwrap(), br#"{"saved":1}"#);
+    let report = inspect();
+    let line = &report["lines"][0];
+    assert_eq!(line["translation"]["authorship"], "machine");
+    assert_eq!(line["translation"]["stale"], false);
+    request(json!({
+        "op":"save_translation", "session_id":session, "utterance_id":utterance,
+        "source_revision_id":line["revision_id"], "expected_translation_id":line["translation"]["revision_id"],
+        "text":"请保存原始录音。"
+    })).unwrap();
+    assert_eq!(request(translate).unwrap(), br#"{"saved":0}"#);
+    assert_eq!(
+        inspect()["lines"][0]["translation"]["text"],
+        "请保存原始录音。"
     );
 }

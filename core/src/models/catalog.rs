@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-use crate::contracts::{Platform, Sha256};
+use crate::contracts::{Language, Platform, Sha256};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -53,6 +53,13 @@ pub struct MemoryEstimate {
     pub source_url: String,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TranslationPair {
+    pub source: Language,
+    pub target: Language,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Model {
@@ -62,6 +69,8 @@ pub struct Model {
     pub mode: Mode,
     pub quantization: String,
     pub languages: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub translation: Option<TranslationPair>,
     pub runtime: Runtime,
     pub license: License,
     pub targets: Vec<Target>,
@@ -92,11 +101,12 @@ impl Model {
             && nonempty(&self.runtime.id)
             && nonempty(&self.runtime.version)
             && https(&self.runtime.source_url)
-            && matches!(self.license.id.as_str(), "MIT" | "LicenseRef-FunASR-Model")
+            && matches!(
+                self.license.id.as_str(),
+                "MIT" | "LicenseRef-FunASR-Model" | "Apache-2.0"
+            )
             && https(&self.license.url)
-            && ["zh", "en", "ja"]
-                .iter()
-                .all(|language| self.languages.iter().any(|supported| supported == language))
+            && self.valid_languages()
             && !self.targets.is_empty()
             && self.targets.iter().all(|target| {
                 nonempty(&target.abi)
@@ -118,6 +128,25 @@ impl Model {
                 .peak_ram_estimate
                 .as_ref()
                 .is_none_or(|estimate| estimate.bytes > 0 && https(&estimate.source_url))
+    }
+
+    fn valid_languages(&self) -> bool {
+        match self.translation {
+            Some(pair) => {
+                self.runtime.id == "ctranslate2"
+                    && pair.source == Language::En
+                    && pair.target == Language::Zh
+                    && self.languages.len() == 2
+                    && self.languages.iter().any(|code| code == pair.source.code())
+                    && self.languages.iter().any(|code| code == pair.target.code())
+            }
+            None => {
+                self.runtime.id != "ctranslate2"
+                    && ["zh", "en", "ja"].iter().all(|language| {
+                        self.languages.iter().any(|supported| supported == language)
+                    })
+            }
+        }
     }
 }
 

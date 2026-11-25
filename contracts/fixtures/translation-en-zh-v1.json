@@ -1,0 +1,14 @@
+[
+  {"scenario": "start", "source": "Start recording after everyone has joined.", "reference": "所有人加入后开始录音。"},
+  {"scenario": "negation", "source": "Do not delete the original recording.", "reference": "不要删除原始录音。"},
+  {"scenario": "measured quantity", "source": "The recording was interrupted for 3 seconds.", "reference": "录音中断了 3 秒。"},
+  {"scenario": "two sources", "source": "We captured the microphone and system audio on separate tracks.", "reference": "我们在不同的轨道上录制了麦克风和系统音频。"},
+  {"scenario": "approval", "source": "We will wait for Mei to approve the new draft.", "reference": "我们会等梅批准新草稿。"},
+  {"scenario": "instruction", "source": "Please move the review from Tuesday to Thursday.", "reference": "请把评审从星期二改到星期四。"},
+  {"scenario": "technical terminology", "source": "The transcript is stored locally in the SQLite database.", "reference": "转录文本保存在本地的 SQLite 数据库中。"},
+  {"scenario": "comparison", "source": "The second test used less power but more memory.", "reference": "第二次测试耗电更少，但占用的内存更多。"},
+  {"scenario": "silence and gaps", "source": "The microphone was connected, but the room was quiet.", "reference": "麦克风已连接，但房间里很安静。"},
+  {"scenario": "number and units", "source": "Set the memory limit to 256 megabytes.", "reference": "把内存上限设为 256 兆字节。"},
+  {"scenario": "technical failure", "source": "The download stopped when the network connection dropped.", "reference": "网络连接断开时，下载停止了。"},
+  {"scenario": "manual edits", "source": "Keep the names that the user has corrected.", "reference": "保留用户已经更正的名字。"}
+]

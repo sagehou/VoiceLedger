@@ -41,6 +41,8 @@ enum Error {
     SpeechIntegrity = -36,
     SpeechBusy = -37,
     SpeechDeferred = -38,
+    SpeechRevisionConflict = -39,
+    SpeechTranslationTextLimit = -40,
 }
 
 #[derive(Default)]

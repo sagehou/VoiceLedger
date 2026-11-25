@@ -11,23 +11,28 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
+import com.voiceledger.app.core.CoreException
 import com.voiceledger.app.core.DeviceProfiler
 import com.voiceledger.app.core.NativeCore
 import com.voiceledger.app.recording.RecordingPhase
@@ -58,6 +63,7 @@ class ModelsActivity : ComponentActivity() {
             var inspection by remember { mutableStateOf<JSONObject?>(null) }
             var unavailable by remember { mutableStateOf(false) }
             var language by remember { mutableStateOf("auto") }
+            var edit by remember { mutableStateOf<JSONObject?>(null) }
             val recording by RecordingStatusStore.state.collectAsState()
             LaunchedEffect(reload) {
                 val loaded = withContext(Dispatchers.IO) {
@@ -110,17 +116,23 @@ class ModelsActivity : ComponentActivity() {
                             }
                             val choices = inspection?.getJSONArray("models")
                             val idle = recording.phase == RecordingPhase.Idle
+                            val hasEnglish = inspection?.optBoolean("has_translation_source") == true
                             for (index in 0 until candidates.length()) {
                                 val details = candidates.getJSONObject(index)
+                                val model = details.getJSONObject("model")
+                                val translation = model.has("translation")
                                 val choice = choices?.optJSONObject(index)
                                 val installed = choice?.optBoolean("installed") == true
                                 val allowed = choice?.isNull("blocked_by") == true && idle && !working
-                                ModelRow(details, choice, allowed && (!installed || sessionId != null)) {
+                                val canProcess = sessionId != null && (!translation || hasEnglish)
+                                ModelRow(details, choice, allowed && (!installed || canProcess)) {
                                     val action = JSONObject()
-                                        .put("model_id", details.getJSONObject("model").getString("id"))
+                                        .put("model_id", model.getString("id"))
                                         .put("approved", true)
                                     if (installed) {
-                                        action.put("op", "transcribe").put("session_id", sessionId).put("language", language)
+                                        action.put("session_id", sessionId)
+                                        if (translation) action.put("op", "translate")
+                                        else action.put("op", "transcribe").put("language", language)
                                     } else {
                                         action.put("op", "install")
                                     }
@@ -133,6 +145,39 @@ class ModelsActivity : ComponentActivity() {
                                 val source = if (line.getString("source") == "mic") R.string.model_mic else R.string.model_loopback
                                 Text(stringResource(R.string.model_line, stringResource(source), line.getLong("start_ns") / 1_000_000_000.0))
                                 Text(line.getString("text"))
+                                val revision = line.optJSONObject("translation")
+                                if (revision != null) {
+                                    val author = stringResource(if (revision.getString("authorship") == "manual")
+                                        R.string.manual_translation else R.string.machine_translation)
+                                    Text(stringResource(if (revision.getBoolean("stale"))
+                                        R.string.translation_stale else R.string.translation_label, author))
+                                    Text(revision.getString("text"))
+                                }
+                                if (sessionId != null && line.getString("language") == "en") {
+                                    Button(enabled = idle && !working, onClick = { edit = line }) {
+                                        Text(stringResource(if (revision == null) R.string.add_translation else R.string.edit_translation))
+                                    }
+                                }
+                            }
+                            edit?.let { line ->
+                                if (sessionId != null) {
+                                    TranslationEditor(line, idle && !working, onDismiss = { edit = null }) { text ->
+                                        val action = JSONObject()
+                                            .put("op", "save_translation")
+                                            .put("session_id", sessionId)
+                                            .put("utterance_id", line.getString("utterance_id"))
+                                            .put("source_revision_id", line.getString("revision_id"))
+                                            .put("expected_translation_id", line.optJSONObject("translation")?.getString("revision_id") ?: JSONObject.NULL)
+                                            .put("text", text)
+                                        saveTranslation(action).also { code ->
+                                            if (code == 0) {
+                                                edit = null
+                                                result = code
+                                                reload++
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -183,12 +228,70 @@ class ModelsActivity : ComponentActivity() {
         reload++
     }
 
+    private suspend fun saveTranslation(action: JSONObject): Int = withContext(Dispatchers.IO) {
+        try {
+            NativeCore.speechRequest(query(action))
+            0
+        } catch (failure: CoreException) {
+            failure.code
+        } catch (_: LinkageError) {
+            -31
+        }
+    }
+
     private fun query(action: JSONObject): String = JSONObject()
         .put("recordings", File(filesDir, "recordings").absolutePath)
         .put("profiles", noBackupFilesDir.absolutePath)
         .put("adapters", applicationInfo.nativeLibraryDir)
         .put("action", action)
         .toString()
+}
+
+@Composable
+private fun TranslationEditor(
+    line: JSONObject,
+    enabled: Boolean,
+    onDismiss: () -> Unit,
+    save: suspend (String) -> Int,
+) {
+    val scope = rememberCoroutineScope()
+    var text by remember(line) { mutableStateOf(line.optJSONObject("translation")?.getString("text").orEmpty()) }
+    var saving by remember(line) { mutableStateOf(false) }
+    var error by remember(line) { mutableStateOf<Int?>(null) }
+    AlertDialog(
+        onDismissRequest = { if (!saving) onDismiss() },
+        title = { Text(stringResource(R.string.edit_translation)) },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { if (it.encodeToByteArray().size <= 8192) text = it },
+                    label = { Text(stringResource(R.string.chinese_translation)) },
+                    readOnly = saving,
+                )
+                error?.let { Text(stringResource(resultText(it))) }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = enabled && !saving && text.isNotBlank(),
+                onClick = {
+                    saving = true
+                    scope.launch {
+                        try {
+                            val code = save(text)
+                            error = code.takeUnless { it == 0 }
+                        } finally { saving = false }
+                    }
+                },
+            ) {
+                Text(stringResource(R.string.save_translation))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !saving) { Text(stringResource(R.string.cancel_speech)) }
+        },
+    )
 }
 
 @Composable
@@ -211,7 +314,11 @@ private fun ModelRow(candidate: JSONObject, choice: JSONObject?, enabled: Boolea
             else stringResource(R.string.model_estimate, estimate.getLong("bytes") / 1048576.0),
         )
         Text(stringResource(R.string.model_status, stringResource(reason(choice?.optString("blocked_by") ?: "unknown"))))
-        val actionLabel = if (choice?.optBoolean("installed") == true) R.string.transcribe_saved else R.string.download_model
+        val actionLabel = when {
+            choice?.optBoolean("installed") != true -> R.string.download_model
+            model.has("translation") -> R.string.translate_saved
+            else -> R.string.transcribe_saved
+        }
         Button(onClick = action, enabled = enabled) { Text(stringResource(actionLabel)) }
     }
 }
@@ -250,6 +357,8 @@ private fun resultText(code: Int): Int = when (code) {
     -36 -> R.string.speech_integrity
     -37 -> R.string.speech_busy
     -38 -> R.string.speech_deferred
+    -39 -> R.string.translation_conflict
+    -40 -> R.string.translation_limit
     else -> R.string.speech_failed
 }
 
