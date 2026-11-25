@@ -3,6 +3,7 @@ import argparse
 from array import array
 import ctypes as c
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 import json
 from pathlib import Path
 import shutil
@@ -114,15 +115,6 @@ class Core:
         data = json.dumps(dict(low_memory=low_memory)).encode()
         assert self.resources(data, len(data)) == 0
 
-    def job_running(self, session):
-        database = self.root / "transcript-v1.sqlite3"
-        if not database.exists():
-            return False
-        with sqlite3.connect(database) as db:
-            if not db.execute("SELECT 1 FROM sqlite_schema WHERE name='speech_jobs'").fetchone():
-                return False
-            return db.execute("SELECT EXISTS(SELECT 1 FROM speech_jobs WHERE session_id=? "
-                              "AND kind='asr' AND state='running')", (session,)).fetchone()[0]
 
 
 def wait_for(check, worker, description):
@@ -147,7 +139,6 @@ def verify(core, samples, executor):
     system = tracks["system_loopback"]
     snapshot = lambda: core.speech("live_transcript", session)
     worker = executor.submit(core.speech, "transcribe_live", session, language="auto", translate=True, approved=True)
-    wait_for(lambda: core.job_running(session), worker, "ASR jobs did not start during recording")
     english, end_en = core.begin_clip(mic, clip(samples, "en"), 0)
     track, identifier, start, end, _ = english[0]
     core.audio("begin_chunk", id=identifier, track_id=track, epoch=0, start_ns=start, end_ns=end)
@@ -183,18 +174,18 @@ def verify(core, samples, executor):
                          language="auto", approved=True)
     assert replay["saved"] == 0
 
-    with sqlite3.connect(core.root / "transcript-v1.sqlite3") as db:
-        sources = db.execute("SELECT json_extract(r.payload,'$.kind'),json_extract(r.payload,'$.language') "
-                             "FROM translation_revisions t JOIN revisions r ON r.id=t.source_revision_id").fetchall()
-    assert sources and all(source == ("final", "en") for source in sources)
-
     pressured, tracks = core.session("mic")
     worker = executor.submit(core.speech, "transcribe_live", pressured, expected=-38,
                              language="auto", translate=False, approved=True)
-    wait_for(lambda: core.job_running(pressured), worker, "ASR jobs did not start before low-memory injection")
+    pcm = clip(samples, "en")
+    initial, through = core.begin_clip(tracks["mic"], pcm, 0)
+    for chunk in initial:
+        core.commit(chunk)
+    before_pressure = wait_for(lambda: core.speech("live_transcript", pressured)["lines"], worker,
+                               "No final from the recording used for the low-memory check")
     core.pressure(True)
     worker.result(timeout=15)
-    remaining, end = core.begin_clip(tracks["mic"], clip(samples, "en"), 0)
+    remaining, end = core.begin_clip(tracks["mic"], pcm, through + 1_000_000_000)
     for chunk in remaining:
         core.commit(chunk)
     core.state(pressured, 5, end)
@@ -202,7 +193,17 @@ def verify(core, samples, executor):
     resumed = core.speech("transcribe", pressured, model_id="whisper-tiny-multilingual-q5-1",
                           language="auto", approved=True)
     assert resumed["saved"] > 0
-    assert all(line["translation"] is None for line in core.speech("live_transcript", pressured)["lines"])
+
+    with closing(sqlite3.connect(core.root / "transcript-v1.sqlite3")) as db:
+        sources = db.execute("SELECT json_extract(r.payload,'$.kind'),json_extract(r.payload,'$.language') "
+                             "FROM translation_revisions t JOIN revisions r ON r.id=t.source_revision_id").fetchall()
+        revisions = db.execute("SELECT selected_revision FROM utterances WHERE session_id=?", (pressured,)).fetchall()
+        translated_when_disabled = db.execute("SELECT COUNT(*) FROM translation_revisions t "
+                                               "JOIN utterances u ON u.id=t.utterance_id WHERE u.session_id=?",
+                                               (pressured,)).fetchone()[0]
+    assert sources and all(source == ("final", "en") for source in sources)
+    assert not translated_when_disabled
+    assert {line["revision_id"] for line in before_pressure} <= {row[0] for row in revisions}
     return {
         "during_capture": [english_line, japanese_line],
         "after_capture": chinese_line,
