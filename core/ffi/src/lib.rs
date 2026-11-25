@@ -15,6 +15,7 @@ mod jni;
 mod model_preview;
 mod speech;
 mod track;
+mod vault;
 
 const MAX_DOMAIN_BATCH_BYTES: usize = 16 * 1024 * 1024;
 
@@ -43,6 +44,7 @@ enum Error {
     SpeechDeferred = -38,
     SpeechRevisionConflict = -39,
     SpeechTranslationTextLimit = -40,
+    VaultRejected = -50,
 }
 
 #[derive(Default)]

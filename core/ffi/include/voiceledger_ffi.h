@@ -128,6 +128,12 @@ int32_t vl_speech_request_v1(const uint8_t *request, uint32_t length, vl_audio_b
 int32_t vl_speech_partial_v1(vl_audio_buffer_v1 *result);
 void vl_speech_cancel_v1(void);
 int32_t vl_speech_resources_v1(const uint8_t *sample, uint32_t length);
+/* Operation 1 creates the recovery code, 2 seals, and 3 opens for a 16-byte expected object ID.
+ * The caller owns and clears input and output buffers. Buffers must not overlap.
+ * Success returns the number of bytes written. Authentication failures return -50. */
+int32_t vl_vault_request_v1(int32_t operation, const uint8_t *recovery, uint32_t recovery_length,
+    const uint8_t *object_id, uint32_t object_id_length, const uint8_t *data, uint32_t length,
+    uint8_t *output, uint32_t capacity);
 
 /* Supply -1 for an unknown memory value. Memory values are measured in bytes. */
 int32_t vl_recommend_v1(int32_t compatibility, int64_t budget_bytes, int64_t peak_bytes);
