@@ -69,6 +69,84 @@
         }
       ],
       "peak_ram_estimate": null
+    },
+    {
+      "id": "opus-mt-en-zh-int8",
+      "name": "OPUS-MT English to Simplified Chinese",
+      "version": "d45e5f86313be8e29629dda5f01ec98eba26e947",
+      "mode": "lightweight",
+      "quantization": "INT8",
+      "languages": [
+        "en",
+        "zh"
+      ],
+      "translation": {
+        "source": "en",
+        "target": "zh"
+      },
+      "runtime": {
+        "id": "ctranslate2",
+        "version": "4.7.1",
+        "source_url": "https://github.com/OpenNMT/CTranslate2/tree/226c95d94e660c48b11c62e108886b7ef76d589d"
+      },
+      "license": {
+        "id": "Apache-2.0",
+        "url": "https://huggingface.co/manancode/opus-mt-en-zh-ctranslate2-android/blob/d45e5f86313be8e29629dda5f01ec98eba26e947/README.md"
+      },
+      "targets": [
+        {
+          "platform": "windows",
+          "abi": "x86_64",
+          "min_os": 10,
+          "cpu_features": [
+            "sse41"
+          ]
+        },
+        {
+          "platform": "android",
+          "abi": "arm64-v8a",
+          "min_os": 26,
+          "cpu_features": [
+            "neon"
+          ]
+        }
+      ],
+      "artifacts": [
+        {
+          "file": "model.bin",
+          "url": "https://huggingface.co/manancode/opus-mt-en-zh-ctranslate2-android/resolve/d45e5f86313be8e29629dda5f01ec98eba26e947/model.bin",
+          "size_bytes": 79567635,
+          "sha256": "327584c20bb83c7e89d595bcfa30b6ef3771c10816f707e892c4bbb1f808a8fb"
+        },
+        {
+          "file": "config.json",
+          "url": "https://huggingface.co/manancode/opus-mt-en-zh-ctranslate2-android/resolve/d45e5f86313be8e29629dda5f01ec98eba26e947/config.json",
+          "size_bytes": 223,
+          "sha256": "8f6496adfc930cbfecbe8281112197705c488fab47d34b4829b06d7f478909af"
+        },
+        {
+          "file": "shared_vocabulary.json",
+          "url": "https://huggingface.co/manancode/opus-mt-en-zh-ctranslate2-android/resolve/d45e5f86313be8e29629dda5f01ec98eba26e947/shared_vocabulary.json",
+          "size_bytes": 1303887,
+          "sha256": "37314a6abb25ed8f8497498aeeb31fcea98de892bf00ff7c2e8c966b26fe0b82"
+        },
+        {
+          "file": "source.spm",
+          "url": "https://huggingface.co/manancode/opus-mt-en-zh-ctranslate2-android/resolve/d45e5f86313be8e29629dda5f01ec98eba26e947/source.spm",
+          "size_bytes": 806435,
+          "sha256": "5775ddc9e3ff2fae91554da56468ad35ff56edaba870fea74447bc7234bfdaa8"
+        },
+        {
+          "file": "target.spm",
+          "url": "https://huggingface.co/manancode/opus-mt-en-zh-ctranslate2-android/resolve/d45e5f86313be8e29629dda5f01ec98eba26e947/target.spm",
+          "size_bytes": 804600,
+          "sha256": "81dc94efa84e4025ef38d25d5d07429fe41e3eb29d44003f1db6fe98487b0052"
+        }
+      ],
+      "peak_ram_estimate": {
+        "bytes": 402653184,
+        "source_url": "https://github.com/sagehou/VoiceLedger/actions/runs/45363849951"
+      }
     }
   ]
 }
