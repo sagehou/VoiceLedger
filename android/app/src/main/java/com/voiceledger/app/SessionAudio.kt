@@ -91,7 +91,7 @@ internal fun SessionAudio(
             }
         }
     }
-    if (trackId == null || track == null) return
+    if (trackId == null) return
     rows?.let { timelineRows ->
         LazyColumn(Modifier.heightIn(max = 180.dp)) {
             items(timelineRows.length()) { index ->
@@ -130,7 +130,6 @@ internal fun SessionAudio(
 @StringRes
 private fun trackLabel(source: String): Int = if (source == "mic") R.string.model_mic else R.string.model_loopback
 
-@StringRes
 internal suspend fun playSavedTrack(start: Long, read: (Long) -> ByteArray): Int = withContext(Dispatchers.IO) {
     var player: AudioTrack? = null
     try {
