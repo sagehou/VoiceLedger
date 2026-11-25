@@ -91,6 +91,8 @@ jobs:
       - name: Build for Android arm64 at API 26
         run: |
           export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang"
+          export CC_aarch64_linux_android="$CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER"
+          export AR_aarch64_linux_android="${CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER%/*}/llvm-ar"
           cargo build --workspace --release --locked --target aarch64-linux-android
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
