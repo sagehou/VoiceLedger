@@ -65,6 +65,7 @@ class MainActivity : ComponentActivity() {
                             { RecordingService.stop(this@MainActivity) },
                             { startActivity(Intent(this@MainActivity, ModelsActivity::class.java)) },
                             { startActivity(Intent(this@MainActivity, ModelsActivity::class.java).putExtra("sessions", true)) },
+                            { startActivity(Intent(this@MainActivity, SyncPrivacyActivity::class.java)) },
                         )
                     }
                 }
@@ -122,6 +123,7 @@ private fun RecordingScreen(
     stop: () -> Unit,
     openModels: () -> Unit,
     openSessions: () -> Unit,
+    openSyncPrivacy: () -> Unit,
 ) {
     val recording = status.phase == RecordingPhase.Preparing || status.phase == RecordingPhase.Recording
     Column(
@@ -169,6 +171,7 @@ private fun RecordingScreen(
         }
         Button(onClick = openSessions) { Text(stringResource(R.string.sessions)) }
         Button(onClick = openModels) { Text(stringResource(R.string.models)) }
+        Button(onClick = openSyncPrivacy) { Text(stringResource(R.string.sync_privacy)) }
     }
 }
 

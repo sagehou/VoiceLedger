@@ -52,6 +52,7 @@
       <Button Content="Stop recording" Padding="12,6" Margin="0,0,8,6" IsEnabled="{Binding CanStop}" Click="StopRecording" />
       <Button Content="Sessions" Padding="12,6" Margin="0,0,8,6" IsEnabled="{Binding CanSelect}" Click="OpenSessions" />
       <Button Content="Models" Padding="12,6" Margin="0,0,8,6" IsEnabled="{Binding CanSelect}" Click="OpenModels" />
+      <Button Content="Sync &amp; privacy" Padding="12,6" Margin="0,0,8,6" Click="OpenSyncPrivacy" />
     </WrapPanel>
 
     <ScrollViewer Grid.Row="3" VerticalScrollBarVisibility="Auto">
