@@ -118,8 +118,8 @@ impl Transcripts {
         model: ModelRef,
     ) -> Result<bool> {
         let tx = Transaction::new_unchecked(&self.db, TransactionBehavior::Immediate)?;
-        if !selected_source(&tx, session, &source.utterance_id)?
-            .is_some_and(|selected| selected.id == source.id)
+        if selected_source(&tx, session, &source.utterance_id)?
+            .is_none_or(|selected| selected.id != source.id)
         {
             return Err(Error::RevisionConflict);
         }

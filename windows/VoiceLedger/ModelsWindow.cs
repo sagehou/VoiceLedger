@@ -126,7 +126,7 @@ internal sealed class ModelsWindow : Window
                 string source = Read(line, "source") == "mic" ? "Microphone" : "System loopback";
                 AddLine($"{source} · {line.GetProperty("start_ns").GetInt64() / 1_000_000_000.0:F1}s", bold: true);
                 AddLine(Read(line, "text"));
-                if (sessionId is not null && Read(line, "language") == "en")
+                if (sessionId is not null)
                     ShowTranslation(sessionId, line);
             }
         }
@@ -150,6 +150,7 @@ internal sealed class ModelsWindow : Window
             AddLine($"Simplified Chinese · {author}{stale}", bold: true);
             AddLine(initial);
         }
+        if (Read(line, "language") != "en") return;
         string utteranceId = Read(line, "utterance_id");
         string sourceRevision = Read(line, "revision_id");
         string? expected = exists ? Read(revision, "revision_id") : null;
@@ -194,6 +195,10 @@ internal sealed class ModelsWindow : Window
             int result = 0;
             try { await Task.Run(() => NativeCore.SpeechRequest(request)); }
             catch (CoreException failure) { result = failure.Code; }
+            catch (Exception failure) when (failure is TypeInitializationException or EntryPointNotFoundException)
+            {
+                result = -31;
+            }
             finally
             {
                 working = false;

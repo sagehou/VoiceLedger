@@ -49,6 +49,11 @@ jobs:
           sudo unshare --net --setgid="$(id -g)" --setuid="$(id -u)" -- "$(command -v python3)" \
             ../scripts/check_translation.py "$model" --library artifacts/speech/libvoiceledger_translation.so \
             --report artifacts/translation.json --offline
+          cargo test --workspace --locked --no-run --message-format=json > "$RUNNER_TEMP/voiceledger-test-binaries.jsonl"
+          test_binary="$(python3 -c 'import json, sys; print(next(item["executable"] for line in sys.stdin if (item := json.loads(line)).get("executable") and item["target"]["name"] == "voiceledger_speech"))' < "$RUNNER_TEMP/voiceledger-test-binaries.jsonl")"
+          sudo unshare --net --setgid="$(id -g)" --setuid="$(id -u)" -- env \
+            VOICELEDGER_TEST_TRANSLATION_MODEL="$model" VOICELEDGER_TEST_TRANSLATION_ADAPTERS="$PWD/artifacts/speech" \
+            "$test_binary" --exact tests::native_translation_app_flow --ignored --nocapture
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: voiceledger-ffi-linux-x64

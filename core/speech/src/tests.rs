@@ -409,3 +409,126 @@ fn translation_requires_explicit_approval() {
     assert!(!root.0.join("models").exists());
     assert!(!root.0.join("speech-worker.lock").exists());
 }
+
+#[test]
+#[ignore = "requires the pinned model and native adapter from GitHub Actions"]
+fn native_translation_app_flow() {
+    use serde_json::json;
+    use voiceledger_audio::Store;
+
+    let root = Directory::new();
+    let catalog = Catalog::bundled().unwrap();
+    let model = &catalog.models()[2];
+    let session = id(1);
+    let track = id(2);
+    let chunk = id(3);
+    let utterance = id(4);
+    let directory = model_dir(&root.0.join("models"), model);
+    fs::create_dir_all(&directory).unwrap();
+    let weights = PathBuf::from(std::env::var_os("VOICELEDGER_TEST_TRANSLATION_MODEL").unwrap());
+    let adapters =
+        PathBuf::from(std::env::var_os("VOICELEDGER_TEST_TRANSLATION_ADAPTERS").unwrap());
+    for artifact in &model.artifacts {
+        fs::copy(weights.join(&artifact.file), directory.join(&artifact.file)).unwrap();
+    }
+    device_profile::save(
+        &root.0,
+        &serde_json::to_vec(&json!({
+            "id": id(5), "device_id": id(6), "observed_at_unix_ms": 1,
+            "platform":"windows", "os_version":"10.0.26100", "logical_cpu_count":2,
+            "process_memory_bytes":128_000_000, "available_memory_bytes":4_000_000_000_u64,
+            "storage_available_bytes":2_000_000_000_u64, "low_memory":false
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let audio = Store::open(&root.0).unwrap();
+    let send = |value, samples: &[f32]| {
+        audio
+            .execute_json(&serde_json::to_vec(&value).unwrap(), samples)
+            .unwrap();
+    };
+    let end_ns = 20_000_000i64;
+    send(
+        json!({"op":"create_session","id":session,"created_at_ms":1,"clock":"synthetic","clock_origin":0,
+                "tracks":[{"id":track,"source":"mic","endpoint_id":"synthetic"}]}),
+        &[],
+    );
+    send(
+        json!({"op":"begin_stream","track_id":track,"epoch":0,"start_ns":0,"rate":48000,
+                "channels":1,"sample_format":"pcm_f32le","native_format":"synthetic"}),
+        &[],
+    );
+    send(
+        json!({"op":"begin_chunk","id":chunk,"track_id":track,"epoch":0,"start_ns":0,"end_ns":end_ns}),
+        &[],
+    );
+    send(
+        json!({"op":"seal_chunk","id":chunk,"end_ns":end_ns,"packets":[
+                {"start_ns":0,"end_ns":end_ns,"frames":960,"device_position_frames":0,"qpc100ns":0,
+                "flags":0,"estimated_timestamp":false}]}),
+        &[0.25; 960],
+    );
+    send(
+        json!({"op":"session_state","id":session,"state":6,"elapsed_ns":end_ns,"snapshot":{}}),
+        &[],
+    );
+    let store = Transcripts::open(&root.0).unwrap();
+    let range = TimeRange {
+        start_ns: 0i64.try_into().unwrap(),
+        end_ns: end_ns.try_into().unwrap(),
+    };
+    Writer {
+        transcripts: &store,
+        session: &session,
+        model: &catalog.models()[0],
+        language: LanguagePolicy::En,
+        job: None,
+        publish_partial: &mut |_| {},
+        saved: 0,
+    }
+    .finish(Final {
+        id: utterance.clone(),
+        track_id: track,
+        spans: vec![ChunkSpan {
+            chunk_id: chunk,
+            range,
+        }],
+        range,
+        recognition: Recognition {
+            language: Language::En,
+            text: "Save the recording.".into(),
+        },
+    })
+    .unwrap();
+    let request = |action| {
+        let value =
+            json!({"action":action,"recordings":root.0,"profiles":root.0,"adapters":adapters});
+        Request::decode(&serde_json::to_vec(&value).unwrap())
+            .unwrap()
+            .run(&|| false, &|| None, |_| {})
+    };
+    let inspect = || {
+        serde_json::from_slice::<serde_json::Value>(&request(json!({"op":"inspect"})).unwrap())
+            .unwrap()
+    };
+    assert!(inspect()["lines"][0]["translation"].is_null());
+    let translate =
+        json!({"op":"translate","model_id":model.id,"session_id":session,"approved":true});
+    assert_eq!(request(translate.clone()).unwrap(), br#"{"saved":1}"#);
+    let report = inspect();
+    let line = &report["lines"][0];
+    assert_eq!(line["translation"]["authorship"], "machine");
+    assert_eq!(line["translation"]["stale"], false);
+    request(json!({
+        "op":"save_translation", "session_id":session, "utterance_id":utterance,
+        "source_revision_id":line["revision_id"], "expected_translation_id":line["translation"]["revision_id"],
+        "text":"请保存原始录音。"
+    })).unwrap();
+    assert_eq!(request(translate).unwrap(), br#"{"saved":0}"#);
+    assert_eq!(
+        inspect()["lines"][0]["translation"]["text"],
+        "请保存原始录音。"
+    );
+}

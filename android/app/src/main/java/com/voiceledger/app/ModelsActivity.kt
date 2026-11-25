@@ -26,11 +26,13 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
+import com.voiceledger.app.core.CoreException
 import com.voiceledger.app.core.DeviceProfiler
 import com.voiceledger.app.core.NativeCore
 import com.voiceledger.app.recording.RecordingPhase
@@ -159,15 +161,21 @@ class ModelsActivity : ComponentActivity() {
                             }
                             edit?.let { line ->
                                 if (sessionId != null) {
-                                    TranslationEditor(line, onDismiss = { edit = null }) { text ->
-                                        edit = null
-                                        startRequest(JSONObject()
+                                    TranslationEditor(line, idle && !working, onDismiss = { edit = null }) { text ->
+                                        val action = JSONObject()
                                             .put("op", "save_translation")
                                             .put("session_id", sessionId)
                                             .put("utterance_id", line.getString("utterance_id"))
                                             .put("source_revision_id", line.getString("revision_id"))
                                             .put("expected_translation_id", line.optJSONObject("translation")?.getString("revision_id") ?: JSONObject.NULL)
-                                            .put("text", text))
+                                            .put("text", text)
+                                        saveTranslation(action).also { code ->
+                                            if (code == 0) {
+                                                edit = null
+                                                result = code
+                                                reload++
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -220,6 +228,17 @@ class ModelsActivity : ComponentActivity() {
         reload++
     }
 
+    private suspend fun saveTranslation(action: JSONObject): Int = withContext(Dispatchers.IO) {
+        try {
+            NativeCore.speechRequest(query(action))
+            0
+        } catch (failure: CoreException) {
+            failure.code
+        } catch (_: LinkageError) {
+            -31
+        }
+    }
+
     private fun query(action: JSONObject): String = JSONObject()
         .put("recordings", File(filesDir, "recordings").absolutePath)
         .put("profiles", noBackupFilesDir.absolutePath)
@@ -229,24 +248,49 @@ class ModelsActivity : ComponentActivity() {
 }
 
 @Composable
-private fun TranslationEditor(line: JSONObject, onDismiss: () -> Unit, save: (String) -> Unit) {
+private fun TranslationEditor(
+    line: JSONObject,
+    enabled: Boolean,
+    onDismiss: () -> Unit,
+    save: suspend (String) -> Int,
+) {
+    val scope = rememberCoroutineScope()
     var text by remember(line) { mutableStateOf(line.optJSONObject("translation")?.getString("text").orEmpty()) }
+    var saving by remember(line) { mutableStateOf(false) }
+    var error by remember(line) { mutableStateOf<Int?>(null) }
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { if (!saving) onDismiss() },
         title = { Text(stringResource(R.string.edit_translation)) },
         text = {
-            OutlinedTextField(
-                value = text,
-                onValueChange = { if (it.encodeToByteArray().size <= 8192) text = it },
-                label = { Text(stringResource(R.string.chinese_translation)) },
-            )
+            Column {
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { if (it.encodeToByteArray().size <= 8192) text = it },
+                    label = { Text(stringResource(R.string.chinese_translation)) },
+                    readOnly = saving,
+                )
+                error?.let { Text(stringResource(resultText(it))) }
+            }
         },
         confirmButton = {
-            TextButton(onClick = { save(text) }, enabled = text.isNotBlank()) {
+            TextButton(
+                enabled = enabled && !saving && text.isNotBlank(),
+                onClick = {
+                    saving = true
+                    scope.launch {
+                        try {
+                            val code = save(text)
+                            error = code.takeUnless { it == 0 }
+                        } finally { saving = false }
+                    }
+                },
+            ) {
                 Text(stringResource(R.string.save_translation))
             }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.cancel_speech)) } },
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !saving) { Text(stringResource(R.string.cancel_speech)) }
+        },
     )
 }
 
