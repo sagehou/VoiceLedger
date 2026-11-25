@@ -20,6 +20,17 @@
     <string name="model_compatibility_unknown">Compatibility unconfirmed</string>
     <string name="download_model">Download and verify</string>
     <string name="transcribe_saved">Transcribe latest saved session</string>
+    <string name="translate_saved">Translate English transcript</string>
+    <string name="add_translation">Add Chinese translation</string>
+    <string name="edit_translation">Edit translation</string>
+    <string name="save_translation">Save translation</string>
+    <string name="chinese_translation">Simplified Chinese translation</string>
+    <string name="translation_label">Simplified Chinese · %1$s</string>
+    <string name="translation_stale">Simplified Chinese · %1$s · Outdated source</string>
+    <string name="manual_translation">Manual</string>
+    <string name="machine_translation">Machine</string>
+    <string name="translation_conflict">The source or translation changed. Reopen the editor with the current revision.</string>
+    <string name="translation_limit">Some lines exceeded the translation length limit. Completed translations were saved.</string>
     <string name="cancel_speech">Cancel</string>
     <string name="speech_working">Processing local speech task…</string>
     <string name="speech_complete">Local speech task complete.</string>
@@ -30,7 +41,7 @@
     <string name="speech_transfer">Download interrupted. Retry to resume.</string>
     <string name="speech_integrity">Model checksum failed.</string>
     <string name="speech_busy">Another local speech task is running.</string>
-    <string name="speech_deferred">Transcription paused. Resume from saved progress.</string>
+    <string name="speech_deferred">Local task paused. Resume from saved progress.</string>
     <string name="speech_interrupted">Transcription was interrupted. Resume from saved progress.</string>
     <string name="speech_retry">The speech worker failed. Saved progress can be retried.</string>
     <string name="speech_failed">Local speech task stopped.</string>

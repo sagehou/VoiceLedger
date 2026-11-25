@@ -172,13 +172,14 @@ pub fn adapter_path(runtime: &str, native: &Path) -> Option<PathBuf> {
     let basename = match runtime {
         "whisper.cpp" => "voiceledger_whisper",
         "sherpa-onnx" => "voiceledger_sensevoice",
+        "ctranslate2" => "voiceledger_translation",
         _ => return None,
     };
     Some(native.join(libloading::library_filename(basename)))
 }
 
 #[cfg(windows)]
-fn load_library(path: &Path) -> std::result::Result<Library, libloading::Error> {
+pub(crate) fn load_library(path: &Path) -> std::result::Result<Library, libloading::Error> {
     use libloading::os::windows::{
         LOAD_LIBRARY_SEARCH_DEFAULT_DIRS, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR,
         Library as WindowsLibrary,
@@ -193,11 +194,11 @@ fn load_library(path: &Path) -> std::result::Result<Library, libloading::Error> 
 }
 
 #[cfg(not(windows))]
-fn load_library(path: &Path) -> std::result::Result<Library, libloading::Error> {
+pub(crate) fn load_library(path: &Path) -> std::result::Result<Library, libloading::Error> {
     unsafe { Library::new(path) }
 }
 
-fn c_path(path: &Path) -> Result<CString> {
+pub(crate) fn c_path(path: &Path) -> Result<CString> {
     CString::new(path.to_str().ok_or(Error::Invalid)?).map_err(|_| Error::Invalid)
 }
 

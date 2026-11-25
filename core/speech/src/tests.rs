@@ -2,7 +2,9 @@ use std::fs;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use rusqlite::Connection;
-use voiceledger_core::contracts::{ChunkSpan, Language, TimeRange, UtteranceRevision};
+use voiceledger_core::contracts::{
+    Authorship, ChunkSpan, Language, TimeRange, UtteranceKind, UtteranceRevision,
+};
 
 use super::*;
 use crate::jobs::{Cursor, Outcome};
@@ -221,6 +223,7 @@ fn migration_preserves_the_version_one_transcript_database() {
         let db = Connection::open(&path).unwrap();
         db.execute_batch(
             "CREATE TABLE utterances(id TEXT PRIMARY KEY);
+             CREATE TABLE revisions(id TEXT PRIMARY KEY);
              INSERT INTO utterances VALUES ('synthetic');
              PRAGMA user_version=1;",
         )
@@ -242,6 +245,167 @@ fn migration_preserves_the_version_one_transcript_database() {
             .0
             .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
             .unwrap(),
-        2
+        3
     );
+}
+
+#[test]
+fn translation_versions_keep_manual_edits_and_bind_to_the_selected_source() {
+    use rusqlite::params;
+
+    let root = Directory::new();
+    let catalog = Catalog::bundled().unwrap();
+    let model = &catalog.models()[0];
+    let translator = &catalog.models()[2];
+    let session = id(1);
+    let track = id(2);
+    let range = TimeRange {
+        start_ns: 0_i64.try_into().unwrap(),
+        end_ns: 40_i64.try_into().unwrap(),
+    };
+    let store = Transcripts::open(&root.0).unwrap();
+    let mut writer = Writer {
+        transcripts: &store,
+        session: &session,
+        model,
+        language: LanguagePolicy::En,
+        job: None,
+        publish_partial: &mut |_| {},
+        saved: 0,
+    };
+    writer
+        .finish(Final {
+            id: id(3),
+            track_id: track,
+            spans: vec![ChunkSpan {
+                chunk_id: id(4),
+                range,
+            }],
+            range,
+            recognition: Recognition {
+                language: Language::En,
+                text: "Save the recording.".into(),
+            },
+        })
+        .unwrap();
+    let mut source = store
+        .translation_sources(&session, "")
+        .unwrap()
+        .pop()
+        .unwrap();
+    let model_ref = ModelRef {
+        model_id: translator.id.clone(),
+        model_version: translator.version.clone(),
+        runtime_version: translator.runtime.version.clone(),
+        sha256: translator.artifacts[0].sha256.clone(),
+    };
+    assert!(
+        store
+            .save_machine_translation(&session, &source, "保存录音。".into(), model_ref.clone())
+            .unwrap()
+    );
+    assert!(
+        !store
+            .save_machine_translation(&session, &source, "保存录音。".into(), model_ref.clone())
+            .unwrap()
+    );
+    let selected = || translations::selected(&store.db, &id(3)).unwrap().unwrap();
+    let machine = selected();
+    assert_eq!(machine.source_revision_id, source.id);
+    assert_eq!(machine.authorship, Authorship::Machine);
+    assert_eq!(
+        machine.model.unwrap().sha256,
+        translator.artifacts[0].sha256
+    );
+    let edit = |source_revision_id, expected_translation_id, text: &str| translations::ManualEdit {
+        session_id: session.clone(),
+        utterance_id: id(3),
+        source_revision_id,
+        expected_translation_id,
+        text: text.into(),
+    };
+    store
+        .save_manual_translation(edit(
+            source.id.clone(),
+            Some(machine.id.clone()),
+            "请保存录音。",
+        ))
+        .unwrap();
+    let manual = selected();
+    assert_eq!(manual.parent_revision_ids, vec![machine.id]);
+    assert_eq!(manual.translation_id, machine.translation_id);
+    assert_eq!(manual.authorship, Authorship::Manual);
+    assert!(matches!(
+        store.save_manual_translation(edit(source.id.clone(), None, "旧编辑")),
+        Err(Error::RevisionConflict)
+    ));
+
+    let original = std::mem::replace(&mut source.id, id(5));
+    source.revision = 2.try_into().unwrap();
+    source.kind = UtteranceKind::Manual;
+    source.model = None;
+    source.parent_revision_ids = vec![original.clone()];
+    source.text = "Save the original recording.".into();
+    store
+        .db
+        .execute(
+            "INSERT INTO revisions (id,utterance_id,revision,payload) VALUES (?1,?2,2,?3)",
+            params![
+                String::from(source.id.clone()),
+                String::from(id(3)),
+                serde_json::to_string(&source).unwrap()
+            ],
+        )
+        .unwrap();
+    store
+        .db
+        .execute(
+            "UPDATE utterances SET selected_revision=?1 WHERE id=?2",
+            params![String::from(source.id.clone()), String::from(id(3))],
+        )
+        .unwrap();
+    assert!(selected().is_stale(&source.id));
+    assert!(matches!(
+        store.save_manual_translation(edit(original, Some(manual.id.clone()), "旧原文")),
+        Err(Error::RevisionConflict)
+    ));
+    assert!(
+        store
+            .save_machine_translation(&session, &source, "保存原始录音。".into(), model_ref)
+            .unwrap()
+    );
+    assert_eq!(selected().id, manual.id);
+    assert_eq!(selected().text, "请保存录音。");
+    store
+        .save_manual_translation(edit(
+            source.id.clone(),
+            Some(manual.id.clone()),
+            "请保存原始录音。",
+        ))
+        .unwrap();
+    assert!(!selected().is_stale(&source.id));
+    drop(store);
+    let reopened = Transcripts::open(&root.0).unwrap();
+    assert_eq!(
+        translations::selected(&reopened.db, &id(3))
+            .unwrap()
+            .unwrap()
+            .text,
+        "请保存原始录音。"
+    );
+}
+
+#[test]
+fn translation_requires_explicit_approval() {
+    let root = Directory::new();
+    let request = Request::decode(&serde_json::to_vec(&serde_json::json!({
+        "recordings": root.0, "profiles": root.0, "adapters": root.0,
+        "action": {"op": "translate", "model_id": "opus-mt-en-zh-int8", "session_id": id(1), "approved": false}
+    })).unwrap()).unwrap();
+    assert!(matches!(
+        request.run(&|| false, &|| None, |_| {}),
+        Err(Error::Blocked(Block::ApprovalRequired))
+    ));
+    assert!(!root.0.join("models").exists());
+    assert!(!root.0.join("speech-worker.lock").exists());
 }

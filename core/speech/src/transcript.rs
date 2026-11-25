@@ -3,15 +3,16 @@ use std::num::NonZeroU32;
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 use serde::Serialize;
 use voiceledger_core::contracts::{
-    Count, LanguagePolicy, ModelRef, StableId, UtteranceKind, UtteranceRevision,
+    Count, Language, LanguagePolicy, ModelRef, StableId, UtteranceKind, UtteranceRevision,
 };
 use voiceledger_core::models::Model;
 
 use crate::jobs::{self, Queue};
 use crate::pipeline::{Final, Output, Partial};
+use crate::translations::{self, TranslationLine};
 use crate::{Error, Result};
 
 const PATH: &str = "transcript-v1.sqlite3";
@@ -36,28 +37,32 @@ CREATE TABLE IF NOT EXISTS revisions (
 ) STRICT;";
 
 pub(crate) struct Transcripts {
-    db: Connection,
+    pub(crate) db: Connection,
 }
 
 impl Transcripts {
     pub fn open(root: &Path) -> Result<Self> {
-        let db = Connection::open(root.join(PATH))?;
+        let mut db = Connection::open(root.join(PATH))?;
         db.busy_timeout(Duration::from_millis(500))?;
         db.execute_batch(
             "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;",
         )?;
-        let version: i64 = db.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        if matches!(version, 0 | 1) {
-            let tx = db.unchecked_transaction()?;
-            if version == 0 {
-                tx.execute_batch(SCHEMA)?;
-            }
-            tx.execute_batch(jobs::SCHEMA)?;
-            tx.execute_batch("PRAGMA user_version=2;")?;
-            tx.commit()?;
-        } else if version != 2 {
+        let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let version: i64 = tx.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        if !(0..=3).contains(&version) {
             return Err(Error::Storage);
         }
+        if version == 0 {
+            tx.execute_batch(SCHEMA)?;
+        }
+        if version < 2 {
+            tx.execute_batch(jobs::SCHEMA)?;
+        }
+        if version < 3 {
+            tx.execute_batch(translations::SCHEMA)?;
+            tx.execute_batch("PRAGMA user_version=3;")?;
+        }
+        tx.commit()?;
         Ok(Self { db })
     }
 
@@ -207,7 +212,11 @@ impl Output for Writer<'_> {
 pub struct Line {
     pub source: String,
     pub start_ns: u64,
+    pub utterance_id: StableId,
+    pub revision_id: StableId,
+    pub language: Language,
     pub text: String,
+    pub translation: Option<TranslationLine>,
 }
 
 pub fn selected(root: &Path, session: &StableId) -> Result<Vec<Line>> {
@@ -218,6 +227,7 @@ pub fn selected(root: &Path, session: &StableId) -> Result<Vec<Line>> {
     }
     let db = Connection::open_with_flags(root.join(PATH), OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     db.busy_timeout(Duration::from_millis(150))?;
+    let version: i64 = db.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     // Track labels come from the recording manifest, which stays read-only here.
     let manifest = root.join("manifest.sqlite3");
     let audio = Connection::open_with_flags(manifest, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
@@ -240,10 +250,19 @@ pub fn selected(root: &Path, session: &StableId) -> Result<Vec<Line>> {
         let (track, start_ns, payload) = row?;
         let source = labels.query_row(params![track, session], |row| row.get(0))?;
         let value: UtteranceRevision = serde_json::from_str(&payload)?;
+        let translation = if version >= 3 {
+            translations::display(&db, &value)?
+        } else {
+            None
+        };
         lines.push(Line {
             source,
             start_ns: u64::try_from(start_ns).map_err(|_| Error::Storage)?,
+            utterance_id: value.utterance_id,
+            revision_id: value.id,
+            language: value.language,
             text: value.text,
+            translation,
         });
     }
     Ok(lines)
@@ -266,7 +285,24 @@ pub(crate) fn job_status(
     Queue(&db).status(session, worker_active)
 }
 
-fn timestamp() -> Result<Count> {
+pub(crate) fn has_translation_source(root: &Path, session: &StableId) -> Result<bool> {
+    if !root.join(PATH).try_exists()? {
+        return Ok(false);
+    }
+    let db = Connection::open_with_flags(root.join(PATH), OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    db.busy_timeout(Duration::from_millis(150))?;
+    Ok(db.query_row(
+        "SELECT EXISTS (
+            SELECT 1 FROM utterances u JOIN revisions r ON r.id=u.selected_revision
+            WHERE u.session_id=?1 AND json_extract(r.payload,'$.language')='en'
+                AND json_extract(r.payload,'$.kind') IN ('final','manual')
+         )",
+        [String::from(session.clone())],
+        |row| row.get(0),
+    )?)
+}
+
+pub(crate) fn timestamp() -> Result<Count> {
     let ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|_| Error::Invalid)?

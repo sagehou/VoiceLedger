@@ -3,6 +3,8 @@ mod jobs;
 mod pipeline;
 mod transcript;
 mod transfer;
+mod translation_engine;
+mod translations;
 
 #[cfg(test)]
 mod tests;
@@ -14,10 +16,13 @@ use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use voiceledger_audio::{CommittedReader, FinishedSession};
-use voiceledger_core::contracts::{Count, DeviceCapabilityProfile, LanguagePolicy, StableId};
+use voiceledger_core::contracts::{
+    Count, DeviceCapabilityProfile, Language, LanguagePolicy, ModelRef, StableId,
+};
 use voiceledger_core::device_profile;
 use voiceledger_core::models::{
-    Activity, Block, Catalog, InstallError, InstallRequest, Model, RuntimeIdentity, check_candidate,
+    Activity, Block, Catalog, InstallError, InstallRequest, Model, RuntimeIdentity,
+    check_candidate, current_memory_budget,
 };
 use voiceledger_core::scheduler::{Governor, Heat, JobKind, Observation, Reason, ResourceSample};
 
@@ -25,6 +30,7 @@ use crate::engine::{Adapter, adapter_path};
 pub use crate::pipeline::Partial;
 use crate::pipeline::{Processing, Segmenter};
 use crate::transcript::{Transcripts, Writer};
+use crate::translation_engine::TranslationAdapter;
 
 #[derive(Debug)]
 pub enum Error {
@@ -38,6 +44,8 @@ pub enum Error {
     Transfer,
     Integrity,
     Busy,
+    RevisionConflict,
+    TranslationTextLimit,
     Deferred(Reason),
 }
 
@@ -110,6 +118,12 @@ enum Action {
         language: LanguagePolicy,
         approved: bool,
     },
+    Translate {
+        model_id: String,
+        session_id: StableId,
+        approved: bool,
+    },
+    SaveTranslation(translations::ManualEdit),
 }
 
 impl Request {
@@ -156,6 +170,11 @@ impl Request {
                 })
                 .transpose()?
                 .flatten();
+            let has_translation_source = session
+                .as_ref()
+                .map(|item| transcript::has_translation_source(recordings, &item.id))
+                .transpose()?
+                .unwrap_or(false);
             let models: Vec<_> = catalog
                 .models()
                 .iter()
@@ -193,20 +212,23 @@ impl Request {
                 models,
                 lines,
                 job,
+                has_translation_source,
             })?);
         }
         check_cancel(cancelled)?;
-        let (id, approved, transcription) = match self.action {
-            Action::Inspect => return Err(Error::Invalid),
-            Action::Install { model_id, approved } => (model_id, approved, None),
-            Action::Transcribe {
-                model_id,
-                session_id,
-                language,
-                approved,
-            } => (model_id, approved, Some((session_id, language))),
-        };
-        if !approved {
+        if matches!(
+            self.action,
+            Action::Install {
+                approved: false,
+                ..
+            } | Action::Transcribe {
+                approved: false,
+                ..
+            } | Action::Translate {
+                approved: false,
+                ..
+            }
+        ) {
             return Err(Error::Blocked(Block::ApprovalRequired));
         }
         let active = reader
@@ -217,21 +239,6 @@ impl Request {
         if active {
             return Err(Error::Blocked(Block::RecordingActive));
         }
-        let model = catalog
-            .models()
-            .iter()
-            .find(|model| model.id == id)
-            .ok_or(Error::Invalid)?;
-        let device = device.ok_or(Error::Blocked(Block::DeviceProfile))?;
-        let exists = model_dir(&model_root, model).is_dir();
-        if transcription.is_some() && !exists {
-            return Err(Error::NotInstalled);
-        }
-        let runtime = RuntimeIdentity {
-            id: &model.runtime.id,
-            version: &model.runtime.version,
-        };
-        check_candidate(model, &device, &[runtime], true).map_err(Error::Blocked)?;
         let lock = OpenOptions::new()
             .read(true)
             .write(true)
@@ -239,6 +246,34 @@ impl Request {
             .truncate(false)
             .open(self.profiles.join(WORKER_LOCK))?;
         lock.try_lock().map_err(|_| Error::Busy)?;
+        let action = match self.action {
+            Action::SaveTranslation(edit) => {
+                Transcripts::open(&self.recordings)?.save_manual_translation(edit)?;
+                return processed(1);
+            }
+            action => action,
+        };
+        let id = match &action {
+            Action::Inspect => return Err(Error::Invalid),
+            Action::Install { model_id, .. }
+            | Action::Transcribe { model_id, .. }
+            | Action::Translate { model_id, .. } => model_id,
+            Action::SaveTranslation(_) => return Err(Error::Invalid),
+        };
+        let model = catalog
+            .models()
+            .iter()
+            .find(|model| model.id == *id)
+            .ok_or(Error::Invalid)?;
+        let device = device.ok_or(Error::Blocked(Block::DeviceProfile))?;
+        if !matches!(action, Action::Install { .. }) && !model_dir(&model_root, model).is_dir() {
+            return Err(Error::NotInstalled);
+        }
+        let runtime = RuntimeIdentity {
+            id: &model.runtime.id,
+            version: &model.runtime.version,
+        };
+        check_candidate(model, &device, &[runtime], true).map_err(Error::Blocked)?;
         let threads = device
             .logical_cpu_count
             .map_or(1, |value| value.get().min(2) as i32);
@@ -246,7 +281,7 @@ impl Request {
             root: &model_root,
             device: &device,
             activity: Activity {
-                approved,
+                approved: true,
                 recording_active: active,
             },
         };
@@ -259,18 +294,55 @@ impl Request {
                     .as_ref()
                     .is_some_and(|reader| reader.recording().unwrap_or(true))
         };
-        let Some((session, language)) = transcription else {
-            let adapter = Adapter::load(model, &self.adapters, threads)?;
-            let agent = transfer::agent();
-            voiceledger_core::models::install(
-                model,
-                request,
-                &adapter,
-                |artifact, offset| transfer::fetch(&agent, artifact, offset),
-                stop_loading,
-            )
-            .map_err(|error| deferred(error.into(), cancelled(), observe(), reader.as_ref()))?;
-            return Ok(Vec::new());
+        let (session, language) = match action {
+            Action::Transcribe {
+                session_id,
+                language,
+                ..
+            } if model.translation.is_none() => (session_id, language),
+            Action::Translate { session_id, .. } if model.translation.is_some() => {
+                let reader = reader.as_ref().ok_or(Error::NoAudio)?;
+                let result = translate_saved(TranslateSaved {
+                    store: &Transcripts::open(&self.recordings)?,
+                    session: &session_id,
+                    model,
+                    adapters: &self.adapters,
+                    request,
+                    reader,
+                    cancelled,
+                    observe: &observe,
+                });
+                return processed(result?);
+            }
+            Action::Install { .. } => {
+                let agent = transfer::agent();
+                let fetch = |artifact: &voiceledger_core::models::Artifact, offset| {
+                    transfer::fetch(&agent, artifact, offset)
+                };
+                let result = if model.translation.is_some() {
+                    let adapter = TranslationAdapter::load(model, &self.adapters)?;
+                    voiceledger_core::models::install(model, request, &adapter, fetch, || {
+                        stop_loading() || !translation_memory_ok(model, &device, observe())
+                    })
+                } else {
+                    let adapter = Adapter::load(model, &self.adapters, threads)?;
+                    voiceledger_core::models::install(model, request, &adapter, fetch, stop_loading)
+                };
+                result.map_err(|error| {
+                    let sample = observe();
+                    let error = deferred(error.into(), cancelled(), sample, reader.as_ref());
+                    if matches!(error, Error::Cancelled)
+                        && !cancelled()
+                        && model.translation.is_some()
+                        && !translation_memory_ok(model, &device, sample)
+                    {
+                        return Error::Deferred(Reason::Memory);
+                    }
+                    error
+                })?;
+                return Ok(Vec::new());
+            }
+            _ => return Err(Error::Invalid),
         };
         let reader = reader.as_ref().ok_or(Error::NoAudio)?;
         let tracks = reader.inputs(&session)?;
@@ -364,18 +436,158 @@ impl Request {
             Ok(writer.saved)
         })()
         .map_err(|error| deferred(error, cancelled(), observe(), Some(reader)));
-        use jobs::Outcome;
-        let outcome = match &result {
-            Ok(_) => Outcome::Completed,
-            Err(Error::Cancelled) => Outcome::Deferred("user_cancelled"),
-            Err(Error::Deferred(reason)) => Outcome::Deferred(reason.code()),
-            Err(Error::Blocked(_)) => Outcome::Deferred("resource_pressure"),
-            Err(Error::Runtime | Error::Integrity) => Outcome::Failed("runtime_unavailable"),
-            Err(_) => Outcome::Failed("job_failed"),
-        };
-        queue.finish(&ids, outcome)?;
+        queue.finish(&ids, jobs::Outcome::for_result(&result))?;
         processed(result?)
     }
+}
+
+struct TranslateSaved<'a> {
+    store: &'a Transcripts,
+    session: &'a StableId,
+    model: &'a Model,
+    adapters: &'a Path,
+    request: InstallRequest<'a>,
+    reader: &'a CommittedReader,
+    cancelled: &'a (dyn Fn() -> bool + Sync),
+    observe: &'a dyn Fn() -> ResourceSample,
+}
+
+fn translate_saved(task: TranslateSaved<'_>) -> Result<u64> {
+    let TranslateSaved {
+        store,
+        session,
+        model,
+        adapters,
+        request,
+        reader,
+        cancelled,
+        observe,
+    } = task;
+    let weights = model.artifacts.first().ok_or(Error::Invalid)?;
+    let provenance = ModelRef {
+        model_id: model.id.clone(),
+        model_version: model.version.clone(),
+        runtime_version: model.runtime.version.clone(),
+        sha256: weights.sha256.clone(),
+    };
+    let queue = store.queue();
+    queue.recover()?;
+    let mut governor = Governor::default();
+    let started = Instant::now();
+    let mut policy = || {
+        check_cancel(cancelled)?;
+        let decision = governor.observe(
+            Observation {
+                resources: observe(),
+                recording_active: reader.recording()?,
+                pending_jobs: queue.higher_priority_backlog(JobKind::Translation)?,
+                ..Observation::default()
+            },
+            started.elapsed().as_millis() as u64,
+        );
+        if decision.tier.admits(JobKind::Translation) {
+            Ok(())
+        } else {
+            Err(Error::Deferred(decision.reason.unwrap_or(Reason::Memory)))
+        }
+    };
+    let adapter = TranslationAdapter::load(model, adapters)?;
+    let mut engine = None;
+    let mut after = String::new();
+    let mut saved = 0;
+    let mut problem = None;
+    loop {
+        let batch = store.translation_sources(session, &after)?;
+        if batch.is_empty() {
+            return problem.map_or(Ok(saved), Err);
+        }
+        for source in batch {
+            after = String::from(source.utterance_id.clone());
+            if !source.is_durable()
+                || source.language != Language::En
+                || source.text.trim().is_empty()
+            {
+                continue;
+            }
+            let spec = (&source.id, Language::Zh, &provenance);
+            let job = queue.enqueue(store.id()?, session, JobKind::Translation, &spec)?;
+            let ids = [job.as_str()];
+            if !queue.begin(&ids)? {
+                continue;
+            }
+            let attempt = (|| {
+                policy()?;
+                if engine.is_none() {
+                    if !translation_memory_ok(model, request.device, observe()) {
+                        return Err(Error::Deferred(Reason::Memory));
+                    }
+                    let installed = voiceledger_core::models::install(
+                        model,
+                        InstallRequest { ..request },
+                        &adapter,
+                        |_, _| {
+                            Err(io::Error::new(
+                                io::ErrorKind::NotFound,
+                                "Model not installed.",
+                            ))
+                        },
+                        || {
+                            let sample = observe();
+                            cancelled()
+                                || sample.emergency().is_some()
+                                || !translation_memory_ok(model, request.device, sample)
+                                || reader.recording().unwrap_or(true)
+                        },
+                    )?;
+                    policy()?;
+                    engine = Some(adapter.engine(installed.directory())?);
+                }
+                let text = engine
+                    .as_ref()
+                    .ok_or(Error::Runtime)?
+                    .translate(&source.text)?;
+                policy()?;
+                store.save_machine_translation(session, &source, text, provenance.clone())
+            })()
+            .map_err(|error| {
+                let sample = observe();
+                let error = deferred(error, cancelled(), sample, Some(reader));
+                if matches!(error, Error::Cancelled)
+                    && !cancelled()
+                    && !translation_memory_ok(model, request.device, sample)
+                {
+                    return Error::Deferred(Reason::Memory);
+                }
+                error
+            });
+            queue.finish(&ids, jobs::Outcome::for_result(&attempt))?;
+            match attempt {
+                Ok(added) => saved += u64::from(added),
+                Err(error @ (Error::TranslationTextLimit | Error::RevisionConflict)) => {
+                    problem = Some(error)
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+}
+
+fn translation_memory_ok(
+    model: &Model,
+    device: &DeviceCapabilityProfile,
+    sample: ResourceSample,
+) -> bool {
+    sample
+        .available_memory_bytes
+        .and_then(|available| {
+            current_memory_budget(
+                device,
+                available,
+                sample.low_memory_threshold_bytes.unwrap_or(0),
+            )
+        })
+        .zip(model.peak_ram_estimate.as_ref())
+        .is_some_and(|(budget, peak)| budget >= peak.bytes)
 }
 
 pub fn encode_partial(value: Partial) -> Result<Vec<u8>> {
@@ -395,6 +607,7 @@ struct Inspection<'a> {
     models: Vec<Choice<'a>>,
     lines: Vec<transcript::Line>,
     job: Option<jobs::Status>,
+    has_translation_source: bool,
 }
 
 const WORKER_LOCK: &str = "speech-worker.lock";

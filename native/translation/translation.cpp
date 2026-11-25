@@ -85,12 +85,13 @@ VL_EXPORT void* vl_translation_open_v1(const char* directory) {
 
 VL_EXPORT int32_t vl_translation_run_v1(void* handle, const char* input, uint32_t length,
                                       char* output, uint32_t capacity) {
-    if (!handle || !input || !output || length == 0 || length > max_text_bytes) return -1;
+    if (!handle || !input || !output || length == 0) return -1;
+    if (length > max_text_bytes) return -2;
     try {
         auto& translation = *static_cast<Translation*>(handle);
         std::vector<std::string> tokens;
-        if (!translation.source.Encode(std::string_view(input, length), &tokens).ok()
-            || tokens.empty() || tokens.size() > max_input_tokens - 2) return -1;
+        if (!translation.source.Encode(std::string_view(input, length), &tokens).ok() || tokens.empty()) return -1;
+        if (tokens.size() > max_input_tokens - 2) return -2;
         tokens.insert(tokens.begin(), ">>cmn_Hans<<");
         tokens.emplace_back("</s>");
         ctranslate2::TranslationOptions options;
@@ -100,8 +101,8 @@ VL_EXPORT int32_t vl_translation_run_v1(void* handle, const char* input, uint32_
         const auto results = translation.engine->translate_batch({std::move(tokens)}, options);
         const auto& pieces = results.at(0).output();
         std::string text;
-        if (pieces.size() >= max_output_tokens || !translation.target.Decode(pieces, &text).ok()
-            || text.empty() || text.size() > capacity || text.size() > max_text_bytes) return -1;
+        if (!translation.target.Decode(pieces, &text).ok() || text.empty()) return -1;
+        if (pieces.size() >= max_output_tokens || text.size() > capacity || text.size() > max_text_bytes) return -2;
         std::memcpy(output, text.data(), text.size());
         return static_cast<int32_t>(text.size());
     } catch (...) {

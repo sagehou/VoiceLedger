@@ -142,9 +142,9 @@ impl Model {
             }
             None => {
                 self.runtime.id != "ctranslate2"
-                    && ["zh", "en", "ja"]
-                        .iter()
-                        .all(|language| self.languages.iter().any(|supported| supported == language))
+                    && ["zh", "en", "ja"].iter().all(|language| {
+                        self.languages.iter().any(|supported| supported == language)
+                    })
             }
         }
     }

@@ -317,7 +317,7 @@ pub struct ChunkSpan {
     pub range: TimeRange,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelRef {
     pub model_id: String,

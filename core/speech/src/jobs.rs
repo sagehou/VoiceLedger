@@ -57,6 +57,20 @@ pub(crate) enum Outcome {
     Failed(&'static str),
 }
 
+impl Outcome {
+    pub(crate) fn for_result<T>(result: &Result<T>) -> Self {
+        match result {
+            Ok(_) => Self::Completed,
+            Err(Error::Cancelled) => Self::Deferred("user_cancelled"),
+            Err(Error::Deferred(reason)) => Self::Deferred(reason.code()),
+            Err(Error::Blocked(_)) => Self::Deferred("resource_pressure"),
+            Err(Error::Runtime | Error::Integrity) => Self::Failed("runtime_unavailable"),
+            Err(Error::TranslationTextLimit) => Self::Failed("text_limit"),
+            Err(_) => Self::Failed("job_failed"),
+        }
+    }
+}
+
 #[derive(Serialize)]
 pub(crate) struct Status {
     pub state: String,
@@ -137,6 +151,14 @@ impl Queue<'_> {
         Ok(self.0.query_row(
             "SELECT count(*) FROM speech_jobs WHERE state IN ('queued','deferred')",
             [],
+            |row| row.get(0),
+        )?)
+    }
+
+    pub fn higher_priority_backlog(&self, kind: JobKind) -> Result<u32> {
+        Ok(self.0.query_row(
+            "SELECT count(*) FROM speech_jobs WHERE state IN ('queued','deferred') AND priority<?1",
+            [kind.priority()],
             |row| row.get(0),
         )?)
     }

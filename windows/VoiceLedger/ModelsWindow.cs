@@ -3,10 +3,12 @@ using System.Diagnostics;
 using System.IO;
 using System.IO.Pipes;
 using System.Linq;
+using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Automation;
 using System.Windows.Controls;
 using VoiceLedger.Core;
 
@@ -61,6 +63,8 @@ internal sealed class ModelsWindow : Window
             using var speech = JsonDocument.Parse(inspection);
             JsonElement session = speech.RootElement.GetProperty("session");
             string? sessionId = session.ValueKind == JsonValueKind.Null ? null : Read(session, "id");
+            JsonElement lines = speech.RootElement.GetProperty("lines");
+            bool hasEnglish = speech.RootElement.GetProperty("has_translation_source").GetBoolean();
             content.Children.Clear();
             AddLine("Recording only during capture", bold: true);
             if (status is not null) AddLine(status);
@@ -81,6 +85,7 @@ internal sealed class ModelsWindow : Window
                 JsonElement choice = speech.RootElement.GetProperty("models").EnumerateArray()
                     .First(option => Read(option, "id") == id);
                 bool installed = choice.GetProperty("installed").GetBoolean();
+                bool translation = model.TryGetProperty("translation", out _);
                 string? blockedBy = choice.GetProperty("blocked_by").GetString();
                 AddLine($"{Read(model, "name")} · {Read(model, "quantization")}", bold: true);
                 AddLine($"{Read(runtime, "id")} {Read(runtime, "version")} · {Read(model.GetProperty("license"), "id")}");
@@ -93,19 +98,36 @@ internal sealed class ModelsWindow : Window
                 AddLine($"Benchmark pending · {Status(blockedBy)}");
                 var action = new Button
                 {
-                    Content = installed ? "Transcribe latest saved session" : "Download and verify",
+                    Content = !installed ? "Download and verify"
+                        : translation ? "Translate English transcript" : "Transcribe latest saved session",
                     HorizontalAlignment = HorizontalAlignment.Left,
                     Padding = new Thickness(10, 4, 10, 4),
-                    IsEnabled = blockedBy is null && canWork() && (!installed || sessionId is not null),
+                    IsEnabled = blockedBy is null && canWork()
+                        && (!installed || (sessionId is not null && (!translation || hasEnglish))),
                 };
-                action.Click += async (_, _) => await RunAsync(id, installed ? sessionId : null);
+                action.Click += async (_, _) =>
+                {
+                    var policy = new[] { "auto", "zh", "en", "ja" }[Math.Max(0, language.SelectedIndex)];
+                    string operation = !installed ? "install" : translation ? "translate" : "transcribe";
+                    object request = operation switch
+                    {
+                        "install" => new { op = operation, model_id = id, approved = true },
+                        "translate" => new { op = operation, model_id = id, session_id = sessionId, approved = true },
+                        _ => new { op = operation, model_id = id, session_id = sessionId, language = policy, approved = true },
+                    };
+                    await RunAsync(request, operation);
+                };
                 content.Children.Add(action);
+                if (translation && installed && !hasEnglish)
+                    action.ToolTip = "Transcribe an English recording first.";
             }
-            foreach (JsonElement line in speech.RootElement.GetProperty("lines").EnumerateArray())
+            foreach (JsonElement line in lines.EnumerateArray())
             {
                 string source = Read(line, "source") == "mic" ? "Microphone" : "System loopback";
                 AddLine($"{source} · {line.GetProperty("start_ns").GetInt64() / 1_000_000_000.0:F1}s", bold: true);
                 AddLine(Read(line, "text"));
+                if (sessionId is not null && Read(line, "language") == "en")
+                    ShowTranslation(sessionId, line);
             }
         }
         catch (Exception failure) when (failure is InvalidOperationException or JsonException
@@ -116,17 +138,94 @@ internal sealed class ModelsWindow : Window
         }
     }
 
-    private async Task RunAsync(string modelId, string? sessionId)
+    private void ShowTranslation(string sessionId, JsonElement line)
+    {
+        JsonElement revision = line.GetProperty("translation");
+        bool exists = revision.ValueKind == JsonValueKind.Object;
+        string initial = exists ? Read(revision, "text") : "";
+        if (exists)
+        {
+            string author = Read(revision, "authorship") == "manual" ? "Manual" : "Machine";
+            string stale = revision.GetProperty("stale").GetBoolean() ? " · Outdated source" : "";
+            AddLine($"Simplified Chinese · {author}{stale}", bold: true);
+            AddLine(initial);
+        }
+        string utteranceId = Read(line, "utterance_id");
+        string sourceRevision = Read(line, "revision_id");
+        string? expected = exists ? Read(revision, "revision_id") : null;
+        var edit = new Button
+        {
+            Content = exists ? "Edit translation" : "Add Chinese translation",
+            HorizontalAlignment = HorizontalAlignment.Left,
+            IsEnabled = canWork(),
+        };
+        var input = new TextBox
+        {
+            Text = initial, TextWrapping = TextWrapping.Wrap, AcceptsReturn = true,
+            MaxLength = 8192, MinHeight = 60, Visibility = Visibility.Collapsed,
+        };
+        AutomationProperties.SetName(input, "Simplified Chinese translation");
+        var save = new Button
+        {
+            Content = "Save translation", HorizontalAlignment = HorizontalAlignment.Left,
+            Visibility = Visibility.Collapsed, IsEnabled = !string.IsNullOrWhiteSpace(initial),
+        };
+        edit.Click += (_, _) =>
+        {
+            input.Visibility = Visibility.Visible;
+            save.Visibility = Visibility.Visible;
+            edit.Visibility = Visibility.Collapsed;
+            input.Focus();
+        };
+        var error = new TextBlock { TextWrapping = TextWrapping.Wrap, Visibility = Visibility.Collapsed };
+        bool ValidText() => !string.IsNullOrWhiteSpace(input.Text) && Encoding.UTF8.GetByteCount(input.Text) <= 8192;
+        input.TextChanged += (_, _) => save.IsEnabled = ValidText();
+        save.Click += async (_, _) =>
+        {
+            if (working || !canWork() || !ValidText()) return;
+            working = true;
+            save.IsEnabled = false;
+            input.IsReadOnly = true;
+            string request = SpeechWorker.Request(new
+            {
+                op = "save_translation", session_id = sessionId, utterance_id = utteranceId,
+                source_revision_id = sourceRevision, expected_translation_id = expected, text = input.Text,
+            });
+            int result = 0;
+            try { await Task.Run(() => NativeCore.SpeechRequest(request)); }
+            catch (CoreException failure) { result = failure.Code; }
+            finally
+            {
+                working = false;
+                save.IsEnabled = ValidText();
+                input.IsReadOnly = false;
+            }
+            if (closed) return;
+            if (result == 0) await LoadAsync("Translation saved.");
+            else
+            {
+                error.Text = ResultText(result, "save_translation");
+                error.Visibility = Visibility.Visible;
+            }
+        };
+        content.Children.Add(edit);
+        content.Children.Add(input);
+        content.Children.Add(save);
+        content.Children.Add(error);
+    }
+
+    private async Task RunAsync(object action, string operation)
     {
         if (working || !canWork() || closed) return;
         working = true;
         cancelled = false;
-        var policy = new[] { "auto", "zh", "en", "ja" }[Math.Max(0, language.SelectedIndex)];
-        object action = sessionId is null
-            ? new { op = "install", model_id = modelId, approved = true }
-            : new { op = "transcribe", model_id = modelId, session_id = sessionId, language = policy, approved = true };
         content.Children.Clear();
-        AddLine(sessionId is null ? "Downloading and verifying model…" : "Transcribing saved audio…");
+        AddLine(operation switch
+        {
+            "install" => "Downloading and verifying model…",
+            "translate" => "Translating saved text…",
+            _ => "Transcribing saved audio…",
+        });
         partial.Text = "";
         content.Children.Add(partial);
         var cancel = new Button { Content = "Cancel", HorizontalAlignment = HorizontalAlignment.Left };
@@ -174,7 +273,7 @@ internal sealed class ModelsWindow : Window
             partial.Text = "";
             if (!closed)
             {
-                await LoadAsync(cancelled ? "Speech task cancelled." : ResultText(result, sessionId is null));
+                await LoadAsync(cancelled ? "Local task cancelled." : ResultText(result, operation));
             }
         }
     }
@@ -209,16 +308,20 @@ internal sealed class ModelsWindow : Window
         }
     }
 
-    private static string ResultText(int result, bool install) => result switch
+    private static string ResultText(int result, string operation) => result switch
     {
-        0 => install ? "Model verified." : "Saved audio processed.",
+        0 when operation == "install" => "Model verified.",
+        0 when operation == "translate" => "Translation complete.",
+        0 => "Saved audio processed.",
         -32 => "No committed audio is available in this session.",
         -33 => "Download the model first.",
         -34 => "Speech task paused by recording or device limits.",
         -35 => "Download interrupted. Retry to resume.",
         -36 => "Model checksum failed.",
         -37 => "Another local speech task is running.",
-        -38 => "Transcription paused by device limits. Saved progress can be resumed.",
+        -38 => "Local task paused. Resume from saved progress.",
+        -39 => "The source or translation changed. Reopen the editor with the current revision.",
+        -40 => "Some lines exceeded the translation length limit. Completed translations were saved.",
         _ => "Local speech task stopped.",
     };
 

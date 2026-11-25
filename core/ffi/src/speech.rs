@@ -28,6 +28,8 @@ impl From<voiceledger_speech::Error> for Error {
             Speech::Integrity => Self::SpeechIntegrity,
             Speech::Busy => Self::SpeechBusy,
             Speech::Deferred(_) => Self::SpeechDeferred,
+            Speech::RevisionConflict => Self::SpeechRevisionConflict,
+            Speech::TranslationTextLimit => Self::SpeechTranslationTextLimit,
         }
     }
 }
