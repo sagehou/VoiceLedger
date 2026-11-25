@@ -1,10 +1,14 @@
 mod dav;
+mod journal;
+
+use serde::{Deserialize, Serialize};
 
 use crate::contracts::{StableId, SyncEntity, SyncEvent, SyncOperation};
 use crate::vault::{ObjectId, SealedObject, SyncScopes, Vault};
 use zeroize::Zeroizing;
 
 pub use dav::WebDav;
+pub use journal::{EntityState, Journal, Receive};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SyncError {
@@ -63,6 +67,20 @@ pub trait SyncBackend {
     fn delete(&self, key: &ObjectKey) -> Result<(), SyncError>;
 }
 
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LinkedEvent {
+    event: SyncEvent,
+    parents: Vec<StableId>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum WireEvent {
+    Linked(LinkedEvent),
+    Original(SyncEvent),
+}
+
 pub struct PendingEvent {
     key: ObjectKey,
     envelope: SealedObject,
@@ -70,6 +88,15 @@ pub struct PendingEvent {
 
 impl PendingEvent {
     pub fn seal(vault: &Vault, scopes: SyncScopes, event: &SyncEvent) -> Result<Self, SyncError> {
+        Self::seal_revision(vault, scopes, event, &[])
+    }
+
+    pub fn seal_revision(
+        vault: &Vault,
+        scopes: SyncScopes,
+        event: &SyncEvent,
+        parents: &[StableId],
+    ) -> Result<Self, SyncError> {
         let enabled = match event.entity_kind {
             SyncEntity::AudioChunk => scopes.raw_audio,
             SyncEntity::SpeakerProfile => scopes.speaker_profiles,
@@ -78,8 +105,13 @@ impl PendingEvent {
         if !scopes.enabled || !enabled {
             return Err(SyncError::Scope);
         }
-        validate(event)?;
-        let encoded = Zeroizing::new(serde_json::to_vec(event).map_err(|_| SyncError::Integrity)?);
+        let record = LinkedEvent {
+            event: event.clone(),
+            parents: parents.to_vec(),
+        };
+        validate(&record)?;
+        let encoded =
+            Zeroizing::new(serde_json::to_vec(&record).map_err(|_| SyncError::Integrity)?);
         let envelope = vault.seal(&encoded).map_err(|_| SyncError::Integrity)?;
         let key = key(vault, &event.device_id, event.sequence.get(), envelope.id())?;
         Ok(Self { key, envelope })
@@ -103,6 +135,14 @@ pub fn read_event(
     backend: &impl SyncBackend,
     key: &ObjectKey,
 ) -> Result<SyncEvent, SyncError> {
+    Ok(read_linked(vault, backend, key)?.event)
+}
+
+fn read_linked(
+    vault: &Vault,
+    backend: &impl SyncBackend,
+    key: &ObjectKey,
+) -> Result<LinkedEvent, SyncError> {
     let name = key.value().rsplit('/').next().ok_or(SyncError::Integrity)?;
     let (sequence, object) = name.split_once('-').ok_or(SyncError::Integrity)?;
     if object.len() != 32 || sequence.len() != 20 {
@@ -115,12 +155,24 @@ pub fn read_event(
     }
     let result = backend.get(key)?;
     let opened = vault.open(&id, &result).map_err(|_| SyncError::Integrity)?;
-    let event: SyncEvent = serde_json::from_slice(&opened).map_err(|_| SyncError::Integrity)?;
-    validate(&event)?;
-    if self::key(vault, &event.device_id, event.sequence.get(), &id)? != *key {
+    let record = match serde_json::from_slice(&opened).map_err(|_| SyncError::Integrity)? {
+        WireEvent::Linked(record) => record,
+        WireEvent::Original(event) => LinkedEvent {
+            event,
+            parents: Vec::new(),
+        },
+    };
+    validate(&record)?;
+    if self::key(
+        vault,
+        &record.event.device_id,
+        record.event.sequence.get(),
+        &id,
+    )? != *key
+    {
         return Err(SyncError::Integrity);
     }
-    Ok(event)
+    Ok(record)
 }
 
 fn key(
@@ -151,9 +203,16 @@ fn hex(bytes: &[u8]) -> String {
     output
 }
 
-fn validate(event: &SyncEvent) -> Result<(), SyncError> {
+fn validate(record: &LinkedEvent) -> Result<(), SyncError> {
+    use std::collections::BTreeSet;
+
+    let event = &record.event;
     if (event.operation == SyncOperation::Restore) != event.restored_from_tombstone_id.is_some()
         || event.object_refs.len() > 1024
+        || record.parents.len() > 64
+        || (event.operation != SyncOperation::Upsert && !record.parents.is_empty())
+        || record.parents.contains(&event.revision_id)
+        || record.parents.iter().collect::<BTreeSet<_>>().len() != record.parents.len()
     {
         return Err(SyncError::Integrity);
     }
