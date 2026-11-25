@@ -10,44 +10,71 @@ use voiceledger_core::contracts::{
     DeviceCapabilityProfile, Language, LanguagePolicy, ModelRef, StableId,
 };
 use voiceledger_core::models::{
-    InstalledModel, Model, RuntimeIdentity, current_memory_budget, verify_installed,
+    Catalog, InstalledModel, Model, RuntimeIdentity, current_memory_budget, verify_installed,
 };
 use voiceledger_core::scheduler::{Governor, JobKind, Observation, Reason, ResourceSample, Tier};
 
-use crate::engine::Adapter;
+use crate::engine::{Adapter, adapter_path};
 use crate::jobs::{Outcome, SourceJob};
 use crate::pipeline::{Processing, Segmenter};
 use crate::transcript::{self, Transcripts, Writer};
 use crate::translation_engine::{TranslationAdapter, Translator};
-use crate::{Error, Result, Update, check_cancel, model_dir, model_memory_ok, model_ref};
+use crate::{
+    Error, LiveStage, Result, Update, check_cancel, model_dir, model_memory_ok, model_ref,
+};
 
 pub(super) const ASR_MODEL: &str = "whisper-tiny-multilingual-q5-1";
 pub(super) const TRANSLATION_MODEL: &str = "opus-mt-en-zh-int8";
 const POLL: Duration = Duration::from_millis(200);
 const QUIET: Duration = Duration::from_secs(3);
 
+pub(super) fn model_status(profiles: &Path, adapters: &Path) -> Result<Vec<u8>> {
+    let catalog = Catalog::bundled().map_err(|_| Error::Invalid)?;
+    let model = catalog
+        .models()
+        .iter()
+        .find(|model| model.id == ASR_MODEL)
+        .ok_or(Error::Invalid)?;
+    let status = if !adapter_path(&model.runtime.id, adapters).is_some_and(|path| path.is_file()) {
+        "runtime_unavailable"
+    } else if !model_dir(&profiles.join("models"), model).is_dir() {
+        "not_installed"
+    } else {
+        "installed"
+    };
+    Ok(serde_json::to_vec(
+        &serde_json::json!({ "status": status }),
+    )?)
+}
+
 #[derive(Serialize)]
 struct Transcript {
     lines: Vec<transcript::Line>,
     translation_pending: bool,
+    job: Option<crate::jobs::Status>,
 }
 
-pub(super) fn transcript(root: &Path, session: &StableId) -> Result<Vec<u8>> {
+pub(super) fn transcript(root: &Path, session: &StableId, worker_active: bool) -> Result<Vec<u8>> {
     let mut lines = Vec::new();
     transcript::visit_selected(root, session, 8, true, |line| {
         lines.push(line);
         Ok(())
     })?;
     lines.reverse();
-    let translation_pending = match crate::library::open_readonly(root)? {
-        Some((db, version)) if version >= 3 => {
-            crate::jobs::Queue(&db).translation_pending(session)?
+    let (translation_pending, job) = match crate::library::open_readonly(root)? {
+        Some((db, version)) if version >= 2 => {
+            let queue = crate::jobs::Queue(&db);
+            (
+                version >= 3 && queue.translation_pending(session)?,
+                queue.status(session, worker_active)?,
+            )
         }
-        _ => false,
+        _ => (false, None),
     };
     Ok(serde_json::to_vec(&Transcript {
         lines,
         translation_pending,
+        job,
     })?)
 }
 
@@ -156,6 +183,15 @@ impl Task<'_> {
                 Err(Error::Deferred(decision.reason.unwrap_or(Reason::Memory)))
             }
         };
+        if self.allow_active {
+            publish(Some(Update::Live {
+                stage: LiveStage::Loading,
+                partials: Vec::new(),
+            }));
+        }
+        if !model_dir(self.model_root, self.model).is_dir() {
+            return Err(Error::NotInstalled);
+        }
         policy(None)?;
         let startup_resources = observe();
         if !model_memory_ok(self.model, self.device, startup_resources) {
@@ -172,6 +208,13 @@ impl Task<'_> {
             return Err(Error::Deferred(Reason::Memory));
         }
         let mut engine = adapter.engine(self.model, installed.directory(), self.language)?;
+        let mut heard_audio = false;
+        if self.allow_active {
+            publish(Some(Update::Live {
+                stage: LiveStage::WaitingForAudio,
+                partials: Vec::new(),
+            }));
+        }
 
         let translation = self
             .translation
@@ -211,6 +254,18 @@ impl Task<'_> {
             }
             let mut advanced = false;
             for track in &mut *tracks {
+                let chunk = self
+                    .reader
+                    .live_chunk(self.session, &track.id, track.next_ns)?;
+                if !heard_audio && chunk.as_ref().is_some_and(|chunk| chunk.samples.is_some()) {
+                    heard_audio = true;
+                    if self.allow_active {
+                        publish(Some(Update::Live {
+                            stage: LiveStage::Listening,
+                            partials: Vec::new(),
+                        }));
+                    }
+                }
                 let mut update = |value: Option<crate::Partial>| {
                     if let Some(value) = value {
                         partials.insert(track.id.clone(), value);
@@ -219,6 +274,7 @@ impl Task<'_> {
                     }
                     if self.allow_active {
                         (publish)(Some(Update::Live {
+                            stage: LiveStage::Listening,
                             partials: partials.values().cloned().collect(),
                         }));
                     } else {
@@ -243,10 +299,7 @@ impl Task<'_> {
                     partials: true,
                     policy: &mut policy,
                 };
-                if let Some(chunk) =
-                    self.reader
-                        .live_chunk(self.session, &track.id, track.next_ns)?
-                {
+                if let Some(chunk) = chunk {
                     let end_ns = chunk.end_ns;
                     track
                         .segments

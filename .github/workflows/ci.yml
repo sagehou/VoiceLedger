@@ -90,7 +90,9 @@ jobs:
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: live-speech
-          path: core/artifacts/live-speech.json
+          path: |
+            core/artifacts/live-speech.json
+            core/artifacts/live-speech-english.f32
           if-no-files-found: error
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         if: always()
@@ -210,7 +212,7 @@ jobs:
 
   windows-client:
     runs-on: windows-latest
-    needs: [rust-windows, contracts]
+    needs: [rust-windows, contracts, rust-core]
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -233,6 +235,10 @@ jobs:
         with:
           name: domain-fixtures-v1
           path: artifacts/domain-fixtures-v1
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: live-speech
+          path: artifacts/live-speech
       - name: Restore, build and publish WPF
         run: |
           dotnet restore windows/VoiceLedger.slnx --locked-mode 2>&1 | Tee-Object artifacts/windows-restore.log
@@ -287,6 +293,24 @@ jobs:
             throw "Speech worker failed the approval check (exit $($process.ExitCode)). $($stderr.GetAwaiter().GetResult())"
           }
           'Windows speech worker rejected unapproved work.' | Set-Content artifacts/windows-speech-worker.log
+      - name: Verify live text through the packaged Windows worker
+        run: |
+          $catalog = Get-Content models/catalog-v1.json -Raw | ConvertFrom-Json
+          $model = $catalog.models | Where-Object id -eq 'whisper-tiny-multilingual-q5-1'
+          $profile = Join-Path $env:RUNNER_TEMP "voiceledger-live-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          $modelDir = Join-Path $profile "models/$($model.id)-$($model.version)"
+          New-Item -ItemType Directory -Force $modelDir | Out-Null
+          foreach ($artifact in $model.artifacts) {
+            $file = Join-Path $modelDir $artifact.file
+            Invoke-WebRequest $artifact.url -OutFile $file
+            if ((Get-FileHash -Algorithm SHA256 $file).Hash -ne $artifact.sha256) {
+              throw 'Whisper weight checksum mismatch'
+            }
+          }
+          $executable = (Resolve-Path 'artifacts/windows/VoiceLedger.exe').Path
+          $sample = (Resolve-Path 'artifacts/live-speech/live-speech-english.f32').Path
+          dotnet run --project windows/VoiceLedger.CoreSmoke/VoiceLedger.CoreSmoke.csproj --configuration Release --no-build -- --live-speech $executable $profile $sample 2>&1 | Tee-Object artifacts/windows-live-speech.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         if: always()
         with:

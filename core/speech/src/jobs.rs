@@ -76,7 +76,9 @@ impl Outcome {
             Err(Error::Cancelled) => Self::Deferred("user_cancelled"),
             Err(Error::Deferred(reason)) => Self::Deferred(reason.code()),
             Err(Error::Blocked(_)) => Self::Deferred("resource_pressure"),
-            Err(Error::Runtime | Error::Integrity) => Self::Failed("runtime_unavailable"),
+            Err(Error::NotInstalled) => Self::Failed("not_installed"),
+            Err(Error::Integrity) => Self::Failed("model_integrity"),
+            Err(Error::Runtime) => Self::Failed("runtime_unavailable"),
             Err(Error::TranslationTextLimit) => Self::Failed("text_limit"),
             Err(_) => Self::Failed("job_failed"),
         }

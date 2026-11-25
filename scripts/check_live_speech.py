@@ -240,6 +240,8 @@ def main():
             executor.shutdown(wait=True)
             assert core.close(core.handle) == 0
         args.report.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        with args.report.with_name("live-speech-english.f32").open("wb") as fixture:
+            clip(args.samples, "en").tofile(fixture)
 
 
 if __name__ == "__main__":

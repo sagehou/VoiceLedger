@@ -35,6 +35,7 @@ internal sealed class RecordingViewModel : INotifyPropertyChanged, IAsyncDisposa
     private string? error;
     private CancellationTokenSource? liveWorker;
     private bool liveEnabled;
+    private string? liveSetup;
 
     public string[] SpeechLanguages => SpeechWorker.Languages;
     public int SpeechLanguage { get; set; }
@@ -42,10 +43,17 @@ internal sealed class RecordingViewModel : INotifyPropertyChanged, IAsyncDisposa
     public bool LiveEnabled
     {
         get => liveEnabled;
-        set { liveEnabled = value; Update(); }
+        set
+        {
+            if (liveEnabled == value) return;
+            liveEnabled = value;
+            if (value) _ = RefreshLiveModelAsync();
+            Update();
+        }
     }
     public bool CanConfigureSpeech => CanSelect && LiveEnabled;
-    public string? LiveStatus { get; private set; }
+    private string? liveStatus;
+    public string? LiveStatus => liveStatus ?? (LiveEnabled ? liveSetup : null);
     public string? LiveTranslationStatus { get; private set; }
     public LiveLine[] LiveLines { get; private set; } = Array.Empty<LiveLine>();
 
@@ -194,7 +202,7 @@ internal sealed class RecordingViewModel : INotifyPropertyChanged, IAsyncDisposa
         liveWorker?.Cancel();
         liveWorker = null;
         LiveLines = Array.Empty<LiveLine>();
-        LiveStatus = null;
+        liveStatus = null;
         LiveTranslationStatus = null;
         RecordingSession recording;
         try { recording = await RecordingSession.StartAsync(library, endpoints); }
@@ -292,22 +300,58 @@ internal sealed class RecordingViewModel : INotifyPropertyChanged, IAsyncDisposa
         }
     }
 
+    internal async Task RefreshLiveModelAsync()
+    {
+        if (!LiveEnabled) return;
+        try
+        {
+            string model = await Task.Run(LiveTranscript.ModelStatus);
+            liveSetup = model switch
+            {
+                "installed" => "Live transcription ready for the next recording.",
+                "not_installed" => "Install Whisper Tiny multilingual in Models.",
+                _ => "Whisper runtime unavailable.",
+            };
+        }
+        catch (Exception error) when (error is InvalidOperationException or JsonException or TypeInitializationException
+            or EntryPointNotFoundException)
+        {
+            liveSetup = "Could not check the transcription model.";
+        }
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(LiveStatus)));
+    }
+
     private async Task WatchSpeechAsync(RecordingSession recording, string language, bool translate)
     {
         using var worker = new CancellationTokenSource();
         liveWorker = worker;
-        LiveStatus = "Live transcription";
+        liveStatus = "Starting live transcription…";
         Update();
         string snapshot = SpeechWorker.Request(new { op = "live_transcript", session_id = recording.Id });
         var sources = recording.Tracks.ToDictionary(track => track.Files.Id, track =>
             track.Files.Endpoint.Source == CaptureSource.Mic ? "Microphone" : "System loopback");
+        string? jobReason = null;
         async Task RefreshAsync(string partial)
         {
             if (liveWorker != worker) return;
             try
             {
-                var (lines, pending) = await Task.Run(() => LiveTranscript.Read(snapshot, partial, sources));
+                var (lines, pending, stage, reason) = await Task.Run(() => LiveTranscript.Read(snapshot, partial, sources));
                 if (liveWorker != worker) return;
+                jobReason = reason;
+                string? message = stage switch
+                {
+                    "loading" => "Loading Whisper Tiny multilingual…",
+                    "waiting_for_audio" => "Waiting for the first saved audio segment…",
+                    "listening" when lines.Length == 0 => "Listening for speech…",
+                    "listening" => "Live transcription active.",
+                    _ => liveStatus,
+                };
+                if (message != liveStatus)
+                {
+                    liveStatus = message;
+                    PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(LiveStatus)));
+                }
                 if (!LiveLines.SequenceEqual(lines))
                 {
                     LiveLines = lines;
@@ -341,12 +385,26 @@ internal sealed class RecordingViewModel : INotifyPropertyChanged, IAsyncDisposa
             if (liveWorker == worker)
             {
                 liveWorker = null;
-                LiveStatus = result switch
+                liveStatus = result switch
                 {
-                    0 => "Transcription complete",
-                    -33 => "Download Whisper Tiny in Models",
-                    -34 or -38 or -4 => "Transcription deferred · Resume in Sessions",
-                    _ => "Transcription paused · Retry in Sessions",
+                    0 when LiveLines.Length == 0 => "Recording ended without recognized speech.",
+                    0 => "Transcription complete.",
+                    -30 => "Could not read or save the local transcript.",
+                    -32 => "No committed audio for transcription.",
+                    -33 => "Install Whisper Tiny multilingual in Models.",
+                    -36 => "Whisper model checksum failed.",
+                    -37 => "Another local speech task is running.",
+                    -38 => jobReason switch
+                    {
+                        "memory_pressure" => "Transcription paused due to low memory.",
+                        "thermal_pressure" => "Transcription paused due to high temperature.",
+                        "battery_pressure" => "Transcription paused due to low battery.",
+                        "storage_pressure" => "Transcription paused due to low storage.",
+                        _ => "Transcription deferred. Resume in Sessions.",
+                    },
+                    -34 => "Device cannot load Whisper safely. Check Models.",
+                    -4 => "Transcription paused. Resume in Sessions.",
+                    _ => "Local speech worker unavailable. Retry in Sessions.",
                 };
                 Update();
             }

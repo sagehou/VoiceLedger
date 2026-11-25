@@ -37,6 +37,8 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import com.voiceledger.app.core.NativeCore
 import com.voiceledger.app.recording.CaptureEnd
 import com.voiceledger.app.recording.RecordingPhase
 import com.voiceledger.app.recording.RecordingService
@@ -46,10 +48,16 @@ import com.voiceledger.app.recording.SECOND_NS
 import com.voiceledger.app.speech.LiveSpeech
 import com.voiceledger.app.speech.LiveSpeechOptions
 import com.voiceledger.app.speech.LiveSpeechStatus
+import com.voiceledger.app.speech.speechRequest
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
 
 class MainActivity : ComponentActivity() {
     private var startRequested = false
     private var pendingSpeech: LiveSpeechOptions? = null
+    private var liveModel by mutableStateOf<String?>(null)
     private val microphonePermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             if (startRequested) {
@@ -74,7 +82,7 @@ class MainActivity : ComponentActivity() {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     Box(Modifier.safeDrawingPadding().padding(24.dp), contentAlignment = Alignment.Center) {
                         RecordingScreen(
-                            status, liveSpeech, ::requestStart,
+                            status, liveSpeech, liveModel, ::requestStart,
                             { RecordingService.stop(this@MainActivity) },
                             { startActivity(Intent(this@MainActivity, ModelsActivity::class.java)) },
                             { startActivity(Intent(this@MainActivity, ModelsActivity::class.java).putExtra("sessions", true)) },
@@ -82,6 +90,18 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                 }
+            }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        lifecycleScope.launch {
+            liveModel = withContext(Dispatchers.IO) {
+                runCatching {
+                    val request = speechRequest(applicationContext, JSONObject().put("op", "live_model"))
+                    JSONObject(NativeCore.speechRequest(request).decodeToString()).getString("status")
+                }.getOrDefault("unavailable")
             }
         }
     }
@@ -138,6 +158,7 @@ class MainActivity : ComponentActivity() {
 private fun RecordingScreen(
     status: RecordingStatus,
     speech: LiveSpeechStatus,
+    liveModel: String?,
     start: (LiveSpeechOptions?) -> Unit,
     stop: () -> Unit,
     openModels: () -> Unit,
@@ -191,6 +212,13 @@ private fun RecordingScreen(
             if (transcribe) {
                 LanguagePicker(language, enabled = true) { language = it }
                 RecordingOption(R.string.live_translate, translate) { translate = it }
+                val modelStatus = when (liveModel) {
+                    "installed" -> R.string.live_ready
+                    "not_installed" -> R.string.live_install
+                    null -> null
+                    else -> R.string.live_worker_unavailable
+                }
+                modelStatus?.let { Text(stringResource(it)) }
             }
         }
         Button(
@@ -201,10 +229,10 @@ private fun RecordingScreen(
         ) {
             Text(stringResource(if (recording) R.string.stop_recording else R.string.start_recording))
         }
+        LiveTranscript(speech)
         Button(onClick = openSessions) { Text(stringResource(R.string.sessions)) }
         Button(onClick = openModels) { Text(stringResource(R.string.models)) }
         Button(onClick = openSyncPrivacy) { Text(stringResource(R.string.sync_privacy)) }
-        LiveTranscript(speech)
     }
 }
 
@@ -223,15 +251,33 @@ private fun RecordingOption(label: Int, checked: Boolean, onChange: (Boolean) ->
 @Composable
 private fun LiveTranscript(status: LiveSpeechStatus) {
     val message = when {
-        status.running -> R.string.live_transcription
+        status.running -> when (status.stage) {
+            "loading" -> R.string.live_loading
+            "waiting_for_audio" -> R.string.live_waiting_audio
+            "listening" -> if (status.lines.isEmpty() && status.partials.isEmpty()) R.string.live_listening else R.string.live_active
+            else -> R.string.live_starting
+        }
         status.result == null -> null
-        status.result == 0 -> R.string.live_complete
+        status.result == 0 -> if (status.lines.isEmpty()) R.string.live_no_speech else R.string.live_complete
+        status.result == -30 -> R.string.live_storage_error
+        status.result == -31 -> R.string.live_worker_unavailable
+        status.result == -32 -> R.string.speech_no_audio
         status.result == -33 -> R.string.live_install
+        status.result == -34 -> R.string.live_blocked
+        status.result == -36 -> R.string.speech_integrity
+        status.result == -37 -> R.string.speech_busy
+        status.result == -38 -> when (status.reason) {
+            "memory_pressure" -> R.string.live_memory
+            "thermal_pressure" -> R.string.live_thermal
+            "battery_pressure" -> R.string.live_battery
+            "storage_pressure" -> R.string.live_storage
+            else -> R.string.live_resume
+        }
         else -> R.string.live_resume
     }
     message?.let { Text(stringResource(it)) }
     if (status.translationPending) Text(stringResource(R.string.live_translation_pending))
-    for (line in status.lines + status.partials) {
+    for (line in status.partials + status.lines.asReversed()) {
         val language = stringResource(detectedLanguage(line.language))
         Column {
             Text(

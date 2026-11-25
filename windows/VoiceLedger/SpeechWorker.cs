@@ -22,9 +22,9 @@ internal static class SpeechWorker
         action,
     });
 
-    internal static ProcessStartInfo StartInfo(string request, string pipe)
+    private static ProcessStartInfo StartInfo(string request, string pipe, string executable)
     {
-        var info = new ProcessStartInfo(Path.Combine(AppContext.BaseDirectory, "VoiceLedger.exe"))
+        var info = new ProcessStartInfo(executable)
         {
             UseShellExecute = false, CreateNoWindow = true,
             RedirectStandardOutput = true, RedirectStandardError = true,
@@ -45,7 +45,8 @@ internal static class SpeechWorker
         _ => code,
     };
 
-    internal static async Task<int> RunAsync(string request, Func<string, Task> update, CancellationToken cancellation)
+    internal static async Task<int> RunAsync(string request, Func<string, Task> update, CancellationToken cancellation,
+        string? executable = null)
     {
         try
         {
@@ -54,7 +55,7 @@ internal static class SpeechWorker
             using var pipe = new NamedPipeServerStream(name, PipeDirection.In, 1, PipeTransmissionMode.Byte,
                 PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
             using var receiving = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
-            using var process = new Process { StartInfo = StartInfo(request, name) };
+            using var process = new Process { StartInfo = StartInfo(request, name, executable ?? Path.Combine(AppContext.BaseDirectory, "VoiceLedger.exe")) };
             if (!process.Start()) return -31;
             Task receive = Task.CompletedTask;
             try
@@ -107,15 +108,20 @@ internal static class SpeechWorker
                 ".", pipeName, PipeDirection.Out, PipeOptions.CurrentUserOnly);
             pipe?.Connect(2000);
             using var writer = pipe is null ? null : new StreamWriter(pipe, new UTF8Encoding(false)) { AutoFlush = true };
+            string directory = ProfileDirectory;
             if (pipe is not null)
-                NativeCore.UpdateSpeechResources(DeviceProfiler.SpeechResources(ProfileDirectory));
+            {
+                using var command = JsonDocument.Parse(request);
+                directory = command.RootElement.GetProperty("profiles").GetString() ?? ProfileDirectory;
+                NativeCore.UpdateSpeechResources(DeviceProfiler.SpeechResources(directory));
+            }
             var sampling = new object();
             using var progress = writer is null ? null : new Timer(_ =>
             {
                 if (!Monitor.TryEnter(sampling)) return;
                 try
                 {
-                    NativeCore.UpdateSpeechResources(DeviceProfiler.SpeechResources(ProfileDirectory));
+                    NativeCore.UpdateSpeechResources(DeviceProfiler.SpeechResources(directory));
                     writer.WriteLine(Encoding.UTF8.GetString(NativeCore.SpeechPartial()));
                 }
                 catch (IOException)
@@ -134,7 +140,7 @@ internal static class SpeechWorker
             return error.Code;
         }
         catch (Exception error) when (error is IOException or InvalidOperationException or TimeoutException
-            or TypeInitializationException or EntryPointNotFoundException)
+            or TypeInitializationException or EntryPointNotFoundException or UnauthorizedAccessException or JsonException)
         {
             return -31;
         }

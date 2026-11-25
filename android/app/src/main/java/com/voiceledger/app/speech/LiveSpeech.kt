@@ -21,6 +21,8 @@ internal data class LiveLine(
 internal data class LiveSpeechStatus(
     val running: Boolean = false,
     val result: Int? = null,
+    val stage: String? = null,
+    val reason: String? = null,
     val lines: List<LiveLine> = emptyList(),
     val partials: List<LiveLine> = emptyList(),
     val translationPending: Boolean = false,
@@ -112,15 +114,19 @@ internal object LiveSpeech {
                         translation?.optBoolean("stale") ?: false)
                 },
                 translationPending = translate && report.getBoolean("translation_pending"),
+                reason = report.optJSONObject("job")?.optString("reason"),
+
             )
         }
-        val partials = partial?.takeUnless { it.isEmpty() }?.let {
-            JSONObject(it.decodeToString()).getJSONArray("partials")
-        }
-        state.value = current.copy(partials = if (partials == null) emptyList() else List(partials.length()) { index ->
-            val line = partials.getJSONObject(index)
-            LiveLine(line.getString("language"), line.getString("text"), partial = true)
-        })
+        val progress = partial?.takeUnless { it.isEmpty() }?.let { JSONObject(it.decodeToString()) }
+        val partials = progress?.getJSONArray("partials")
+        state.value = current.copy(
+            stage = progress?.getString("stage") ?: current.stage,
+            partials = if (partials == null) emptyList() else List(partials.length()) { index ->
+                val line = partials.getJSONObject(index)
+                LiveLine(line.getString("language"), line.getString("text"), partial = true)
+            },
+        )
     }
 
     private fun finish(code: Int) {

@@ -10,11 +10,18 @@ internal sealed record LiveLine(string Caption, string Text, string? Translation
 
 internal static class LiveTranscript
 {
-    internal static (LiveLine[] Lines, bool TranslationPending) Read(
+    internal static string ModelStatus()
+    {
+        using var report = JsonDocument.Parse(NativeCore.SpeechRequest(SpeechWorker.Request(new { op = "live_model" })));
+        return Text(report.RootElement, "status");
+    }
+
+    internal static (LiveLine[] Lines, bool TranslationPending, string? Stage, string? Reason) Read(
         string request, string progress, IReadOnlyDictionary<Guid, string> sources)
     {
         using var snapshot = JsonDocument.Parse(NativeCore.SpeechRequest(request));
-        var lines = snapshot.RootElement.GetProperty("lines").EnumerateArray().Select(line =>
+        JsonElement report = snapshot.RootElement;
+        var lines = report.GetProperty("lines").EnumerateArray().Reverse().Select(line =>
         {
             string track = line.GetProperty("source").GetString() == "mic" ? "Microphone" : "System loopback";
             var translation = line.GetProperty("translation");
@@ -24,17 +31,21 @@ internal static class LiveTranscript
             return new LiveLine($"{track} · {SpeechWorker.LanguageName(Text(line, "language"))}",
                 Text(line, "text"), translated, false);
         }).ToList();
+        string? stage = null;
         if (progress.Length != 0)
         {
             using var current = JsonDocument.Parse(progress);
+            stage = Text(current.RootElement, "stage");
             foreach (var partial in current.RootElement.GetProperty("partials").EnumerateArray())
             {
                 if (partial.GetProperty("track_id").TryGetGuid(out Guid id) && sources.TryGetValue(id, out string? track))
-                    lines.Add(new LiveLine($"{track} · {SpeechWorker.LanguageName(Text(partial, "language"))} · Partial",
+                    lines.Insert(0, new LiveLine($"{track} · {SpeechWorker.LanguageName(Text(partial, "language"))} · Partial",
                         Text(partial, "text"), null, true));
             }
         }
-        return (lines.ToArray(), snapshot.RootElement.GetProperty("translation_pending").GetBoolean());
+        var job = report.GetProperty("job");
+        string? reason = job.ValueKind == JsonValueKind.Object ? job.GetProperty("reason").GetString() : null;
+        return (lines.ToArray(), report.GetProperty("translation_pending").GetBoolean(), stage, reason);
     }
 
     private static string Text(JsonElement value, string field) => value.GetProperty(field).GetString() ?? "";

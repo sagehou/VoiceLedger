@@ -2,6 +2,12 @@ using System.Globalization;
 using System.Security.Cryptography;
 using VoiceLedger.Core;
 
+if (args.Length == 4 && args[0] == "--live-speech")
+{
+    await LiveSpeechSmoke.RunAsync(args[1], args[2], args[3]);
+    return;
+}
+
 if (args.Length != 2)
 {
     throw new ArgumentException("Supply the ABI fixture and the generated domain fixture directory.");

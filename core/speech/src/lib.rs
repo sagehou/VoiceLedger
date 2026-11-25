@@ -112,6 +112,7 @@ pub struct Request {
 #[derive(Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 enum Action {
+    LiveModel,
     LiveTranscript {
         session_id: StableId,
     },
@@ -184,7 +185,8 @@ impl Request {
     pub fn read_only(&self) -> bool {
         matches!(
             self.action,
-            Action::LiveTranscript { .. }
+            Action::LiveModel
+                | Action::LiveTranscript { .. }
                 | Action::Inspect { .. }
                 | Action::History { .. }
                 | Action::Export { .. }
@@ -207,10 +209,17 @@ impl Request {
         {
             return Err(Error::Invalid);
         }
+        if matches!(self.action, Action::LiveModel) {
+            return live::model_status(&self.profiles, &self.adapters);
+        }
         let reader = audio_reader(&self.recordings)?;
         match &self.action {
             Action::LiveTranscript { session_id } => {
-                return live::transcript(&self.recordings, session_id);
+                return live::transcript(
+                    &self.recordings,
+                    session_id,
+                    worker_active(&self.profiles),
+                );
             }
             Action::TrackTimeline {
                 session_id,
@@ -483,7 +492,8 @@ impl Request {
             action => action,
         };
         let id = match &action {
-            Action::LiveTranscript { .. }
+            Action::LiveModel
+            | Action::LiveTranscript { .. }
             | Action::TranscribeLive { .. }
             | Action::Inspect { .. }
             | Action::History { .. }
@@ -866,7 +876,18 @@ fn model_ref(model: &Model) -> Result<ModelRef> {
 #[serde(untagged)]
 pub enum Update {
     Partial(Partial),
-    Live { partials: Vec<Partial> },
+    Live {
+        stage: LiveStage,
+        partials: Vec<Partial>,
+    },
+}
+
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveStage {
+    Loading,
+    WaitingForAudio,
+    Listening,
 }
 
 pub fn encode_update(value: Update) -> Result<Vec<u8>> {
