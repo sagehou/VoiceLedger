@@ -74,6 +74,18 @@ jobs:
               --library artifacts/speech/libvoiceledger_speaker.so --clustering target/debug/examples/speaker_clusters \
               --report "artifacts/speaker-evaluation-$candidate.json"
           done
+      - name: Verify automatic Chinese, English and Japanese recognition offline
+        run: |
+          samples="$RUNNER_TEMP/voiceledger-asr"
+          python3 ../scripts/check_asr_languages.py "$samples"
+          sudo unshare --net --setgid="$(id -g)" --setuid="$(id -u)" -- "$(command -v python3)" \
+            ../scripts/check_asr_languages.py "$samples" --library artifacts/speech/libvoiceledger_whisper.so \
+            --report artifacts/asr-automatic-languages.json
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        if: always()
+        with:
+          name: asr-automatic-languages
+          path: core/artifacts/asr-automatic-languages.json
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         if: always()
         with:
