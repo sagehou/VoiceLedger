@@ -10,6 +10,7 @@ use voiceledger_core::{
 
 #[cfg(any(target_os = "android", target_os = "linux"))]
 mod jni;
+mod sync;
 mod track;
 mod vault;
 
@@ -24,6 +25,12 @@ enum Error {
     Cancelled = -4,
     Internal = -5,
     VaultRejected = -50,
+    SyncConfiguration = -60,
+    SyncAuthentication = -61,
+    SyncQuota = -62,
+    SyncProvider = -63,
+    SyncConnection = -64,
+    SyncIntegrity = -65,
 }
 
 #[derive(Default)]

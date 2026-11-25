@@ -535,7 +535,7 @@ pub enum SyncOperation {
     Restore,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SyncEvent {
     pub id: StableId,

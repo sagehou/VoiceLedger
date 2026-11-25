@@ -94,6 +94,9 @@ int32_t vl_vault_request_v1(int32_t operation, const uint8_t *recovery, uint32_t
     const uint8_t *object_id, uint32_t object_id_length, const uint8_t *data, uint32_t length,
     uint8_t *output, uint32_t capacity);
 
+/* Test the HTTPS provider on a random prefix with encrypted synthetic data. This blocks. */
+int32_t vl_sync_check_provider_v1(const uint8_t *data, uint32_t length);
+
 /* Supply -1 for an unknown memory value. Memory values are measured in bytes. */
 int32_t vl_recommend_v1(int32_t compatibility, int64_t budget_bytes, int64_t peak_bytes);
 
