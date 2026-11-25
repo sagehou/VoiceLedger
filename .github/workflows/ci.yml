@@ -344,7 +344,7 @@ jobs:
       - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
         with:
           cmdline-tools-version: ${{ env.ANDROID_CMDLINE_TOOLS_VERSION }}
-          packages: platforms;android-36 build-tools;36.0.0
+          packages: platforms;android-36 build-tools;36.0.0 platform-tools emulator system-images;android-35;google_apis;x86_64
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: voiceledger-core-android-arm64-v8a
@@ -368,7 +368,9 @@ jobs:
       - name: Build and check the Android app
         run: |
           mkdir -p artifacts
-          ./gradlew --no-daemon --stacktrace :app:lintDebug :app:testDebugUnitTest :app:assembleDebug 2>&1 | tee artifacts/android-gradle.log
+          ./gradlew --no-daemon --stacktrace :app:lintDebug :app:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest 2>&1 | tee artifacts/android-gradle.log
+      - name: Run the packaged Android ARM64 startup and model download
+        run: bash ../scripts/check_android_runtime.sh
       - name: Check the APK manifest
         run: |
           apk=app/build/outputs/apk/debug/app-debug.apk
