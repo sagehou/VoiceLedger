@@ -45,18 +45,24 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends espeak-ng
-          python3 ../scripts/evaluate_speakers.py "$RUNNER_TEMP/voiceledger-speaker"
+          python3 -m venv "$RUNNER_TEMP/voiceledger-speaker-venv"
+          converter="$RUNNER_TEMP/voiceledger-speaker-venv/bin/python"
+          "$converter" -m pip install --only-binary=:all: --no-deps \
+            numpy==2.2.6 onnx==1.18.0 protobuf==6.31.1 typing-extensions==4.15.0
+          "$converter" ../scripts/evaluate_speakers.py "$RUNNER_TEMP/voiceledger-speaker"
           cargo build --locked --example speaker_clusters
-          sudo unshare --net --setgid="$(id -g)" --setuid="$(id -u)" -- env \
-            LD_LIBRARY_PATH="$PWD/artifacts/speech" "$(command -v python3)" \
-            ../scripts/evaluate_speakers.py "$RUNNER_TEMP/voiceledger-speaker" \
-            --library artifacts/speech/libvoiceledger_speaker.so --clustering target/debug/examples/speaker_clusters \
-            --report artifacts/speaker-evaluation.json
+          for candidate in fp32 int8; do
+            sudo unshare --net --setgid="$(id -g)" --setuid="$(id -u)" -- env \
+              LD_LIBRARY_PATH="$PWD/artifacts/speech" "$(command -v python3)" \
+              ../scripts/evaluate_speakers.py "$RUNNER_TEMP/voiceledger-speaker" --candidate "$candidate" \
+              --library artifacts/speech/libvoiceledger_speaker.so --clustering target/debug/examples/speaker_clusters \
+              --report "artifacts/speaker-evaluation-$candidate.json"
+          done
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         if: always()
         with:
           name: speaker-evaluation
-          path: core/artifacts/speaker-evaluation.json
+          path: core/artifacts/speaker-evaluation-*.json
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: voiceledger-ffi-linux-x64

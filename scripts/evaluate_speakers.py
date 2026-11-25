@@ -10,8 +10,10 @@ import json
 import math
 from pathlib import Path
 import random
+import resource
 import socket
 import subprocess
+from statistics import median
 from time import perf_counter
 import wave
 
@@ -19,6 +21,7 @@ from build_speech import fetch
 
 
 MODEL = "3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx"
+INT8_MODEL = MODEL.removesuffix(".onnx") + ".weight-int8.onnx"
 URL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/" + MODEL
 DIGEST = "53cab20ba8f2eb2f6e2d89ecc18e88ef3222169b61b4419cbc13666744a4574b"
 VOICES = ("en-us+m1", "en-gb+f2", "en-sc+m3", "en-us+f4", "en-gb+m5", "en-us+f1")
@@ -30,6 +33,46 @@ SENTENCES = (
     "The battery was low during the first test but the recording recovered.",
 )
 RATE = 16000
+
+
+def quantize_weights(source, target):
+    import numpy as np
+    import onnx
+    from onnx import TensorProto, helper, numpy_helper
+
+    model = onnx.load(source)
+    assert any(item.domain in ("", "ai.onnx") and item.version >= 10 for item in model.opset_import)
+    graph = model.graph
+    weight_names = {node.input[1] for node in graph.node
+                    if node.domain in ("", "ai.onnx") and node.op_type in ("Conv", "Gemm", "MatMul")
+                    and len(node.input) >= 2}
+    graph_inputs = {item.name for item in graph.input}
+    updated, nodes = [], []
+    for tensor in graph.initializer:
+        if tensor.name not in weight_names or tensor.name in graph_inputs or tensor.data_type != TensorProto.FLOAT:
+            updated.append(tensor)
+            continue
+        values = numpy_helper.to_array(tensor)
+        assert np.all(np.isfinite(values))
+        scale = np.float32(max(np.max(np.abs(values)) / 127, np.finfo(np.float32).tiny))
+        packed = np.rint(values / scale).clip(-127, 127).astype(np.int8)
+        name = tensor.name + ".voiceledger_int8"
+        updated.extend([
+            numpy_helper.from_array(packed, name),
+            numpy_helper.from_array(np.array(scale), name + ".scale"),
+            numpy_helper.from_array(np.array(0, dtype=np.int8), name + ".zero"),
+        ])
+        nodes.append(helper.make_node("DequantizeLinear", [name, name + ".scale", name + ".zero"], [tensor.name]))
+
+    assert nodes, "The CAM++ graph contains no eligible FP32 weights"
+    original = list(graph.node)
+    graph.ClearField("node")
+    graph.node.extend(nodes + original)
+    graph.ClearField("initializer")
+    graph.initializer.extend(updated)
+    onnx.checker.check_model(model)
+    onnx.save(model, target)
+    assert target.stat().st_size < source.stat().st_size
 
 
 def command(argv, *, data=None):
@@ -141,24 +184,30 @@ def scores(references, labels, durations, count):
     }
 
 
-def evaluate(model, library, clustering, report):
+def evaluate(model, candidate, library, clustering, report):
     assert [name for _, name in socket.if_nameindex()] == ["lo"]
     dll = native(library)
     started = perf_counter()
     handle = dll.vl_speaker_open_v1(str(model.resolve()).encode())
     assert handle, "The verified CAM++ candidate could not be loaded"
     load_seconds = perf_counter() - started
+    extract_times = []
 
     def extract(audio):
         raw = (ctypes.c_float * len(audio))(*(value / 32768 for value in audio))
         out = (ctypes.c_float * 1024)()
+        started = perf_counter()
         dim = dll.vl_speaker_extract_v1(handle, raw, len(raw), out, len(out))
+        if dim > 0:
+            extract_times.append((perf_counter() - started) * 1000)
         assert 0 <= dim <= len(out)
         return out[:dim] if dim else None
 
     try:
         audio = [[samples(voice, sentence, 151 + 3 * index) for index, sentence in enumerate(SENTENCES)]
                  for voice in VOICES]
+        voices = [hashlib.sha256(turns[0].tobytes()).hexdigest() for turns in audio]
+        assert len(set(voices)) == len(VOICES), "Synthetic voices must produce distinct reference audio"
         assert extract(array("h", [0]) * RATE) is None
         assert extract(audio[0][2][:4000]) is None
         threshold, calibration = fit(extract, audio)
@@ -176,9 +225,15 @@ def evaluate(model, library, clustering, report):
             scenarios.append({"speakers": count, **scores(references, labels, list(map(len, payloads)), count)})
     finally:
         dll.vl_speaker_close_v1(handle)
+    with model.open("rb") as weights:
+        digest = hashlib.file_digest(weights, "sha256").hexdigest()
     with report.open("w", encoding="utf-8") as output:
-        json.dump({"model": MODEL, "sha256": DIGEST, "bytes": model.stat().st_size,
+        json.dump({"model": model.name, "candidate": candidate,
+                   "sha256": digest, "source_sha256": DIGEST, "bytes": model.stat().st_size,
                    "runtime": "sherpa-onnx 1.12.20", "load_ms": round(load_seconds * 1000, 2),
+                   "peak_rss_bytes": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024,
+                   "extract_median_ms": round(median(extract_times), 2),
+                   "synthetic_voice_reference_sha256": dict(zip(VOICES, voices, strict=True)),
                    "corpus_sha256": hashlib.sha256(b"".join(pcm.tobytes() for turns in audio for pcm in turns)).hexdigest(),
                    "synthesizer": command(["espeak-ng", "--version"]).decode().splitlines()[0],
                    "cosine_threshold": threshold, "calibration": calibration,
@@ -189,15 +244,18 @@ def evaluate(model, library, clustering, report):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("folder", type=Path)
+    parser.add_argument("--candidate", choices=("fp32", "int8"), default="fp32")
     parser.add_argument("--library", type=Path)
     parser.add_argument("--clustering", type=Path)
     parser.add_argument("--report", type=Path)
     args = parser.parse_args()
     if args.library:
-        evaluate(args.folder / MODEL, args.library, args.clustering, args.report)
+        name = MODEL if args.candidate == "fp32" else INT8_MODEL
+        evaluate(args.folder / name, args.candidate, args.library, args.clustering, args.report)
     else:
         args.folder.mkdir(parents=True, exist_ok=True)
-        fetch(args.folder, MODEL, URL, DIGEST)
+        source = fetch(args.folder, MODEL, URL, DIGEST)
+        quantize_weights(source, args.folder / INT8_MODEL)
 
 
 if __name__ == "__main__":
