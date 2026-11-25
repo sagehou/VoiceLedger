@@ -25,7 +25,7 @@ Exact SDK and dependency pins are in `global.json`, `rust-toolchain.toml`, `andr
 The Android build uses strict dependency locking against `android/app/gradle.lockfile`. When dependency pins change, regenerate the lock through the debug and release build tasks in Actions. The `kotlin-stdlib-common` metadata-only module is excluded from lock validation because Gradle can omit it when applying the JVM runtime lock. The Kotlin JVM standard library is locked.
 
 ```sh
-./gradlew --write-locks :app:lintDebug :app:testDebugUnitTest :app:assembleDebug \
+./gradlew --write-locks :app:lintDebug :app:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest \
   :app:lintRelease :app:testReleaseUnitTest :app:assembleRelease
 ```
 
