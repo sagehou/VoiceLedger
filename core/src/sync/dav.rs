@@ -7,7 +7,7 @@ use ureq::http::{Request, Response, Uri};
 use ureq::{Agent, Body};
 use zeroize::Zeroizing;
 
-use super::{ObjectKey, Page, PutOutcome, SyncBackend, SyncError};
+use super::{ObjectKey, Page, PutOutcome, SyncBackend, SyncError, storage_status};
 use crate::vault::{MAX_PLAINTEXT_BYTES, SealedObject};
 
 const LIMIT_XML: u64 = 4 * 1024 * 1024;
@@ -79,16 +79,8 @@ impl WebDav {
         }
         let request = request.body(body).map_err(|_| SyncError::Configuration)?;
         let response = self.agent.run(request).map_err(|_| SyncError::Transport)?;
-        match response.status().as_u16() {
-            300..=399 => Err(SyncError::Redirect),
-            401 | 403 => Err(SyncError::AuthenticationRequired),
-            404 => Err(SyncError::NotFound),
-            408 | 425 | 429 | 500..=599 if response.status().as_u16() != 507 => {
-                Err(SyncError::Retry)
-            }
-            507 => Err(SyncError::Quota),
-            _ => Ok(response),
-        }
+        storage_status(response.status().as_u16())?;
+        Ok(response)
     }
 }
 

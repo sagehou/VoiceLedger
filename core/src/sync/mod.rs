@@ -1,5 +1,6 @@
 mod dav;
 mod outbox;
+mod s3;
 
 use crate::contracts::{StableId, SyncEntity, SyncEvent, SyncOperation};
 use crate::vault::{ObjectId, SealedObject, SyncScopes, Vault};
@@ -7,6 +8,7 @@ use zeroize::Zeroizing;
 
 pub use dav::WebDav;
 pub use outbox::Outbox;
+pub use s3::S3;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SyncError {
@@ -100,6 +102,17 @@ impl PendingEvent {
             PutOutcome::Exists if backend.get(&self.key)? == self.envelope.envelope() => Ok(()),
             PutOutcome::Exists => Err(SyncError::Conflict),
         }
+    }
+}
+
+fn storage_status(status: u16) -> Result<(), SyncError> {
+    match status {
+        300..=399 => Err(SyncError::Redirect),
+        401 | 403 => Err(SyncError::AuthenticationRequired),
+        404 => Err(SyncError::NotFound),
+        507 => Err(SyncError::Quota),
+        408 | 425 | 429 | 500..=599 => Err(SyncError::Retry),
+        _ => Ok(()),
     }
 }
 
