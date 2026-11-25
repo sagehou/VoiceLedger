@@ -78,7 +78,7 @@ impl Outbox {
             LinkedEvent {
                 event: event.clone(),
                 parents: transcript.revision.parent_revision_ids.clone(),
-                transcript: Some(transcript.clone()),
+                transcript: Some(Box::new(transcript.clone())),
             },
         )
     }

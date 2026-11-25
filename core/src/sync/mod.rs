@@ -90,7 +90,7 @@ struct LinkedEvent {
     event: SyncEvent,
     parents: Vec<StableId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    transcript: Option<SyncedTranscript>,
+    transcript: Option<Box<SyncedTranscript>>,
 }
 
 #[derive(Deserialize)]
