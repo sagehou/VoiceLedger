@@ -1,10 +1,12 @@
 mod dav;
+mod outbox;
 
 use crate::contracts::{StableId, SyncEntity, SyncEvent, SyncOperation};
 use crate::vault::{ObjectId, SealedObject, SyncScopes, Vault};
 use zeroize::Zeroizing;
 
 pub use dav::WebDav;
+pub use outbox::Outbox;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SyncError {
@@ -19,6 +21,7 @@ pub enum SyncError {
     Retry,
     Conflict,
     Integrity,
+    LocalStorage,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -70,19 +73,21 @@ pub struct PendingEvent {
 
 impl PendingEvent {
     pub fn seal(vault: &Vault, scopes: SyncScopes, event: &SyncEvent) -> Result<Self, SyncError> {
-        let enabled = match event.entity_kind {
-            SyncEntity::AudioChunk => scopes.raw_audio,
-            SyncEntity::SpeakerProfile => scopes.speaker_profiles,
-            _ => scopes.text,
-        };
-        if !scopes.enabled || !enabled {
-            return Err(SyncError::Scope);
-        }
+        check_scope(scopes, event.entity_kind)?;
         validate(event)?;
         let encoded = Zeroizing::new(serde_json::to_vec(event).map_err(|_| SyncError::Integrity)?);
         let envelope = vault.seal(&encoded).map_err(|_| SyncError::Integrity)?;
         let key = key(vault, &event.device_id, event.sequence.get(), envelope.id())?;
         Ok(Self { key, envelope })
+    }
+
+    fn reopen(vault: &Vault, bytes: Vec<u8>) -> Result<(Self, SyncEvent), SyncError> {
+        let (envelope, plaintext) = vault.reopen(bytes).map_err(|_| SyncError::Integrity)?;
+        let event: SyncEvent =
+            serde_json::from_slice(&plaintext).map_err(|_| SyncError::Integrity)?;
+        validate(&event)?;
+        let key = key(vault, &event.device_id, event.sequence.get(), envelope.id())?;
+        Ok((Self { key, envelope }, event))
     }
 
     pub fn key(&self) -> &ObjectKey {
@@ -95,6 +100,19 @@ impl PendingEvent {
             PutOutcome::Exists if backend.get(&self.key)? == self.envelope.envelope() => Ok(()),
             PutOutcome::Exists => Err(SyncError::Conflict),
         }
+    }
+}
+
+fn check_scope(scopes: SyncScopes, kind: SyncEntity) -> Result<(), SyncError> {
+    let included = match kind {
+        SyncEntity::AudioChunk => scopes.raw_audio,
+        SyncEntity::SpeakerProfile => scopes.speaker_profiles,
+        _ => scopes.text,
+    };
+    if scopes.enabled && included {
+        Ok(())
+    } else {
+        Err(SyncError::Scope)
     }
 }
 
