@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use super::{
-    LinkedEvent, ObjectKey, PendingEvent, SyncBackend, SyncError, check_scope, device_prefix,
+    LinkedEvent, ObjectKey, PendingEvent, SyncBackend, SyncError, SyncedTranscript, check_scope,
+    device_prefix,
 };
 use crate::contracts::{StableId, SyncEvent};
 use crate::vault::{MAX_PLAINTEXT_BYTES, SyncScopes, Vault};
@@ -53,6 +54,42 @@ impl Outbox {
         event: &SyncEvent,
         parents: &[StableId],
     ) -> Result<ObjectKey, SyncError> {
+        self.stage_record(
+            vault,
+            scopes,
+            LinkedEvent {
+                event: event.clone(),
+                parents: parents.to_vec(),
+                transcript: None,
+            },
+        )
+    }
+
+    pub fn stage_transcript(
+        &mut self,
+        vault: &Vault,
+        scopes: SyncScopes,
+        event: &SyncEvent,
+        transcript: &SyncedTranscript,
+    ) -> Result<ObjectKey, SyncError> {
+        self.stage_record(
+            vault,
+            scopes,
+            LinkedEvent {
+                event: event.clone(),
+                parents: transcript.revision.parent_revision_ids.clone(),
+                transcript: Some(transcript.clone()),
+            },
+        )
+    }
+
+    fn stage_record(
+        &mut self,
+        vault: &Vault,
+        scopes: SyncScopes,
+        record: LinkedEvent,
+    ) -> Result<ObjectKey, SyncError> {
+        let event = &record.event;
         self.check_vault(vault)?;
         check_scope(scopes, event.entity_kind)?;
         if event.device_id != self.device {
@@ -61,14 +98,14 @@ impl Outbox {
         let sequence = event.sequence.get();
         for state in ["sent", "pending"] {
             if let Some((saved, prior)) = self.load(vault, sequence, state)? {
-                return if prior.event == *event && prior.parents == parents {
+                return if prior == record {
                     Ok(saved.key().clone())
                 } else {
                     Err(SyncError::Conflict)
                 };
             }
         }
-        let pending = PendingEvent::seal_revision(vault, scopes, event, parents)?;
+        let pending = PendingEvent::seal_record(vault, scopes, &record)?;
         write_entry(
             &self.directory,
             &self.path(sequence, "pending"),

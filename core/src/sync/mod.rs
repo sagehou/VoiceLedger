@@ -5,7 +5,9 @@ mod s3;
 
 use serde::{Deserialize, Serialize};
 
-use crate::contracts::{StableId, SyncEntity, SyncEvent, SyncOperation};
+use crate::contracts::{
+    Source, StableId, SyncEntity, SyncEvent, SyncOperation, UtteranceKind, UtteranceRevision,
+};
 use crate::vault::{ObjectId, SealedObject, SyncScopes, Vault};
 use zeroize::Zeroizing;
 
@@ -72,11 +74,21 @@ pub trait SyncBackend {
     fn delete(&self, key: &ObjectKey) -> Result<(), SyncError>;
 }
 
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SyncedTranscript {
+    pub session_id: StableId,
+    pub source: Source,
+    pub revision: UtteranceRevision,
+}
+
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LinkedEvent {
     event: SyncEvent,
     parents: Vec<StableId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    transcript: Option<SyncedTranscript>,
 }
 
 #[derive(Deserialize)]
@@ -102,14 +114,26 @@ impl PendingEvent {
         event: &SyncEvent,
         parents: &[StableId],
     ) -> Result<Self, SyncError> {
+        Self::seal_record(
+            vault,
+            scopes,
+            &LinkedEvent {
+                event: event.clone(),
+                parents: parents.to_vec(),
+                transcript: None,
+            },
+        )
+    }
+
+    fn seal_record(
+        vault: &Vault,
+        scopes: SyncScopes,
+        record: &LinkedEvent,
+    ) -> Result<Self, SyncError> {
+        let event = &record.event;
         check_scope(scopes, event.entity_kind)?;
-        let record = LinkedEvent {
-            event: event.clone(),
-            parents: parents.to_vec(),
-        };
-        validate(&record)?;
-        let encoded =
-            Zeroizing::new(serde_json::to_vec(&record).map_err(|_| SyncError::Integrity)?);
+        validate(record)?;
+        let encoded = Zeroizing::new(serde_json::to_vec(record).map_err(|_| SyncError::Integrity)?);
         let envelope = vault.seal(&encoded).map_err(|_| SyncError::Integrity)?;
         let key = key(vault, &event.device_id, event.sequence.get(), envelope.id())?;
         Ok(Self { key, envelope })
@@ -122,6 +146,7 @@ impl PendingEvent {
             WireEvent::Original(event) => LinkedEvent {
                 event,
                 parents: Vec::new(),
+                transcript: None,
             },
         };
         validate(&record)?;
@@ -235,6 +260,35 @@ fn validate(record: &LinkedEvent) -> Result<(), SyncError> {
         || record.parents.iter().collect::<BTreeSet<_>>().len() != record.parents.len()
     {
         return Err(SyncError::Integrity);
+    }
+    if let Some(text) = &record.transcript {
+        let revision = &text.revision;
+        if event.entity_kind != SyncEntity::UtteranceRevision
+            || event.operation != SyncOperation::Upsert
+            || event.entity_id != revision.utterance_id
+            || event.revision_id != revision.id
+            || !event.object_refs.is_empty()
+            || revision.parent_revision_ids != record.parents
+            || !revision.is_durable()
+            || (revision.kind == UtteranceKind::Manual
+                && (revision.parent_revision_ids.is_empty() || revision.model.is_some()))
+            || (revision.kind == UtteranceKind::Final && revision.model.is_none())
+            || revision
+                .confidence
+                .is_some_and(|confidence| !(0.0..=1.0).contains(&confidence))
+            || revision.text.trim().is_empty()
+            || revision.text.len() > 8192
+            || revision.text.contains('\0')
+            || !revision.range.is_nonempty()
+            || revision.source.is_empty()
+            || revision.source.len() > 1024
+            || revision
+                .source
+                .iter()
+                .any(|span| !span.range.is_nonempty() || !revision.range.contains(span.range))
+        {
+            return Err(SyncError::Integrity);
+        }
     }
     Ok(())
 }

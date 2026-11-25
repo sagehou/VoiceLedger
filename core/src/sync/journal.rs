@@ -6,10 +6,10 @@ use serde::{Deserialize, Serialize};
 
 use super::outbox::{lock_directory, read_entry, storage, write_entry};
 use super::{
-    LinkedEvent, ObjectKey, PendingEvent, SyncBackend, SyncError, device_prefix, hex, read_linked,
-    validate,
+    LinkedEvent, ObjectKey, PendingEvent, SyncBackend, SyncError, SyncedTranscript, device_prefix,
+    hex, read_linked, validate,
 };
-use crate::contracts::{StableId, SyncOperation};
+use crate::contracts::{StableId, SyncOperation, UtteranceKind};
 use crate::vault::{MAX_PLAINTEXT_BYTES, Vault};
 
 const MAX_AHEAD: u64 = 4096;
@@ -39,7 +39,7 @@ pub struct Journal {
     generation: u32,
     streams: BTreeMap<StableId, Stream>,
     events: BTreeMap<StableId, LinkedEvent>,
-    revisions: BTreeSet<StableId>,
+    revisions: BTreeMap<StableId, StableId>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -58,7 +58,7 @@ impl Journal {
             generation: vault.generation(),
             streams: BTreeMap::new(),
             events: BTreeMap::new(),
-            revisions: BTreeSet::new(),
+            revisions: BTreeMap::new(),
         }
     }
 
@@ -92,7 +92,7 @@ impl Journal {
         }
         let sequence = event.sequence.get();
         let stream = self.streams.get(&event.device_id);
-        if self.revisions.contains(&event.revision_id)
+        if self.revisions.contains_key(&event.revision_id)
             || stream.is_some_and(|stream| stream.records.contains_key(&sequence))
         {
             return Err(SyncError::Conflict);
@@ -111,7 +111,8 @@ impl Journal {
         let stream = self.streams.entry(event.device_id.clone()).or_default();
         let sequence = event.sequence.get();
         stream.records.insert(sequence, event.id.clone());
-        self.revisions.insert(event.revision_id.clone());
+        self.revisions
+            .insert(event.revision_id.clone(), event.id.clone());
         self.events.insert(event.id.clone(), record);
         if sequence != stream.next {
             return Ok(Receive::Waiting { next: stream.next });
@@ -186,8 +187,16 @@ impl Journal {
         while let Some(revision) = ready.pop_front() {
             applied += 1;
             heads.insert(revision);
+            let manual = self
+                .transcript(revision)
+                .is_some_and(|item| item.revision.kind == UtteranceKind::Manual);
             for parent in dependencies[revision] {
-                heads.remove(parent);
+                let confirmed = self
+                    .transcript(parent)
+                    .is_some_and(|item| item.revision.kind == UtteranceKind::Manual);
+                if manual || !confirmed {
+                    heads.remove(parent);
+                }
             }
             if let Some(dependents) = children.get(revision) {
                 for &child in dependents {
@@ -204,6 +213,21 @@ impl Journal {
             tombstoned: false,
             waiting_for_parents: dependencies.len() - applied + waiting_for_restore,
         }
+    }
+
+    fn transcript(&self, revision: &StableId) -> Option<&SyncedTranscript> {
+        self.events
+            .get(self.revisions.get(revision)?)?
+            .transcript
+            .as_ref()
+    }
+
+    pub fn transcript_heads(&self, entity: &StableId) -> Vec<&SyncedTranscript> {
+        self.state(entity)
+            .heads
+            .iter()
+            .filter_map(|revision| self.transcript(revision))
+            .collect()
     }
 
     pub fn checkpoint(&self) -> Result<Vec<u8>, SyncError> {
@@ -286,6 +310,10 @@ impl JournalStore {
 
     pub fn state(&self, entity: &StableId) -> EntityState {
         self.journal.state(entity)
+    }
+
+    pub fn transcript_heads(&self, entity: &StableId) -> Vec<&SyncedTranscript> {
+        self.journal.transcript_heads(entity)
     }
 
     pub fn receive(
@@ -555,5 +583,100 @@ mod tests {
         assert_eq!(journal.state(&other.entity_id).heads, expected);
         drop(journal);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn encrypted_transcripts_restore_both_manual_branches_and_a_resolution() {
+        use crate::contracts::{DomainBatch, Source};
+        use crate::sync::Outbox;
+
+        let batch: DomainBatch =
+            serde_json::from_str(include_str!("../../../contracts/fixtures/domain-v1.json"))
+                .unwrap();
+        let mut lines = batch.utterance_revisions.into_iter();
+        let partial = lines.next().unwrap();
+        let original = lines.next().unwrap();
+        let manual = lines.next().unwrap();
+        let mut machine = lines.next().unwrap();
+        machine.parent_revision_ids = vec![manual.id.clone()];
+        let concurrent = lines.next().unwrap();
+        let session_id = batch.sessions[0].id.clone();
+        let entity = original.utterance_id.clone();
+        let vault = Vault::create().unwrap();
+        let reader = Vault::recover(&vault.recovery_code()).unwrap();
+        let name = hex(vault.id());
+        let sending = std::env::temp_dir().join(format!("voiceledger-text-send-{name}"));
+        let receiving = std::env::temp_dir().join(format!("voiceledger-text-receive-{name}"));
+        let scopes = SyncScopes {
+            enabled: true,
+            ..SyncScopes::default()
+        };
+        let server = Server::default();
+        let stage = |device, sequence, revision: &crate::contracts::UtteranceRevision| {
+            let mut record = event(device, sequence, 10 * device + sequence as u32, 1);
+            record.entity_id = entity.clone();
+            record.revision_id = revision.id.clone();
+            let mut outbox = Outbox::open(&sending, &vault, record.device_id.clone()).unwrap();
+            outbox.stage_transcript(
+                &vault,
+                scopes,
+                &record,
+                &SyncedTranscript {
+                    session_id: session_id.clone(),
+                    source: Source::Mic,
+                    revision: revision.clone(),
+                },
+            )?;
+            outbox
+                .publish_next(&vault, scopes, &server)?
+                .ok_or(SyncError::LocalStorage)
+        };
+        assert_eq!(stage(3, 0, &partial), Err(SyncError::Integrity));
+        let original_key = stage(1, 0, &original).unwrap();
+        let manual_key = stage(1, 1, &manual).unwrap();
+        let machine_key = stage(1, 2, &machine).unwrap();
+        let concurrent_key = stage(2, 0, &concurrent).unwrap();
+        assert!(server.0.borrow().values().all(|bytes| {
+            !bytes
+                .windows(manual.text.len())
+                .any(|slice| slice == manual.text.as_bytes())
+        }));
+        let mut journal = JournalStore::open(&receiving, &reader).unwrap();
+        for key in [&concurrent_key, &machine_key, &manual_key, &original_key] {
+            journal.receive(&reader, &server, key).unwrap();
+        }
+        drop(journal);
+        let mut journal = JournalStore::open(&receiving, &reader).unwrap();
+        let recovered = journal.transcript_heads(&entity);
+        assert_eq!(
+            recovered
+                .iter()
+                .map(|item| item.revision.text.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                manual.text.as_str(),
+                machine.text.as_str(),
+                concurrent.text.as_str()
+            ]
+        );
+        assert!(
+            recovered
+                .iter()
+                .all(|item| item.session_id == session_id && item.source == Source::Mic)
+        );
+
+        let mut resolution = manual.clone();
+        resolution.id = id(900);
+        resolution.revision = 4.try_into().unwrap();
+        resolution.parent_revision_ids = journal.state(&entity).heads;
+        resolution.text = "Synthetic reviewed transcript".into();
+        let resolved_key = stage(2, 1, &resolution).unwrap();
+        journal.receive(&reader, &server, &resolved_key).unwrap();
+        let recovered = journal.transcript_heads(&entity);
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(recovered[0].revision.text, resolution.text);
+        drop(journal);
+        fs::remove_dir_all(sending).unwrap();
+        fs::remove_dir_all(receiving).unwrap();
     }
 }
