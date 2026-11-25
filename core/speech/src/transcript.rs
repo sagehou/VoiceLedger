@@ -220,8 +220,22 @@ pub struct Line {
 }
 
 pub fn selected(root: &Path, session: &StableId) -> Result<Vec<Line>> {
+    let mut lines = Vec::new();
+    visit_selected(root, session, 40, |line| {
+        lines.push(line);
+        Ok(())
+    })?;
+    Ok(lines)
+}
+
+pub(crate) fn visit_selected(
+    root: &Path,
+    session: &StableId,
+    limit: i64,
+    mut visit: impl FnMut(Line) -> Result<()>,
+) -> Result<()> {
     match root.join(PATH).metadata() {
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error.into()),
         Ok(_) => {}
     }
@@ -235,9 +249,9 @@ pub fn selected(root: &Path, session: &StableId) -> Result<Vec<Line>> {
     let session = String::from(session.clone());
     let mut query = db.prepare(
         "SELECT u.track_id, u.start_ns, r.payload FROM utterances u JOIN revisions r ON r.id=u.selected_revision
-         WHERE u.session_id=?1 ORDER BY u.start_ns,u.track_id LIMIT 40",
+         WHERE u.session_id=?1 ORDER BY u.start_ns,u.track_id LIMIT ?2",
     )?;
-    let rows = query.query_map([&session], |row| {
+    let rows = query.query_map(params![session, limit], |row| {
         Ok((
             row.get::<_, String>(0)?,
             row.get::<_, i64>(1)?,
@@ -245,7 +259,6 @@ pub fn selected(root: &Path, session: &StableId) -> Result<Vec<Line>> {
         ))
     })?;
     let mut labels = audio.prepare("SELECT source FROM tracks WHERE id=?1 AND session_id=?2")?;
-    let mut lines = Vec::new();
     for row in rows {
         let (track, start_ns, payload) = row?;
         let source = labels.query_row(params![track, session], |row| row.get(0))?;
@@ -255,7 +268,7 @@ pub fn selected(root: &Path, session: &StableId) -> Result<Vec<Line>> {
         } else {
             None
         };
-        lines.push(Line {
+        visit(Line {
             source,
             start_ns: u64::try_from(start_ns).map_err(|_| Error::Storage)?,
             utterance_id: value.utterance_id,
@@ -263,9 +276,9 @@ pub fn selected(root: &Path, session: &StableId) -> Result<Vec<Line>> {
             language: value.language,
             text: value.text,
             translation,
-        });
+        })?;
     }
-    Ok(lines)
+    Ok(())
 }
 
 pub(crate) fn job_status(

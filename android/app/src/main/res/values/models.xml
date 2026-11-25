@@ -69,4 +69,11 @@
     <string name="transcript">Transcript</string>
     <string name="edit_transcript">Edit transcript</string>
     <string name="save_revision">Save</string>
+    <string name="export_transcript">Export transcript</string>
+    <string name="export_text">Text (.txt)</string>
+    <string name="export_markdown">Markdown (.md)</string>
+    <string name="export_json">JSON (.json)</string>
+    <string name="export_plaintext">Export creates an unencrypted file.</string>
+    <string name="export_complete">Transcript exported.</string>
+    <string name="export_failed">Transcript export failed.</string>
 </resources>

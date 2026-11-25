@@ -540,6 +540,18 @@ fn native_translation_app_flow() {
     let updated = inspect();
     assert_eq!(updated["lines"][0]["text"], "Save the corrected recording.");
     assert_eq!(updated["lines"][0]["translation"]["stale"], true);
+    let json_export = request(json!({"op":"export","session_id":session,"format":"json"})).unwrap();
+    let json_export: serde_json::Value = serde_json::from_slice(&json_export).unwrap();
+    assert_eq!(
+        json_export["lines"][0]["text"],
+        "Save the corrected recording."
+    );
+    assert_eq!(json_export["lines"][0]["translation"]["stale"], true);
+    for format in ["text", "markdown"] {
+        let bytes = request(json!({"op":"export","session_id":session,"format":format})).unwrap();
+        let export = std::str::from_utf8(&bytes).unwrap();
+        assert!(export.contains("Microphone") && export.contains("请保存原始录音。"));
+    }
     let matches = request(json!({"op":"history", "query":"CORRECTED"})).unwrap();
     let sessions: serde_json::Value = serde_json::from_slice(&matches).unwrap();
     assert_eq!(sessions[0]["id"], json!(session));

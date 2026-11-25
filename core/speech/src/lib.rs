@@ -114,6 +114,10 @@ enum Action {
     History {
         query: Option<String>,
     },
+    Export {
+        session_id: StableId,
+        format: library::ExportFormat,
+    },
     SaveUtterance(library::UtteranceEdit),
     Install {
         model_id: String,
@@ -139,7 +143,10 @@ impl Request {
     }
 
     pub fn read_only(&self) -> bool {
-        matches!(self.action, Action::Inspect { .. } | Action::History { .. })
+        matches!(
+            self.action,
+            Action::Inspect { .. } | Action::History { .. } | Action::Export { .. }
+        )
     }
 
     pub fn run(
@@ -158,6 +165,18 @@ impl Request {
         let device = device_profile::load(&self.profiles)?;
         let reader = audio_reader(&self.recordings)?;
         let model_root = self.profiles.join("models");
+        if let Action::Export {
+            ref session_id,
+            format,
+        } = self.action
+        {
+            let session = reader
+                .as_ref()
+                .ok_or(Error::NoAudio)?
+                .finished(session_id)?
+                .ok_or(Error::NoAudio)?;
+            return library::export(&self.recordings, &session, format);
+        }
         if let Action::History { ref query } = self.action {
             return Ok(serde_json::to_vec(&library::history(
                 &self.recordings,
@@ -275,7 +294,9 @@ impl Request {
             action => action,
         };
         let id = match &action {
-            Action::Inspect { .. } | Action::History { .. } => return Err(Error::Invalid),
+            Action::Inspect { .. } | Action::History { .. } | Action::Export { .. } => {
+                return Err(Error::Invalid);
+            }
             Action::Install { model_id, .. }
             | Action::Transcribe { model_id, .. }
             | Action::Translate { model_id, .. } => model_id,

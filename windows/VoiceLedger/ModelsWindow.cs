@@ -10,6 +10,7 @@ using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
+using Microsoft.Win32;
 using VoiceLedger.Core;
 
 namespace VoiceLedger;
@@ -151,6 +152,7 @@ internal sealed class ModelsWindow : Window
                 AddLine($"{created.LocalDateTime:g}");
                 AddLine("Transcription language");
                 content.Children.Add(language);
+                if (sessions && lines.GetArrayLength() > 0) AddExport(sessionId);
             }
             foreach (JsonElement candidate in report.RootElement.GetProperty("candidates").EnumerateArray())
             {
@@ -220,6 +222,43 @@ internal sealed class ModelsWindow : Window
             content.Children.Clear();
             AddLine("Model catalog unavailable. Recording only.");
         }
+    }
+
+    private void AddExport(string sessionId)
+    {
+        var button = new Button { Content = "Export transcript", HorizontalAlignment = HorizontalAlignment.Left };
+        var status = new TextBlock { TextWrapping = TextWrapping.Wrap };
+        button.Click += async (_, _) =>
+        {
+            if (working || closed) return;
+            if (MessageBox.Show(this, "Export creates an unencrypted file.", "Export transcript",
+                    MessageBoxButton.OKCancel, MessageBoxImage.Information) != MessageBoxResult.OK) return;
+            var path = new SaveFileDialog
+            {
+                FileName = "VoiceLedger-transcript",
+                DefaultExt = ".txt",
+                Filter = "Text (*.txt)|*.txt|Markdown (*.md)|*.md|JSON (*.json)|*.json",
+            };
+            if (path.ShowDialog(this) != true) return;
+            string format = new[] { "text", "markdown", "json" }[path.FilterIndex - 1];
+            button.IsEnabled = false;
+            try
+            {
+                byte[] data = await Task.Run(() => NativeCore.SpeechRequest(
+                    SpeechWorker.Request(new { op = "export", session_id = sessionId, format })));
+                try { await File.WriteAllBytesAsync(path.FileName, data); }
+                finally { Array.Clear(data); }
+                status.Text = "Transcript exported.";
+            }
+            catch (Exception failure) when (failure is IOException or UnauthorizedAccessException
+                or InvalidOperationException or TypeInitializationException)
+            {
+                status.Text = "Transcript export failed.";
+            }
+            finally { button.IsEnabled = true; }
+        };
+        content.Children.Add(button);
+        content.Children.Add(status);
     }
 
     private void ShowTranslation(string sessionId, JsonElement line)

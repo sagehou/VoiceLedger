@@ -1,14 +1,14 @@
-use std::io::ErrorKind;
+use std::io::{ErrorKind, Write};
 use std::num::NonZeroU32;
 use std::path::Path;
 use std::time::Duration;
 
 use rusqlite::{Connection, OpenFlags, Transaction, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
-use voiceledger_audio::{CommittedReader, SavedSession};
+use voiceledger_audio::{CommittedReader, FinishedSession, SavedSession};
 use voiceledger_core::contracts::{StableId, UtteranceKind};
 
-use crate::transcript::{PATH, Transcripts, timestamp};
+use crate::transcript::{PATH, Transcripts, timestamp, visit_selected};
 use crate::translations::{MAX_TEXT, selected_source};
 use crate::{Error, Result};
 
@@ -128,4 +128,80 @@ impl Transcripts {
         tx.commit()?;
         Ok(())
     }
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ExportFormat {
+    Text,
+    Markdown,
+    Json,
+}
+
+pub(crate) fn export(
+    root: &Path,
+    session: &FinishedSession,
+    format: ExportFormat,
+) -> Result<Vec<u8>> {
+    const LIMIT: usize = 32 * 1024 * 1024;
+    let mut output = Vec::new();
+    match format {
+        ExportFormat::Text => writeln!(output, "VoiceLedger transcript")?,
+        ExportFormat::Markdown => writeln!(output, "# VoiceLedger transcript")?,
+        ExportFormat::Json => {
+            write!(output, "{{\"schema_version\":1,\"session\":")?;
+            serde_json::to_writer(&mut output, session)?;
+            write!(output, ",\"lines\":[")?;
+        }
+    }
+    let mut first = true;
+    visit_selected(root, &session.id, -1, |line| {
+        if matches!(format, ExportFormat::Json) {
+            if !first {
+                output.push(b',');
+            }
+            serde_json::to_writer(&mut output, &line)?;
+        } else {
+            let seconds = line.start_ns / 1_000_000_000;
+            let (hours, minutes, seconds) = (seconds / 3600, (seconds / 60) % 60, seconds % 60);
+            let source = if line.source == "mic" {
+                "Microphone"
+            } else {
+                "System loopback"
+            };
+            writeln!(output, "\n{hours:02}:{minutes:02}:{seconds:02} · {source}")?;
+            write_text(&mut output, &line.text, format)?;
+            if let Some(translation) = line.translation {
+                let status = if translation.stale {
+                    " · Outdated source"
+                } else {
+                    ""
+                };
+                writeln!(output, "Simplified Chinese{status}")?;
+                write_text(&mut output, &translation.text, format)?;
+            }
+        }
+        if output.len() > LIMIT {
+            return Err(Error::Storage);
+        }
+        first = false;
+        Ok(())
+    })?;
+    if matches!(format, ExportFormat::Json) {
+        output.extend_from_slice(b"]}\n");
+    }
+    Ok(output)
+}
+
+fn write_text(output: &mut Vec<u8>, text: &str, format: ExportFormat) -> Result<()> {
+    if matches!(format, ExportFormat::Markdown) {
+        output.push(b'\n');
+        for line in text.lines() {
+            // Indented code keeps arbitrary transcript text literal in Markdown renderers.
+            writeln!(output, "    {line}")?;
+        }
+    } else {
+        writeln!(output, "{text}")?;
+    }
+    Ok(())
 }

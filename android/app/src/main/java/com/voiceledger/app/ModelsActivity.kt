@@ -3,7 +3,9 @@ package com.voiceledger.app
 import android.os.Bundle
 import android.text.format.DateUtils
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -30,6 +32,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
@@ -198,6 +201,14 @@ class ModelsActivity : ComponentActivity() {
                                 }
                             }
                             val lines = inspection?.optJSONArray("lines")
+                            if (sessions && sessionId != null && (lines?.length() ?: 0) > 0) {
+                                ExportTranscript(!working) { format ->
+                                    withContext(Dispatchers.IO) {
+                                        NativeCore.speechRequest(query(JSONObject().put("op", "export")
+                                            .put("session_id", sessionId).put("format", format)))
+                                    }
+                                }
+                            }
                             for (index in 0 until (lines?.length() ?: 0)) {
                                 val line = lines?.getJSONObject(index) ?: continue
                                 val source = if (line.getString("source") == "mic") R.string.model_mic else R.string.model_loopback
@@ -314,6 +325,83 @@ class ModelsActivity : ComponentActivity() {
         .put("adapters", applicationInfo.nativeLibraryDir)
         .put("action", action)
         .toString()
+}
+
+@Composable
+private fun ExportTranscript(enabled: Boolean, prepare: suspend (String) -> ByteArray) {
+    val app = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var expanded by remember { mutableStateOf(false) }
+    var selected by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var data by remember { mutableStateOf<ByteArray?>(null) }
+    var exporting by remember { mutableStateOf(false) }
+    var outcome by remember { mutableStateOf<Int?>(null) }
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri ->
+        val bytes = data
+        data = null
+        if (uri == null || bytes == null) {
+            bytes?.fill(0)
+            exporting = false
+        } else {
+            scope.launch {
+                val written = withContext(Dispatchers.IO) {
+                    try {
+                        val stream = app.contentResolver.openOutputStream(uri)
+                        if (stream == null) false
+                        else {
+                            stream.use { it.write(bytes) }
+                            true
+                        }
+                    } catch (_: Exception) {
+                        false
+                    } finally { bytes.fill(0) }
+                }
+                outcome = if (written) R.string.export_complete else R.string.export_failed
+                exporting = false
+            }
+        }
+    }
+    Button(onClick = { expanded = true }, enabled = enabled && !exporting) {
+        Text(stringResource(R.string.export_transcript))
+    }
+    DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+        for ((label, format, extension) in listOf(
+            Triple(R.string.export_text, "text", "txt"),
+            Triple(R.string.export_markdown, "markdown", "md"),
+            Triple(R.string.export_json, "json", "json"),
+        )) {
+            DropdownMenuItem(text = { Text(stringResource(label)) }, onClick = {
+                expanded = false
+                selected = format to extension
+            })
+        }
+    }
+    selected?.let { (format, extension) ->
+        AlertDialog(
+            onDismissRequest = { selected = null },
+            text = { Text(stringResource(R.string.export_plaintext)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    selected = null
+                    exporting = true
+                    outcome = null
+                    scope.launch {
+                        try {
+                            data = prepare(format)
+                            picker.launch("VoiceLedger-transcript.$extension")
+                        } catch (_: Exception) {
+                            data?.fill(0)
+                            data = null
+                            outcome = R.string.export_failed
+                            exporting = false
+                        }
+                    }
+                }) { Text(stringResource(R.string.export_transcript)) }
+            },
+            dismissButton = { TextButton(onClick = { selected = null }) { Text(stringResource(R.string.cancel_speech)) } },
+        )
+    }
+    outcome?.let { Text(stringResource(it)) }
 }
 
 @Composable
