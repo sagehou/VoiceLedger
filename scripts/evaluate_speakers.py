@@ -4,6 +4,7 @@ import argparse
 from array import array
 import ctypes
 import hashlib
+import io
 from itertools import combinations
 import json
 import math
@@ -12,6 +13,7 @@ import random
 import socket
 import subprocess
 from time import perf_counter
+import wave
 
 from build_speech import fetch
 
@@ -35,10 +37,17 @@ def command(argv, *, data=None):
 
 
 def samples(voice, text, speed):
-    wave = command(["espeak-ng", "-v", voice, "-s", str(speed), "--stdout", text])
-    data = command(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "wav", "-i", "pipe:0",
-                    "-ac", "1", "-ar", str(RATE), "-f", "s16le", "pipe:1"], data=wave)
-    return array("h", data)
+    audio = command(["espeak-ng", "-v", voice, "-s", str(speed), "--stdout", text])
+    with wave.open(io.BytesIO(audio)) as stream:
+        rate = stream.getframerate()
+        assert stream.getnchannels() == 1 and stream.getsampwidth() == 2
+        pcm = array("h", stream.readframes(12 * rate))
+    output = array("h")
+    for index in range(len(pcm) * RATE // rate):
+        left, fraction = divmod(index * rate, RATE)
+        right = min(left + 1, len(pcm) - 1)
+        output.append((pcm[left] * (RATE - fraction) + pcm[right] * fraction) // RATE)
+    return output
 
 
 def overlap(a, b):
