@@ -219,7 +219,7 @@ impl Journal {
         self.events
             .get(self.revisions.get(revision)?)?
             .transcript
-            .as_ref()
+            .as_deref()
     }
 
     pub fn transcript_heads(&self, entity: &StableId) -> Vec<&SyncedTranscript> {
