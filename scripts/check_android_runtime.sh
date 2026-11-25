@@ -20,7 +20,7 @@ avdmanager create avd --force --name voiceledger_ci --device pixel_5 \
     --path "$ANDROID_AVD_HOME/voiceledger_ci.avd" < /dev/null
 test -s "$ANDROID_AVD_HOME/voiceledger_ci.ini"
 "$ANDROID_HOME/emulator/emulator" -avd voiceledger_ci -port 5554 \
-    -no-window -no-snapshot -no-boot-anim -noaudio -gpu swiftshader_indirect \
+    -no-window -no-snapshot -no-boot-anim -noaudio -gpu swiftshader \
     -camera-back none -camera-front none -accel on -cores 2 -memory 4096 \
     > artifacts/android-emulator.log 2>&1 &
 emulator_pid=$!
@@ -34,7 +34,7 @@ timeout 220s bash -c '
 ' bash "$emulator_pid"
 adb shell -T getprop ro.product.cpu.abilist | tee artifacts/android-emulator-abis.txt | grep -q arm64-v8a
 adb install app/build/outputs/apk/debug/app-debug.apk
-adb install app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+adb install -t app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
 timeout 220s adb shell -T am instrument -w -r \
     com.voiceledger.app.test/com.voiceledger.app.AndroidRuntimeSmoke | tee artifacts/android-runtime.log
 for stage in recording device_profile model_download; do
