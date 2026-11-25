@@ -11,6 +11,7 @@ use voiceledger_core::{
 #[cfg(any(target_os = "android", target_os = "linux"))]
 mod jni;
 mod track;
+mod vault;
 
 const MAX_DOMAIN_BATCH_BYTES: usize = 16 * 1024 * 1024;
 
@@ -22,6 +23,7 @@ enum Error {
     InvalidTransition = -3,
     Cancelled = -4,
     Internal = -5,
+    VaultRejected = -50,
 }
 
 #[derive(Default)]

@@ -203,8 +203,12 @@ checksum = "a2c754d6c33795a1c324727428e5a7dedb5b06195f9890bdbcba760d3e246563"
 name = "voiceledger-core"
 version = "0.1.0"
 dependencies = [
+ "base64",
+ "ring",
  "serde",
  "serde_json",
+ "sha2",
+ "zeroize",
 ]
 
 [[package]]
@@ -213,6 +217,7 @@ version = "0.1.0"
 dependencies = [
  "jni",
  "voiceledger-core",
+ "zeroize",
 ]
 
 [[package]]

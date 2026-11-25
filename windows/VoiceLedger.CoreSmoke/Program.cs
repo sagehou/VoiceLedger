@@ -56,6 +56,7 @@ string fixtureHash = Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(
 Console.WriteLine($"P/Invoke ABI {NativeCore.AbiVersion} passed {cases} fixture cases and {cycles} ownership cycles.");
 Console.WriteLine($"Fixture SHA-256 {fixtureHash}");
 ValidateDomainFixtures(args[1]);
+VaultSmoke.Run(Path.Combine(Path.GetDirectoryName(fixture)!, "vault-v1.json"));
 await RecordingSmoke.RunAsync();
 
 static void ValidateDomainFixtures(string directory)

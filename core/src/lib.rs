@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod contracts;
 pub mod track;
+pub mod vault;
 
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
