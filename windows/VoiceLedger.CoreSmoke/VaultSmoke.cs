@@ -15,12 +15,37 @@ internal static class VaultSmoke
         byte[] plaintext = Encoding.UTF8.GetBytes(Read("plaintext"));
         byte[] restored = VaultKeyProtection.Unwrap(VaultKeyProtection.Wrap(recovery));
         byte[] generated = NativeVault.CreateKey();
+        byte[] rotated = NativeVault.Rotate(generated);
+        string directory = Path.Combine(Path.GetTempPath(), $"voiceledger-vault-{Guid.NewGuid():N}");
         try
         {
             Expect(NativeVault.Open(restored, expected, envelope).AsSpan().SequenceEqual(plaintext));
+            Expect(VaultKeyProtection.ReadLocal(directory) is null);
+            VaultKeyProtection.InstallLocal(directory, generated);
+            byte[] local = VaultKeyProtection.ReadLocal(directory) ?? throw new InvalidDataException("Wrapped key missing.");
+            try
+            {
+                Expect(local.AsSpan().SequenceEqual(generated));
+                Expect(!File.ReadAllBytes(Path.Combine(directory, "vault-key.v1")).AsSpan().SequenceEqual(generated));
+                bool rejected = false;
+                try { VaultKeyProtection.InstallLocal(directory, rotated); }
+                catch (IOException) { rejected = true; }
+                Expect(rejected);
+            }
+            finally { CryptographicOperations.ZeroMemory(local); }
+            byte[] current = NativeVault.Identity(generated);
+            byte[] next = NativeVault.Identity(rotated);
+            Expect(current[..16].AsSpan().SequenceEqual(next[..16]));
+            Expect(next[16..].AsSpan().SequenceEqual(new byte[] { 0, 0, 0, 2 }));
             byte[] fresh = NativeVault.Seal(generated, plaintext);
             byte[] id = fresh[8..24];
             Expect(NativeVault.Open(generated, id, fresh).AsSpan().SequenceEqual(plaintext));
+            try
+            {
+                _ = NativeVault.Open(rotated, id, fresh);
+                throw new InvalidDataException("Old vault data was accepted by a new generation.");
+            }
+            catch (CoreException error) when (error.Code == -50) { }
             fresh[^1] ^= 1;
             try
             {
@@ -35,6 +60,8 @@ internal static class VaultSmoke
             CryptographicOperations.ZeroMemory(recovery);
             CryptographicOperations.ZeroMemory(restored);
             CryptographicOperations.ZeroMemory(generated);
+            CryptographicOperations.ZeroMemory(rotated);
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
         }
     }
 

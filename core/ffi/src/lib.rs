@@ -14,6 +14,7 @@ mod device_profile;
 mod jni;
 mod model_preview;
 mod speech;
+mod sync;
 mod track;
 mod vault;
 
@@ -45,6 +46,12 @@ enum Error {
     SpeechRevisionConflict = -39,
     SpeechTranslationTextLimit = -40,
     VaultRejected = -50,
+    SyncConfiguration = -60,
+    SyncAuthentication = -61,
+    SyncQuota = -62,
+    SyncProvider = -63,
+    SyncConnection = -64,
+    SyncIntegrity = -65,
 }
 
 #[derive(Default)]
