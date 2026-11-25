@@ -69,7 +69,8 @@ jobs:
       - name: Build and check the Android app
         run: |
           mkdir -p artifacts
-          ./gradlew --no-daemon --stacktrace :app:lintDebug :app:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest 2>&1 | tee artifacts/android-gradle.log
+          ./gradlew --no-daemon --stacktrace --write-locks :app:lintDebug :app:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest 2>&1 | tee artifacts/android-gradle.log
+          cp app/gradle.lockfile artifacts/gradle.lockfile
       - name: Run the packaged Android ARM64 startup and model download
         run: bash ../scripts/check_android_runtime.sh
       - name: Check the APK manifest
