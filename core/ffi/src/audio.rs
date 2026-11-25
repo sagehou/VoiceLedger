@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use voiceledger_audio::{MAX_CHANNELS, MAX_FRAMES, Response, Store};
+use voiceledger_audio::{MAX_CHANNELS, MAX_FRAMES, Store};
 
 use crate::{Error, guard, handles};
 
@@ -77,23 +77,7 @@ pub(crate) fn request(handle: i64, json: &[u8], pcm: &[f32]) -> Result<Option<Ve
         .get(&handle)
         .cloned()
         .ok_or(Error::UnknownHandle)?;
-    Ok(match store.execute_json(json, pcm)? {
-        Response::Empty => None,
-        Response::Json(bytes) => Some(bytes),
-        Response::Playback {
-            channels,
-            next_ns,
-            samples,
-        } => {
-            let mut payload = Vec::with_capacity(12 + samples.len() * 4);
-            payload.extend(channels.to_le_bytes());
-            payload.extend(next_ns.to_le_bytes());
-            for sample in samples {
-                payload.extend(sample.to_le_bytes());
-            }
-            Some(payload)
-        }
-    })
+    Ok(store.execute_json(json, pcm)?.into_bytes())
 }
 
 /// Execute a versioned UTF-8 JSON command and optionally return an owned buffer.

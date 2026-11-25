@@ -40,9 +40,9 @@ pub(crate) struct ManualEdit {
 pub struct TranslationLine {
     revision_id: StableId,
     target_language: Language,
-    text: String,
+    pub(crate) text: String,
     authorship: Authorship,
-    stale: bool,
+    pub(crate) stale: bool,
 }
 
 pub(crate) fn display(
@@ -205,7 +205,7 @@ impl Transcripts {
     }
 }
 
-fn selected_source(
+pub(crate) fn selected_source(
     db: &Connection,
     session: &StableId,
     utterance: &StableId,

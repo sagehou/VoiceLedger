@@ -1,8 +1,11 @@
 package com.voiceledger.app
 
 import android.os.Bundle
+import android.text.format.DateUtils
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -29,6 +32,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
@@ -41,16 +45,19 @@ import com.voiceledger.app.speech.SpeechConnection
 import java.io.File
 import java.text.DateFormat
 import java.util.Date
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 
 class ModelsActivity : ComponentActivity() {
     private var connection: SpeechConnection? = null
     private var preparing: Job? = null
+    private var playback: Job? = null
     private var working by mutableStateOf(false)
     private var partial by mutableStateOf<String?>(null)
     private var result by mutableStateOf<Int?>(null)
@@ -58,19 +65,43 @@ class ModelsActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val sessions = intent.getBooleanExtra("sessions", false)
         setContent {
             var report by remember { mutableStateOf<JSONObject?>(null) }
             var inspection by remember { mutableStateOf<JSONObject?>(null) }
             var unavailable by remember { mutableStateOf(false) }
             var language by remember { mutableStateOf("auto") }
             var edit by remember { mutableStateOf<JSONObject?>(null) }
+            var editKind by remember { mutableStateOf(RevisionEditor.Transcript) }
+            var selectedSession by remember { mutableStateOf<String?>(null) }
+            var rename by remember(selectedSession) { mutableStateOf(false) }
+            var trackFilter by remember(selectedSession) { mutableStateOf<String?>(null) }
+            var search by remember { mutableStateOf("") }
+            var requestedSearch by remember { mutableStateOf("") }
+            var history by remember { mutableStateOf<JSONArray?>(null) }
+            var historyError by remember { mutableStateOf(false) }
             val recording by RecordingStatusStore.state.collectAsState()
-            LaunchedEffect(reload) {
+            LaunchedEffect(selectedSession, requestedSearch, reload) {
+                if (sessions && selectedSession == null) {
+                    history = null
+                    historyError = false
+                    history = withContext(Dispatchers.IO) {
+                        val request = JSONObject().put("op", "history").put("query", requestedSearch)
+                        runCatching { JSONArray(NativeCore.speechRequest(query(request)).decodeToString()) }.getOrNull()
+                    }
+                    historyError = history == null
+                    return@LaunchedEffect
+                }
+                report = null
+                inspection = null
+                val selected = selectedSession
                 val loaded = withContext(Dispatchers.IO) {
                     try {
                         runCatching { DeviceProfiler.capture(applicationContext) }
                         val catalog = JSONObject(NativeCore.modelPreview(noBackupFilesDir.absolutePath).decodeToString())
-                        val details = JSONObject(NativeCore.speechRequest(query(JSONObject().put("op", "inspect"))).decodeToString())
+                        val action = JSONObject().put("op", "inspect")
+                        if (selected != null) action.put("session_id", selected)
+                        val details = JSONObject(NativeCore.speechRequest(query(action)).decodeToString())
                         catalog to details
                     } catch (_: Exception) {
                         null
@@ -94,8 +125,44 @@ class ModelsActivity : ComponentActivity() {
                         Modifier.safeDrawingPadding().verticalScroll(rememberScrollState()).padding(24.dp),
                         verticalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
-                        Text(stringResource(R.string.models), style = MaterialTheme.typography.headlineLarge)
-                        Text(stringResource(R.string.recording_only_during_capture))
+                        Text(stringResource(if (sessions) R.string.sessions else R.string.models),
+                            style = MaterialTheme.typography.headlineLarge)
+                        if (sessions && selectedSession == null) {
+                            OutlinedTextField(
+                                value = search, onValueChange = { if (it.length <= 64) search = it },
+                                label = { Text(stringResource(R.string.search_transcripts)) }, singleLine = true,
+                            )
+                            Button(onClick = { requestedSearch = search; reload++ }) {
+                                Text(stringResource(R.string.search_transcripts))
+                            }
+                            val results = history
+                            when {
+                                historyError -> Text(stringResource(R.string.sessions_unavailable))
+                                results == null -> Text(stringResource(R.string.sessions_loading))
+                                results.length() == 0 -> {
+                                    Text(stringResource(if (requestedSearch.isBlank()) R.string.sessions_empty else R.string.sessions_no_match))
+                                    Button(onClick = ::finish) { Text(stringResource(R.string.return_to_recording)) }
+                                }
+                                else -> for (index in 0 until results.length()) {
+                                    val item = results.getJSONObject(index)
+                                    val time = DateFormat.getDateTimeInstance().format(Date(item.getLong("created_at_ms")))
+                                    val duration = DateUtils.formatElapsedTime(item.getLong("elapsed_ns") / 1_000_000_000)
+                                    val state = stringResource(if (item.getBoolean("interrupted")) R.string.session_interrupted else R.string.session_completed)
+                                    Button(onClick = { selectedSession = item.getString("id") }) {
+                                        val label = stringResource(R.string.session_row, time, duration, state,
+                                            item.getLong("committed"), item.getLong("missing"))
+                                        val title = if (item.isNull("title")) "" else item.getString("title")
+                                        Text(if (title.isEmpty()) label else "$title\n$label")
+                                    }
+                                }
+                            }
+                            return@Column
+                        }
+                        if (sessions) {
+                            Button(enabled = !working, onClick = { selectedSession = null; edit = null }) {
+                                Text(stringResource(R.string.back_to_sessions))
+                            }
+                        }
                         val status = result?.let(::resultText) ?: inspection?.optJSONObject("job")?.let(::jobStatus)
                         status?.let { Text(stringResource(it)) }
                         if (working) {
@@ -111,7 +178,54 @@ class ModelsActivity : ComponentActivity() {
                             val sessionId = session?.getString("id")
                             if (session != null) {
                                 val date = Date(session.getLong("created_at_ms"))
-                                Text(stringResource(R.string.latest_saved_session, DateFormat.getDateTimeInstance().format(date)))
+                                Text(DateFormat.getDateTimeInstance().format(date))
+                                if (sessions && sessionId != null) {
+                                    val title = inspection?.takeUnless { it.isNull("title") }?.getString("title").orEmpty()
+                                    if (title.isNotEmpty()) Text(title, style = MaterialTheme.typography.titleLarge)
+                                    Button(enabled = !working, onClick = { rename = true }) {
+                                        Text(stringResource(R.string.session_rename))
+                                    }
+                                    if (rename) {
+                                        TextRevisionEditor(title, R.string.session_rename, !working,
+                                            field = R.string.session_title, maxLength = 64, allowBlank = true,
+                                            onDismiss = { rename = false }) { value ->
+                                            saveRevision(JSONObject().put("op", "rename_session")
+                                                .put("session_id", sessionId).put("text", value)).also { code ->
+                                                if (code == 0) { rename = false; reload++ }
+                                            }
+                                        }
+                                    }
+                                    SessionAudio(inspection?.optJSONArray("tracks"), trackFilter,
+                                        onTrack = { trackFilter = it },
+                                        onStop = { playback?.cancel() },
+                                        onPlay = { track, at, finished ->
+                                            playback?.cancel()
+                                            playback = lifecycleScope.launch {
+                                                try {
+                                                    finished(playSavedTrack(at) { position ->
+                                                        NativeCore.speechRequest(query(JSONObject().put("op", "playback")
+                                                            .put("session_id", sessionId).put("track_id", track)
+                                                            .put("position_ns", position)))
+                                                    })
+                                                } catch (error: CancellationException) {
+                                                    finished(null)
+                                                    throw error
+                                                }
+                                            }
+                                        },
+                                        archive = { track, chunk ->
+                                            val op = if (chunk == null) "track_archive" else "track_archive_chunk"
+                                            val action = JSONObject().put("op", op).put("session_id", sessionId).put("track_id", track)
+                                            if (chunk != null) action.put("chunk_id", chunk)
+                                            NativeCore.speechRequest(query(action))
+                                        },
+                                        timeline = { track ->
+                                            withContext(Dispatchers.IO) {
+                                                JSONArray(NativeCore.speechRequest(query(JSONObject().put("op", "track_timeline")
+                                                    .put("session_id", sessionId).put("track_id", track))).decodeToString())
+                                            }
+                                        })
+                                }
                                 LanguagePicker(language, !working) { language = it }
                             }
                             val choices = inspection?.getJSONArray("models")
@@ -140,11 +254,25 @@ class ModelsActivity : ComponentActivity() {
                                 }
                             }
                             val lines = inspection?.optJSONArray("lines")
+                            if (sessions && sessionId != null && (lines?.length() ?: 0) > 0) {
+                                ExportTranscript(!working) { format ->
+                                    withContext(Dispatchers.IO) {
+                                        NativeCore.speechRequest(query(JSONObject().put("op", "export")
+                                            .put("session_id", sessionId).put("format", format)))
+                                    }
+                                }
+                            }
                             for (index in 0 until (lines?.length() ?: 0)) {
                                 val line = lines?.getJSONObject(index) ?: continue
+                                if (trackFilter != null && trackFilter != line.getString("source")) continue
                                 val source = if (line.getString("source") == "mic") R.string.model_mic else R.string.model_loopback
                                 Text(stringResource(R.string.model_line, stringResource(source), line.getLong("start_ns") / 1_000_000_000.0))
                                 Text(line.getString("text"))
+                                if (sessionId != null) {
+                                    Button(enabled = idle && !working, onClick = { editKind = RevisionEditor.Transcript; edit = line }) {
+                                        Text(stringResource(R.string.edit_transcript))
+                                    }
+                                }
                                 val revision = line.optJSONObject("translation")
                                 if (revision != null) {
                                     val author = stringResource(if (revision.getString("authorship") == "manual")
@@ -154,22 +282,43 @@ class ModelsActivity : ComponentActivity() {
                                     Text(revision.getString("text"))
                                 }
                                 if (sessionId != null && line.getString("language") == "en") {
-                                    Button(enabled = idle && !working, onClick = { edit = line }) {
+                                    Button(enabled = idle && !working, onClick = { editKind = RevisionEditor.Translation; edit = line }) {
                                         Text(stringResource(if (revision == null) R.string.add_translation else R.string.edit_translation))
+                                    }
+                                }
+                                if (sessions && sessionId != null) {
+                                    val speaker = line.optJSONObject("speaker")
+                                    val name = speaker?.takeUnless { it.isNull("name") }?.getString("name")
+                                    Text(name ?: stringResource(R.string.session_unknown_speaker))
+                                    Button(enabled = idle && !working, onClick = { editKind = RevisionEditor.Speaker; edit = line }) {
+                                        Text(stringResource(R.string.session_edit_speaker))
                                     }
                                 }
                             }
                             edit?.let { line ->
                                 if (sessionId != null) {
-                                    TranslationEditor(line, idle && !working, onDismiss = { edit = null }) { text ->
-                                        val action = JSONObject()
-                                            .put("op", "save_translation")
-                                            .put("session_id", sessionId)
+                                    val speaker = line.optJSONObject("speaker")
+                                    val initial = when (editKind) {
+                                        RevisionEditor.Transcript -> line.getString("text")
+                                        RevisionEditor.Translation -> line.optJSONObject("translation")?.getString("text").orEmpty()
+                                        RevisionEditor.Speaker -> speaker?.takeUnless { it.isNull("name") }?.getString("name").orEmpty()
+                                    }
+                                    val isSpeaker = editKind == RevisionEditor.Speaker
+                                    TextRevisionEditor(initial, editKind.label, idle && !working, field = editKind.field,
+                                        maxLength = if (isSpeaker) 64 else 8192, allowBlank = isSpeaker,
+                                        onDismiss = { edit = null }) { text ->
+                                        val action = JSONObject().put("session_id", sessionId)
                                             .put("utterance_id", line.getString("utterance_id"))
-                                            .put("source_revision_id", line.getString("revision_id"))
-                                            .put("expected_translation_id", line.optJSONObject("translation")?.getString("revision_id") ?: JSONObject.NULL)
                                             .put("text", text)
-                                        saveTranslation(action).also { code ->
+                                        val revision = line.getString("revision_id")
+                                        when (editKind) {
+                                            RevisionEditor.Transcript -> action.put("op", "save_utterance").put("expected_revision_id", revision)
+                                            RevisionEditor.Translation -> action.put("op", "save_translation").put("source_revision_id", revision)
+                                                .put("expected_translation_id", line.optJSONObject("translation")?.getString("revision_id") ?: JSONObject.NULL)
+                                            RevisionEditor.Speaker -> action.put("op", "save_speaker").put("expected_revision_id", revision)
+                                                .put("expected_speaker_id", speaker?.getString("revision_id") ?: JSONObject.NULL)
+                                        }
+                                        saveRevision(action).also { code ->
                                             if (code == 0) {
                                                 edit = null
                                                 result = code
@@ -187,6 +336,7 @@ class ModelsActivity : ComponentActivity() {
     }
 
     override fun onStop() {
+        playback?.cancel()
         if (working) finishRequest(-4)
         super.onStop()
     }
@@ -228,7 +378,7 @@ class ModelsActivity : ComponentActivity() {
         reload++
     }
 
-    private suspend fun saveTranslation(action: JSONObject): Int = withContext(Dispatchers.IO) {
+    private suspend fun saveRevision(action: JSONObject): Int = withContext(Dispatchers.IO) {
         try {
             NativeCore.speechRequest(query(action))
             0
@@ -248,25 +398,112 @@ class ModelsActivity : ComponentActivity() {
 }
 
 @Composable
-private fun TranslationEditor(
-    line: JSONObject,
+private fun ExportTranscript(enabled: Boolean, prepare: suspend (String) -> ByteArray) {
+    val app = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var expanded by remember { mutableStateOf(false) }
+    var selected by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var data by remember { mutableStateOf<ByteArray?>(null) }
+    var exporting by remember { mutableStateOf(false) }
+    var outcome by remember { mutableStateOf<Int?>(null) }
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri ->
+        val bytes = data
+        data = null
+        if (uri == null || bytes == null) {
+            bytes?.fill(0)
+            exporting = false
+        } else {
+            scope.launch {
+                val written = withContext(Dispatchers.IO) {
+                    try {
+                        val stream = app.contentResolver.openOutputStream(uri)
+                        if (stream == null) false
+                        else {
+                            stream.use { it.write(bytes) }
+                            true
+                        }
+                    } catch (_: Exception) {
+                        false
+                    } finally { bytes.fill(0) }
+                }
+                outcome = if (written) R.string.export_complete else R.string.export_failed
+                exporting = false
+            }
+        }
+    }
+    Button(onClick = { expanded = true }, enabled = enabled && !exporting) {
+        Text(stringResource(R.string.export_transcript))
+    }
+    DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+        for ((label, format, extension) in listOf(
+            Triple(R.string.export_text, "text", "txt"),
+            Triple(R.string.export_markdown, "markdown", "md"),
+            Triple(R.string.export_json, "json", "json"),
+        )) {
+            DropdownMenuItem(text = { Text(stringResource(label)) }, onClick = {
+                expanded = false
+                selected = format to extension
+            })
+        }
+    }
+    selected?.let { (format, extension) ->
+        AlertDialog(
+            onDismissRequest = { selected = null },
+            text = { Text(stringResource(R.string.export_plaintext)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    selected = null
+                    exporting = true
+                    outcome = null
+                    scope.launch {
+                        try {
+                            data = prepare(format)
+                            picker.launch("VoiceLedger-transcript.$extension")
+                        } catch (_: Exception) {
+                            data?.fill(0)
+                            data = null
+                            outcome = R.string.export_failed
+                            exporting = false
+                        }
+                    }
+                }) { Text(stringResource(R.string.export_transcript)) }
+            },
+            dismissButton = { TextButton(onClick = { selected = null }) { Text(stringResource(R.string.cancel_speech)) } },
+        )
+    }
+    outcome?.let { Text(stringResource(it)) }
+}
+
+private enum class RevisionEditor(val label: Int, val field: Int) {
+    Transcript(R.string.edit_transcript, R.string.transcript),
+    Translation(R.string.edit_translation, R.string.chinese_translation),
+    Speaker(R.string.session_edit_speaker, R.string.session_speaker_name),
+}
+
+@Composable
+private fun TextRevisionEditor(
+    initial: String,
+    label: Int,
     enabled: Boolean,
+    field: Int,
+    maxLength: Int,
+    allowBlank: Boolean,
     onDismiss: () -> Unit,
     save: suspend (String) -> Int,
 ) {
     val scope = rememberCoroutineScope()
-    var text by remember(line) { mutableStateOf(line.optJSONObject("translation")?.getString("text").orEmpty()) }
-    var saving by remember(line) { mutableStateOf(false) }
-    var error by remember(line) { mutableStateOf<Int?>(null) }
+    var text by remember(initial) { mutableStateOf(initial) }
+    var saving by remember(initial) { mutableStateOf(false) }
+    var error by remember(initial) { mutableStateOf<Int?>(null) }
     AlertDialog(
         onDismissRequest = { if (!saving) onDismiss() },
-        title = { Text(stringResource(R.string.edit_translation)) },
+        title = { Text(stringResource(label)) },
         text = {
             Column {
                 OutlinedTextField(
                     value = text,
-                    onValueChange = { if (it.encodeToByteArray().size <= 8192) text = it },
-                    label = { Text(stringResource(R.string.chinese_translation)) },
+                    onValueChange = { if (it.length <= maxLength && it.encodeToByteArray().size <= 8192) text = it },
+                    label = { Text(stringResource(field)) }, singleLine = allowBlank,
                     readOnly = saving,
                 )
                 error?.let { Text(stringResource(resultText(it))) }
@@ -274,7 +511,7 @@ private fun TranslationEditor(
         },
         confirmButton = {
             TextButton(
-                enabled = enabled && !saving && text.isNotBlank(),
+                enabled = enabled && !saving && (allowBlank || text.isNotBlank()),
                 onClick = {
                     saving = true
                     scope.launch {
@@ -285,7 +522,7 @@ private fun TranslationEditor(
                     }
                 },
             ) {
-                Text(stringResource(R.string.save_translation))
+                Text(stringResource(R.string.save_revision))
             }
         },
         dismissButton = {

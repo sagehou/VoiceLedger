@@ -1,5 +1,6 @@
 mod engine;
 mod jobs;
+mod library;
 mod pipeline;
 mod transcript;
 mod transfer;
@@ -15,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
-use voiceledger_audio::{CommittedReader, FinishedSession};
+use voiceledger_audio::{CommittedReader, FinishedSession, HistoryTrack};
 use voiceledger_core::contracts::{
     Count, DeviceCapabilityProfile, Language, LanguagePolicy, ModelRef, StableId,
 };
@@ -107,7 +108,37 @@ pub struct Request {
 #[derive(Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 enum Action {
-    Inspect,
+    Inspect {
+        session_id: Option<StableId>,
+    },
+    History {
+        query: Option<String>,
+    },
+    Export {
+        session_id: StableId,
+        format: library::ExportFormat,
+    },
+    TrackTimeline {
+        session_id: StableId,
+        track_id: StableId,
+    },
+    Playback {
+        session_id: StableId,
+        track_id: StableId,
+        position_ns: i64,
+    },
+    TrackArchive {
+        session_id: StableId,
+        track_id: StableId,
+    },
+    TrackArchiveChunk {
+        session_id: StableId,
+        track_id: StableId,
+        chunk_id: StableId,
+    },
+    SaveUtterance(library::UtteranceEdit),
+    RenameSession(library::TitleEdit),
+    SaveSpeaker(library::SpeakerEdit),
     Install {
         model_id: String,
         approved: bool,
@@ -132,7 +163,16 @@ impl Request {
     }
 
     pub fn read_only(&self) -> bool {
-        matches!(self.action, Action::Inspect)
+        matches!(
+            self.action,
+            Action::Inspect { .. }
+                | Action::History { .. }
+                | Action::Export { .. }
+                | Action::TrackTimeline { .. }
+                | Action::Playback { .. }
+                | Action::TrackArchive { .. }
+                | Action::TrackArchiveChunk { .. }
+        )
     }
 
     pub fn run(
@@ -147,17 +187,97 @@ impl Request {
         {
             return Err(Error::Invalid);
         }
+        let reader = audio_reader(&self.recordings)?;
+        match &self.action {
+            Action::TrackTimeline {
+                session_id,
+                track_id,
+            } => {
+                let rows = reader
+                    .as_ref()
+                    .ok_or(Error::NoAudio)?
+                    .timeline(session_id, track_id)
+                    .map_err(playback_error)?;
+                return Ok(serde_json::to_vec(&rows)?);
+            }
+            Action::Playback {
+                session_id,
+                track_id,
+                position_ns,
+            } => {
+                return reader
+                    .as_ref()
+                    .ok_or(Error::NoAudio)?
+                    .playback(session_id, track_id, *position_ns)
+                    .map_err(playback_error)?
+                    .into_bytes()
+                    .ok_or(Error::NoAudio);
+            }
+            Action::TrackArchive {
+                session_id,
+                track_id,
+            } => {
+                let index = reader
+                    .as_ref()
+                    .ok_or(Error::NoAudio)?
+                    .archive(session_id, track_id)
+                    .map_err(playback_error)?;
+                return Ok(serde_json::to_vec(&index)?);
+            }
+            Action::TrackArchiveChunk {
+                session_id,
+                track_id,
+                chunk_id,
+            } => {
+                return reader
+                    .as_ref()
+                    .ok_or(Error::NoAudio)?
+                    .archive_chunk(session_id, track_id, chunk_id)
+                    .map_err(playback_error);
+            }
+            _ => {}
+        }
         let catalog = Catalog::bundled().map_err(|_| Error::Invalid)?;
         let device = device_profile::load(&self.profiles)?;
-        let reader = audio_reader(&self.recordings)?;
         let model_root = self.profiles.join("models");
-        if self.read_only() {
+        if let Action::Export {
+            ref session_id,
+            format,
+        } = self.action
+        {
             let session = reader
                 .as_ref()
-                .map(CommittedReader::latest)
+                .ok_or(Error::NoAudio)?
+                .finished(session_id)?
+                .ok_or(Error::NoAudio)?;
+            return library::export(&self.recordings, &session, format);
+        }
+        if let Action::History { ref query } = self.action {
+            return Ok(serde_json::to_vec(&library::history(
+                &self.recordings,
+                reader.as_ref(),
+                query.as_deref(),
+            )?)?);
+        }
+        if let Action::Inspect { ref session_id } = self.action {
+            let session = reader
+                .as_ref()
+                .map(|reader| match session_id {
+                    Some(id) => reader.finished(id),
+                    None => reader.latest(),
+                })
                 .transpose()?
                 .flatten();
             let recordings = &self.recordings;
+            let title = session
+                .as_ref()
+                .map(|session| library::title(recordings, &session.id))
+                .transpose()?
+                .flatten();
+            let tracks = match (reader.as_ref(), session_id) {
+                (Some(reader), Some(id)) => reader.tracks(id)?,
+                _ => Vec::new(),
+            };
             let lines = session
                 .as_ref()
                 .map(|item| transcript::selected(recordings, &item.id))
@@ -213,6 +333,8 @@ impl Request {
                 lines,
                 job,
                 has_translation_source,
+                tracks,
+                title,
             })?);
         }
         check_cancel(cancelled)?;
@@ -247,6 +369,23 @@ impl Request {
             .open(self.profiles.join(WORKER_LOCK))?;
         lock.try_lock().map_err(|_| Error::Busy)?;
         let action = match self.action {
+            Action::SaveUtterance(edit) => {
+                Transcripts::open(&self.recordings)?.save_utterance(edit)?;
+                return processed(1);
+            }
+            Action::RenameSession(edit) => {
+                reader
+                    .as_ref()
+                    .ok_or(Error::NoAudio)?
+                    .finished(&edit.session_id)?
+                    .ok_or(Error::NoAudio)?;
+                Transcripts::open(&self.recordings)?.rename(edit)?;
+                return processed(1);
+            }
+            Action::SaveSpeaker(edit) => {
+                Transcripts::open(&self.recordings)?.save_speaker(edit)?;
+                return processed(1);
+            }
             Action::SaveTranslation(edit) => {
                 Transcripts::open(&self.recordings)?.save_manual_translation(edit)?;
                 return processed(1);
@@ -254,11 +393,22 @@ impl Request {
             action => action,
         };
         let id = match &action {
-            Action::Inspect => return Err(Error::Invalid),
+            Action::Inspect { .. }
+            | Action::History { .. }
+            | Action::Export { .. }
+            | Action::TrackTimeline { .. }
+            | Action::Playback { .. }
+            | Action::TrackArchive { .. }
+            | Action::TrackArchiveChunk { .. } => return Err(Error::Invalid),
             Action::Install { model_id, .. }
             | Action::Transcribe { model_id, .. }
             | Action::Translate { model_id, .. } => model_id,
-            Action::SaveTranslation(_) => return Err(Error::Invalid),
+            Action::SaveTranslation(_)
+            | Action::SaveUtterance(_)
+            | Action::RenameSession(_)
+            | Action::SaveSpeaker(_) => {
+                return Err(Error::Invalid);
+            }
         };
         let model = catalog
             .models()
@@ -608,6 +758,8 @@ struct Inspection<'a> {
     lines: Vec<transcript::Line>,
     job: Option<jobs::Status>,
     has_translation_source: bool,
+    tracks: Vec<HistoryTrack>,
+    title: Option<String>,
 }
 
 const WORKER_LOCK: &str = "speech-worker.lock";
@@ -658,6 +810,14 @@ fn deferred(
 
 fn processed(saved: u64) -> Result<Vec<u8>> {
     Ok(serde_json::to_vec(&serde_json::json!({ "saved": saved }))?)
+}
+
+fn playback_error(error: voiceledger_audio::Error) -> Error {
+    match error {
+        voiceledger_audio::Error::Unavailable => Error::NoAudio,
+        voiceledger_audio::Error::Invalid => Error::Invalid,
+        error => error.into(),
+    }
 }
 
 fn audio_reader(root: &Path) -> Result<Option<CommittedReader>> {

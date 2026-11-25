@@ -1,6 +1,9 @@
 use rusqlite::OpenFlags;
 
-use super::{Chunk, CommittedMedia, committed_media};
+use super::{
+    Chunk, CommittedMedia, HistoryTrack, Response, TimelineRow, committed_media, playback,
+};
+use super::{Payload, chunk_path, inspect};
 use crate::{Error, Result};
 
 use rusqlite::{Connection, OptionalExtension, params};
@@ -13,6 +16,17 @@ use voiceledger_core::contracts::StableId;
 pub struct FinishedSession {
     pub id: StableId,
     pub created_at_ms: i64,
+}
+
+#[derive(Serialize)]
+pub struct SavedSession {
+    pub id: StableId,
+    pub created_at_ms: i64,
+    pub elapsed_ns: i64,
+    pub interrupted: bool,
+    pub tracks: u32,
+    pub committed: u32,
+    pub missing: u32,
 }
 
 pub struct CommittedChunk {
@@ -32,6 +46,27 @@ pub struct TrackInput {
     pub last_chunk_id: StableId,
     pub start_ns: i64,
     pub end_ns: i64,
+}
+
+#[derive(Serialize)]
+pub struct TrackArchive {
+    schema_version: u32,
+    session_id: StableId,
+    track_id: StableId,
+    source: String,
+    playback_rate: usize,
+    chunks: Vec<ArchiveChunk>,
+    timeline: Vec<TimelineRow>,
+}
+
+#[derive(Serialize)]
+struct ArchiveChunk {
+    id: String,
+    start_ns: i64,
+    end_ns: i64,
+    source_epoch: u32,
+    channels: u32,
+    sha256: String,
 }
 
 pub struct CommittedReader {
@@ -75,6 +110,168 @@ impl CommittedReader {
             })
         })
         .transpose()
+    }
+
+    pub fn finished(&self, session: &StableId) -> Result<Option<FinishedSession>> {
+        let id = String::from(session.clone());
+        let created_at_ms = self
+            .db
+            .query_row(
+                "SELECT created_at_ms FROM sessions WHERE id=?1 AND state IN (5,6)",
+                [&id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(created_at_ms.map(|created_at_ms| FinishedSession {
+            id: session.clone(),
+            created_at_ms,
+        }))
+    }
+
+    pub fn saved_sessions(&self, before: Option<(i64, &StableId)>) -> Result<Vec<SavedSession>> {
+        let before = before.map(|(at, id)| (at, String::from(id.clone())));
+        let (at, id) = before.map_or((None, None), |(at, id)| (Some(at), Some(id)));
+        let mut query = self.db.prepare(
+            "WITH page AS (
+                SELECT id,created_at_ms,elapsed_ns,state,interrupted_tail FROM sessions
+                WHERE state IN (5,6) AND (?1 IS NULL OR (created_at_ms,id)<(?1,?2))
+                ORDER BY created_at_ms DESC,id DESC LIMIT 64
+            )
+            SELECT p.id,p.created_at_ms,p.elapsed_ns,(p.state=6 OR p.interrupted_tail=1),
+                COUNT(DISTINCT t.id),COUNT(CASE WHEN c.state='committed' THEN 1 END),
+                COUNT(CASE WHEN c.state='missing' THEN 1 END)
+            FROM page p LEFT JOIN tracks t ON t.session_id=p.id LEFT JOIN chunks c ON c.track_id=t.id
+            GROUP BY p.id ORDER BY p.created_at_ms DESC,p.id DESC",
+        )?;
+        let rows = query.query_map(params![at, id], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let (id, created_at_ms, elapsed_ns, interrupted, tracks, committed, missing) = row?;
+            Ok(SavedSession {
+                id: stable(id)?,
+                created_at_ms,
+                elapsed_ns,
+                interrupted,
+                tracks,
+                committed,
+                missing,
+            })
+        })
+        .collect()
+    }
+
+    pub fn tracks(&self, session: &StableId) -> Result<Vec<HistoryTrack>> {
+        history(&self.db, Some(String::from(session.clone()).as_str()))
+    }
+
+    pub fn timeline(&self, session: &StableId, track: &StableId) -> Result<Vec<TimelineRow>> {
+        let track = String::from(track.clone());
+        let available: bool = self.db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM tracks t JOIN sessions s ON s.id=t.session_id
+             WHERE t.id=?1 AND s.id=?2 AND s.state IN (5,6))",
+            params![track, String::from(session.clone())],
+            |row| row.get(0),
+        )?;
+        if !available {
+            return Err(Error::Unavailable);
+        }
+        timeline(&self.db, &track)
+    }
+
+    pub fn playback(&self, session: &StableId, track: &StableId, at: i64) -> Result<Response> {
+        if at < 0 {
+            return Err(Error::Invalid);
+        }
+        let chunk = self
+            .db
+            .query_row(
+                &format!(
+                    "{} JOIN sessions ses ON ses.id=t.session_id
+             WHERE ses.id=?1 AND ses.state IN (5,6) AND c.track_id=?2 AND c.state='committed'
+               AND c.start_ns<=?3 AND c.end_ns>?3",
+                    Chunk::SELECT
+                ),
+                params![
+                    String::from(session.clone()),
+                    String::from(track.clone()),
+                    at
+                ],
+                Chunk::read,
+            )
+            .optional()?
+            .ok_or(Error::Unavailable)?;
+        match committed_media(&self.root, &chunk)? {
+            CommittedMedia::Decoded(media) => Ok(playback(&chunk, at, media)),
+            CommittedMedia::Absent | CommittedMedia::Corrupt => Err(Error::Unavailable),
+        }
+    }
+
+    pub fn archive(&self, session: &StableId, track: &StableId) -> Result<TrackArchive> {
+        let track_id = String::from(track.clone());
+        let source = self
+            .tracks(session)?
+            .into_iter()
+            .find(|saved| saved.id == track_id)
+            .ok_or(Error::Unavailable)?
+            .source;
+        let mut statement = self.db.prepare(
+            "SELECT c.id,c.start_ns,c.end_ns,s.source_epoch,s.channels,c.sha256
+             FROM chunks c JOIN streams s ON s.id=c.stream_id
+             WHERE c.track_id=?1 AND c.state='committed' ORDER BY c.start_ns",
+        )?;
+        let chunks = statement
+            .query_map([track_id], |row| {
+                Ok(ArchiveChunk {
+                    id: row.get(0)?,
+                    start_ns: row.get(1)?,
+                    end_ns: row.get(2)?,
+                    source_epoch: row.get(3)?,
+                    channels: row.get(4)?,
+                    sha256: row.get(5)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        if chunks.is_empty() {
+            return Err(Error::Unavailable);
+        }
+        Ok(TrackArchive {
+            schema_version: 1,
+            session_id: session.clone(),
+            track_id: track.clone(),
+            source,
+            playback_rate: crate::RATE,
+            chunks,
+            timeline: self.timeline(session, track)?,
+        })
+    }
+
+    pub fn archive_chunk(
+        &self,
+        session: &StableId,
+        track: &StableId,
+        id: &StableId,
+    ) -> Result<Vec<u8>> {
+        let chunk = self.db.query_row(
+            &format!("{} JOIN sessions ses ON ses.id=t.session_id
+             WHERE ses.id=?1 AND ses.state IN (5,6) AND c.track_id=?2 AND c.id=?3 AND c.state='committed'",
+                Chunk::SELECT),
+            params![String::from(session.clone()), String::from(track.clone()), String::from(id.clone())],
+            Chunk::read,
+        ).optional()?.ok_or(Error::Unavailable)?;
+        let path = chunk_path(&self.root, &chunk, "opus")?;
+        match inspect(&path, &chunk)? {
+            Payload::Valid(bytes) => Ok(bytes),
+            Payload::Absent | Payload::Corrupt => Err(Error::Unavailable),
+        }
     }
 
     pub fn recording(&self) -> Result<bool> {
@@ -191,6 +388,49 @@ impl CommittedReader {
             samples,
         })
     }
+}
+
+pub(super) fn history(db: &Connection, session: Option<&str>) -> Result<Vec<HistoryTrack>> {
+    let mut statement = db.prepare(
+        "SELECT t.id,s.id,t.source,s.created_at_ms,s.interrupted_tail,
+          COALESCE(MIN(c.start_ns),0),COALESCE(MAX(c.end_ns),0),COUNT(c.id),
+          (SELECT COUNT(*) FROM audio_timeline a WHERE a.track_id=t.id AND a.kind='gap')
+         FROM tracks t JOIN sessions s ON s.id=t.session_id
+         LEFT JOIN chunks c ON c.track_id=t.id AND c.state='committed'
+         WHERE s.state IN (5,6) AND (?1 IS NULL OR s.id=?1)
+         GROUP BY t.id ORDER BY s.created_at_ms DESC,t.source",
+    )?;
+    let rows = statement.query_map([session], |row| {
+        Ok(HistoryTrack {
+            id: row.get(0)?,
+            session_id: row.get(1)?,
+            source: row.get(2)?,
+            created_at_ms: row.get(3)?,
+            interrupted_tail: row.get(4)?,
+            first_ns: row.get(5)?,
+            last_ns: row.get(6)?,
+            committed_chunks: row.get(7)?,
+            loss_intervals: row.get(8)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+pub(super) fn timeline(db: &Connection, track: &str) -> Result<Vec<TimelineRow>> {
+    let mut statement = db.prepare(
+        "SELECT source_epoch,start_ns,end_ns,kind,cause FROM audio_timeline
+         WHERE track_id=?1 ORDER BY start_ns,end_ns,kind",
+    )?;
+    let rows = statement.query_map([track], |row| {
+        Ok(TimelineRow {
+            source_epoch: row.get(0)?,
+            start_ns: row.get(1)?,
+            end_ns: row.get(2)?,
+            kind: row.get(3)?,
+            cause: row.get(4)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
 fn stable(id: String) -> Result<StableId> {

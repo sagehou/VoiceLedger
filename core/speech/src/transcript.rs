@@ -15,7 +15,7 @@ use crate::pipeline::{Final, Output, Partial};
 use crate::translations::{self, TranslationLine};
 use crate::{Error, Result};
 
-const PATH: &str = "transcript-v1.sqlite3";
+pub(crate) const PATH: &str = "transcript-v1.sqlite3";
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS utterances (
     id TEXT PRIMARY KEY,
@@ -49,7 +49,7 @@ impl Transcripts {
         )?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let version: i64 = tx.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        if !(0..=3).contains(&version) {
+        if !(0..=4).contains(&version) {
             return Err(Error::Storage);
         }
         if version == 0 {
@@ -60,7 +60,10 @@ impl Transcripts {
         }
         if version < 3 {
             tx.execute_batch(translations::SCHEMA)?;
-            tx.execute_batch("PRAGMA user_version=3;")?;
+        }
+        if version < 4 {
+            tx.execute_batch(crate::library::SCHEMA)?;
+            tx.execute_batch("PRAGMA user_version=4;")?;
         }
         tx.commit()?;
         Ok(Self { db })
@@ -217,11 +220,26 @@ pub struct Line {
     pub language: Language,
     pub text: String,
     pub translation: Option<TranslationLine>,
+    pub speaker: Option<crate::library::SpeakerLine>,
 }
 
 pub fn selected(root: &Path, session: &StableId) -> Result<Vec<Line>> {
+    let mut lines = Vec::new();
+    visit_selected(root, session, 40, |line| {
+        lines.push(line);
+        Ok(())
+    })?;
+    Ok(lines)
+}
+
+pub(crate) fn visit_selected(
+    root: &Path,
+    session: &StableId,
+    limit: i64,
+    mut visit: impl FnMut(Line) -> Result<()>,
+) -> Result<()> {
     match root.join(PATH).metadata() {
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error.into()),
         Ok(_) => {}
     }
@@ -235,9 +253,9 @@ pub fn selected(root: &Path, session: &StableId) -> Result<Vec<Line>> {
     let session = String::from(session.clone());
     let mut query = db.prepare(
         "SELECT u.track_id, u.start_ns, r.payload FROM utterances u JOIN revisions r ON r.id=u.selected_revision
-         WHERE u.session_id=?1 ORDER BY u.start_ns,u.track_id LIMIT 40",
+         WHERE u.session_id=?1 ORDER BY u.start_ns,u.track_id LIMIT ?2",
     )?;
-    let rows = query.query_map([&session], |row| {
+    let rows = query.query_map(params![session, limit], |row| {
         Ok((
             row.get::<_, String>(0)?,
             row.get::<_, i64>(1)?,
@@ -245,7 +263,6 @@ pub fn selected(root: &Path, session: &StableId) -> Result<Vec<Line>> {
         ))
     })?;
     let mut labels = audio.prepare("SELECT source FROM tracks WHERE id=?1 AND session_id=?2")?;
-    let mut lines = Vec::new();
     for row in rows {
         let (track, start_ns, payload) = row?;
         let source = labels.query_row(params![track, session], |row| row.get(0))?;
@@ -255,7 +272,12 @@ pub fn selected(root: &Path, session: &StableId) -> Result<Vec<Line>> {
         } else {
             None
         };
-        lines.push(Line {
+        let speaker = if version >= 4 {
+            crate::library::speaker(&db, &value.utterance_id)?
+        } else {
+            None
+        };
+        visit(Line {
             source,
             start_ns: u64::try_from(start_ns).map_err(|_| Error::Storage)?,
             utterance_id: value.utterance_id,
@@ -263,9 +285,10 @@ pub fn selected(root: &Path, session: &StableId) -> Result<Vec<Line>> {
             language: value.language,
             text: value.text,
             translation,
-        });
+            speaker,
+        })?;
     }
-    Ok(lines)
+    Ok(())
 }
 
 pub(crate) fn job_status(
