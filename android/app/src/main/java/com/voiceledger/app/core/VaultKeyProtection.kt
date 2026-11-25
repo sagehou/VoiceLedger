@@ -2,6 +2,9 @@ package com.voiceledger.app.core
 
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
+import android.util.AtomicFile
+import java.io.File
+import java.io.FileNotFoundException
 import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -30,6 +33,59 @@ internal object VaultKeyProtection {
         cipher.init(Cipher.DECRYPT_MODE, key(create = false), GCMParameterSpec(tagBits, wrapped, 0, nonceBytes))
         cipher.updateAAD(context)
         return cipher.doFinal(wrapped, nonceBytes, wrapped.size - nonceBytes)
+    }
+
+    @Synchronized
+    fun readLocal(directory: File): ByteArray? {
+        val file = AtomicFile(File(directory, "vault-key.v1"))
+        val wrapped = try {
+            file.openRead().use { input ->
+                check(input.channel.size() in 1L..4096L)
+                input.readBytes()
+            }
+        } catch (failure: FileNotFoundException) {
+            if (file.baseFile.exists()) throw failure
+            return null
+        }
+        try {
+            val recovery = unwrap(wrapped)
+            try {
+                NativeVault.identity(recovery)
+                return recovery
+            } catch (failure: Throwable) {
+                recovery.fill(0)
+                throw failure
+            }
+        } finally {
+            wrapped.fill(0)
+        }
+    }
+
+    @Synchronized
+    fun installLocal(directory: File, recovery: ByteArray) {
+        NativeVault.identity(recovery)
+        check(directory.isDirectory || directory.mkdirs())
+        val file = AtomicFile(File(directory, "vault-key.v1"))
+        check(!file.baseFile.exists())
+        val wrapped = wrap(recovery)
+        try {
+            val output = file.startWrite()
+            try {
+                output.write(wrapped)
+                file.finishWrite(output)
+            } catch (failure: Throwable) {
+                file.failWrite(output)
+                throw failure
+            }
+            val saved = checkNotNull(readLocal(directory))
+            try {
+                check(saved.contentEquals(recovery))
+            } finally {
+                saved.fill(0)
+            }
+        } finally {
+            wrapped.fill(0)
+        }
     }
 
     @Synchronized

@@ -86,12 +86,16 @@ int32_t vl_track_transition_v1(vl_track_handle_v1 handle, int32_t command, int64
 int64_t vl_track_source_epoch_v1(vl_track_handle_v1 handle);
 int32_t vl_track_release_v1(vl_track_handle_v1 handle);
 
-/* Operation 1 creates the recovery code, 2 seals, and 3 opens for a 16-byte expected object ID.
+/* Operation 1 creates a recovery code, 2 seals, 3 opens for the expected 16-byte object ID,
+ * 4 returns the 16-byte vault ID and big-endian generation, and 5 rotates the key.
  * The caller owns and clears input and output buffers. Buffers must not overlap.
  * Success returns the number of bytes written. Authentication failures return -50. */
 int32_t vl_vault_request_v1(int32_t operation, const uint8_t *recovery, uint32_t recovery_length,
     const uint8_t *object_id, uint32_t object_id_length, const uint8_t *data, uint32_t length,
     uint8_t *output, uint32_t capacity);
+
+/* Test the HTTPS provider on a random prefix with encrypted synthetic data. This blocks. */
+int32_t vl_sync_check_provider_v1(const uint8_t *data, uint32_t length);
 
 /* Supply -1 for an unknown memory value. Memory values are measured in bytes. */
 int32_t vl_recommend_v1(int32_t compatibility, int64_t budget_bytes, int64_t peak_bytes);
