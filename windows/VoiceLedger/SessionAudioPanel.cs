@@ -136,7 +136,7 @@ internal sealed class SessionAudioPanel : StackPanel, IDisposable
             or COMException or System.IO.IOException or TypeInitializationException)
         {
             if (!disposed && version == playVersion)
-                Stop(failure is CoreException { Code: -32 } ? "No saved audio at that time." : "Could not play the saved track.");
+                Stop(failure is CoreException { Code: NativeCore.SpeechNoAudio } ? "No saved audio at that time." : "Could not play the saved track.");
         }
         finally
         {

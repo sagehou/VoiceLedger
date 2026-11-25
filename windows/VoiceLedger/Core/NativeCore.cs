@@ -53,6 +53,7 @@ internal sealed class CoreSession : SafeHandle
 
 internal static class NativeCore
 {
+    internal const int SpeechNoAudio = -32;
     private const string Library = "voiceledger_ffi";
 
     static NativeCore()

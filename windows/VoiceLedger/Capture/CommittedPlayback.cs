@@ -33,7 +33,7 @@ internal sealed class CommittedPlayback(Func<long, PlaybackChunk> seek, Playback
                     chunk = next;
                     byteOffset = 0;
                 }
-                catch (CoreException failure) when (failure.Code is AudioStore.Unavailable or -32)
+                catch (CoreException failure) when (failure.Code == AudioStore.Unavailable || failure.Code == NativeCore.SpeechNoAudio)
                 {
                     ended = true;
                 }
