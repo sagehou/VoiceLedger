@@ -53,6 +53,9 @@ public partial class MainWindow : Window
     private void OpenModels(object sender, RoutedEventArgs e) =>
         new ModelsWindow(() => !viewModel.Active && !viewModel.Busy) { Owner = this }.ShowDialog();
 
+    private void OpenSyncPrivacy(object sender, RoutedEventArgs e) =>
+        new SyncPrivacyWindow { Owner = this }.ShowDialog();
+
     private async void ReconnectEndpoint(object sender, RoutedEventArgs e)
     {
         if (sender is Button { DataContext: TrackRow row }) await viewModel.ReconnectAsync(row.Id);
