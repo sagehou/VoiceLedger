@@ -14,20 +14,27 @@ class VaultBridgeTest {
             .associate { it.groupValues[1] to it.groupValues[2] }
         val recovery = fields.getValue("recovery_code").encodeToByteArray()
         val generated = NativeVault.createKey()
+        val rotated = NativeVault.rotate(generated)
         val plaintext = fields.getValue("plaintext").encodeToByteArray()
         try {
             val expected = hex(fields.getValue("object_id"))
             val envelope = hex(fields.getValue("envelope"))
             assertArrayEquals(plaintext, NativeVault.open(recovery, expected, envelope))
+            val current = NativeVault.identity(generated)
+            val next = NativeVault.identity(rotated)
+            assertArrayEquals(current.copyOfRange(0, 16), next.copyOfRange(0, 16))
+            assertArrayEquals(byteArrayOf(0, 0, 0, 2), next.copyOfRange(16, 20))
             val fresh = NativeVault.seal(generated, plaintext)
             val id = fresh.copyOfRange(8, 24)
             assertArrayEquals(plaintext, NativeVault.open(generated, id, fresh))
+            assertEquals(-50, assertThrows(CoreException::class.java) { NativeVault.open(rotated, id, fresh) }.code)
             fresh[fresh.lastIndex] = (fresh.last().toInt() xor 1).toByte()
             val failure = assertThrows(CoreException::class.java) { NativeVault.open(generated, id, fresh) }
             assertEquals(-50, failure.code)
         } finally {
             recovery.fill(0)
             generated.fill(0)
+            rotated.fill(0)
         }
     }
 

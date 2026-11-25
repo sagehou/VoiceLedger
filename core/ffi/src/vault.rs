@@ -34,6 +34,17 @@ fn request(
                 .map_err(|_| Error::VaultRejected)?;
             write(&opened)
         }
+        4 if expected.is_empty() && data.is_empty() => {
+            let vault = recover()?;
+            let mut identity = [0; 20];
+            identity[..16].copy_from_slice(vault.id());
+            identity[16..].copy_from_slice(&vault.generation().to_be_bytes());
+            write(&identity)
+        }
+        5 if expected.is_empty() && data.is_empty() => {
+            let next = recover()?.rotate().map_err(|_| Error::VaultRejected)?;
+            write(next.recovery_code().as_bytes())
+        }
         _ => Err(Error::InvalidArgument),
     }
 }
@@ -49,7 +60,7 @@ unsafe fn input<'a>(data: *const u8, length: u32, maximum: usize) -> Result<&'a 
     Ok(unsafe { std::slice::from_raw_parts(data, length) })
 }
 
-/// Create recovery material, encrypt, or authenticate and decrypt a vault object.
+/// Create or rotate recovery material, inspect its vault identity, or process a vault object.
 ///
 /// # Safety
 /// Inputs are readable for their lengths and stay alive through the call. The
