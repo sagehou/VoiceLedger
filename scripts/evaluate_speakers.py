@@ -24,7 +24,8 @@ MODEL = "3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx"
 INT8_MODEL = MODEL.removesuffix(".onnx") + ".weight-int8.onnx"
 URL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/" + MODEL
 DIGEST = "53cab20ba8f2eb2f6e2d89ecc18e88ef3222169b61b4419cbc13666744a4574b"
-VOICES = ("en-us+m1", "en-gb+f2", "en-sc+m3", "en-us+f4", "en-gb+m5", "en-us+f1")
+VOICES = (("en-us+m1", 26), ("en-gb+f2", 65), ("en-sc+m3", 42),
+          ("en-us+f4", 78), ("en-gb+m5", 51), ("en-us+f1", 34))
 SENTENCES = (
     "The second recording will start as soon as everyone joins.",
     "Put the microphone on the table and switch to the other track.",
@@ -79,8 +80,8 @@ def command(argv, *, data=None):
     return subprocess.run(argv, input=data, check=True, capture_output=True).stdout
 
 
-def samples(voice, text, speed):
-    audio = command(["espeak-ng", "-v", voice, "-s", str(speed), "--stdout", text])
+def samples(voice, pitch, text, speed):
+    audio = command(["espeak-ng", "-v", voice, "-p", str(pitch), "-s", str(speed), "--stdout", text])
     with wave.open(io.BytesIO(audio)) as stream:
         rate = stream.getframerate()
         assert stream.getnchannels() == 1 and stream.getsampwidth() == 2
@@ -204,8 +205,8 @@ def evaluate(model, candidate, library, clustering, report):
         return out[:dim] if dim else None
 
     try:
-        audio = [[samples(voice, sentence, 151 + 3 * index) for index, sentence in enumerate(SENTENCES)]
-                 for voice in VOICES]
+        audio = [[samples(voice, pitch, sentence, 151 + 3 * index)
+                  for index, sentence in enumerate(SENTENCES)] for voice, pitch in VOICES]
         voices = [hashlib.sha256(turns[0].tobytes()).hexdigest() for turns in audio]
         assert len(set(voices)) == len(VOICES), "Synthetic voices must produce distinct reference audio"
         assert extract(array("h", [0]) * RATE) is None
@@ -233,7 +234,9 @@ def evaluate(model, candidate, library, clustering, report):
                    "runtime": "sherpa-onnx 1.12.20", "load_ms": round(load_seconds * 1000, 2),
                    "peak_rss_bytes": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024,
                    "extract_median_ms": round(median(extract_times), 2),
-                   "synthetic_voice_reference_sha256": dict(zip(VOICES, voices, strict=True)),
+                   "synthetic_voice_reference_sha256": {
+                       f"{voice}:{pitch}": digest for (voice, pitch), digest in zip(VOICES, voices, strict=True)
+                   },
                    "corpus_sha256": hashlib.sha256(b"".join(pcm.tobytes() for turns in audio for pcm in turns)).hexdigest(),
                    "synthesizer": command(["espeak-ng", "--version"]).decode().splitlines()[0],
                    "cosine_threshold": threshold, "calibration": calibration,
