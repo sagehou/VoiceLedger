@@ -16,7 +16,7 @@ android {
         applicationId = "com.voiceledger.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
+        versionCode = providers.gradleProperty("voiceledgerVersionCode").orElse("1").get().toInt()
         versionName = "0.1.0"
         testInstrumentationRunner = "com.voiceledger.app.AndroidRuntimeSmoke"
         ndk.abiFilters += "arm64-v8a"

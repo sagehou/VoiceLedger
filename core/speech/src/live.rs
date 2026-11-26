@@ -25,13 +25,14 @@ use crate::{
 
 const WHISPER: &str = "whisper-tiny-multilingual-q5-1";
 const SENSEVOICE: &str = "sensevoice-small-int8";
+const SENSEVOICE_GGUF: &str = "sensevoice-small-gguf-q8-0";
 pub(super) const TRANSLATION_MODEL: &str = "opus-mt-en-zh-int8";
 const POLL: Duration = Duration::from_millis(200);
 const QUIET: Duration = Duration::from_secs(3);
 
 pub(super) fn asr_model<'a>(catalog: &'a Catalog, model_id: Option<&str>) -> Result<&'a Model> {
     let id = model_id.unwrap_or(WHISPER);
-    if !matches!(id, WHISPER | SENSEVOICE) {
+    if !matches!(id, WHISPER | SENSEVOICE | SENSEVOICE_GGUF) {
         return Err(Error::Invalid);
     }
     catalog

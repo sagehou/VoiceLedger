@@ -4,6 +4,7 @@ from array import array
 import ctypes as c
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
+from hashlib import sha256
 import json
 from pathlib import Path
 import shutil
@@ -12,7 +13,7 @@ from tempfile import TemporaryDirectory
 from time import monotonic, sleep
 from uuid import uuid4
 
-from check_asr_languages import ROOT, waveform
+from check_asr_languages import ROOT, SAMPLES, waveform
 
 RATE = 48000
 
@@ -129,8 +130,26 @@ def wait_for(check, worker, description):
     raise AssertionError(description)
 
 
-def clip(folder, lang):
-    return array("f", (value for frame in waveform(folder / f"{lang}-1.wav") for value in (frame,) * 3))
+def clip(folder, lang, index=1):
+    return array("f", (value for frame in waveform(folder / f"{lang}-{index}.wav") for value in (frame,) * 3))
+
+
+def write_corpus(samples, output):
+    fixtures = []
+    for index in (1, 2):
+        for lang, name in (("en", "english"), ("ja", "japanese"), ("zh", "mandarin")):
+            suffix = "" if index == 1 else f"-{index}"
+            filename = f"live-speech-{name}{suffix}.f32"
+            audio = clip(samples, lang, index)
+            data = audio.tobytes()
+            (output / filename).write_bytes(data)
+            fixtures.append({
+                "file": filename, "language": lang, "reference": SAMPLES[lang][index],
+                "frames": len(audio), "sha256": sha256(data).hexdigest(),
+            })
+    (output / "live-speech-corpus.json").write_text(
+        json.dumps(fixtures, ensure_ascii=False, indent=2) + "\n", encoding="utf-8",
+    )
 
 
 def verify(core, samples, executor):
@@ -240,9 +259,7 @@ def main():
             executor.shutdown(wait=True)
             assert core.close(core.handle) == 0
         args.report.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        for language, name in (("en", "english"), ("ja", "japanese"), ("zh", "mandarin")):
-            with args.report.with_name(f"live-speech-{name}.f32").open("wb") as fixture:
-                clip(args.samples, language).tofile(fixture)
+        write_corpus(args.samples, args.report.parent)
 
 
 if __name__ == "__main__":

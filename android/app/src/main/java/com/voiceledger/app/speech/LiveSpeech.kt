@@ -12,6 +12,7 @@ import org.json.JSONObject
 internal enum class LiveAsrModel(val id: String, val label: Int) {
     Whisper("whisper-tiny-multilingual-q5-1", R.string.live_whisper),
     SenseVoice("sensevoice-small-int8", R.string.live_sensevoice),
+    SenseVoiceGguf("sensevoice-small-gguf-q8-0", R.string.live_sensevoice_gguf),
 }
 
 internal data class LiveSpeechOptions(val language: String, val translate: Boolean, val model: LiveAsrModel)

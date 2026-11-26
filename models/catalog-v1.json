@@ -150,6 +150,38 @@
         "bytes": 402653184,
         "source_url": "https://github.com/sagehou/VoiceLedger/actions/runs/45363849951"
       }
+    },
+    {
+      "id": "sensevoice-small-gguf-q8-0",
+      "name": "SenseVoice Small GGUF",
+      "version": "ff8f085a8fa2e5ccae0e849ef19ebc6dc18e608b",
+      "mode": "balanced",
+      "quantization": "Q8_0",
+      "languages": ["zh", "en", "ja", "ko", "yue"],
+      "runtime": {
+        "id": "transcribe.cpp",
+        "version": "0.4.2",
+        "source_url": "https://github.com/handy-computer/transcribe.cpp/tree/275cd50d2c4104c204009a197ac091b9687668e5"
+      },
+      "license": {
+        "id": "LicenseRef-FunASR-Model",
+        "url": "https://huggingface.co/handy-computer/SenseVoiceSmall-gguf/blob/ff8f085a8fa2e5ccae0e849ef19ebc6dc18e608b/LICENSE"
+      },
+      "targets": [
+        {"platform": "android", "abi": "arm64-v8a", "min_os": 26, "cpu_features": ["neon"]}
+      ],
+      "artifacts": [
+        {
+          "file": "SenseVoiceSmall-Q8_0.gguf",
+          "url": "https://huggingface.co/handy-computer/SenseVoiceSmall-gguf/resolve/ff8f085a8fa2e5ccae0e849ef19ebc6dc18e608b/SenseVoiceSmall-Q8_0.gguf",
+          "size_bytes": 252684608,
+          "sha256": "6c759ee4c9748c9b3f7a5a60ca74f0f7e685fb9d45d1378fce7cfd62f59adf29"
+        }
+      ],
+      "peak_ram_estimate": {
+        "bytes": 650000000,
+        "source_url": "https://github.com/k2-fsa/sherpa-onnx/issues/4056"
+      }
     }
   ]
 }

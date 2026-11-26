@@ -106,7 +106,8 @@
     <string name="live_transcription">Live transcription</string>
     <string name="live_model">Transcription model · %1$s</string>
     <string name="live_whisper">Whisper Tiny multilingual</string>
-    <string name="live_sensevoice">SenseVoice Small</string>
+    <string name="live_sensevoice">SenseVoice Small (ONNX)</string>
+    <string name="live_sensevoice_gguf">SenseVoice Small (GGUF)</string>
     <string name="live_translate">Translate English to Simplified Chinese</string>
     <string name="live_complete">Transcription complete</string>
     <string name="live_install">Install the selected model in Models.</string>

@@ -17,7 +17,6 @@ import com.voiceledger.app.recording.SECOND_NS
 import com.voiceledger.app.recording.StopRequest
 import com.voiceledger.app.recording.recoverLibrary
 import com.voiceledger.app.speech.LiveAsrModel
-import com.voiceledger.app.speech.LiveLine
 import com.voiceledger.app.speech.LiveSpeech
 import com.voiceledger.app.speech.LiveSpeechOptions
 import com.voiceledger.app.speech.SpeechConnection
@@ -32,8 +31,13 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 class AndroidRuntimeSmoke : Instrumentation() {
+    private var installModel: String? = null
+    private var benchmarkModel: String? = null
+
     override fun onCreate(arguments: Bundle?) {
         super.onCreate(arguments)
+        installModel = arguments?.getString("install_model")
+        benchmarkModel = arguments?.getString("benchmark_model")
         start()
     }
 
@@ -41,10 +45,26 @@ class AndroidRuntimeSmoke : Instrumentation() {
         val result = Bundle()
         var stage = "recording"
         try {
+            val app = targetContext
+            val id = installModel ?: benchmarkModel
+            if (id != null) {
+                val model = LiveAsrModel.entries.single { it.id == id }
+                if (installModel != null) {
+                    stage = "model_download"
+                    DeviceProfiler.capture(app)
+                    verifyModelDownload(model)
+                } else {
+                    stage = "live_sensevoice"
+                    val report = verifyLiveSpeech(model)
+                    File(app.cacheDir, "sensevoice-comparison.json").writeText(report.toString())
+                }
+                result.putString(stage, "passed")
+                finish(Activity.RESULT_OK, result)
+                return
+            }
             verifyRecording()
             result.putString(stage, "passed")
             stage = "device_profile"
-            val app = targetContext
             DeviceProfiler.capture(app)
             val profile = JSONObject(File(app.noBackupFilesDir, "device-profile-v1.json").readText())
             check(profile.getString("platform") == "android" && profile.getString("abi") == "arm64-v8a")
@@ -64,10 +84,7 @@ class AndroidRuntimeSmoke : Instrumentation() {
             check(oldBudget < 1_000_000_000) { "The old budget would already admit SenseVoice." }
             result.putString(stage, "passed")
             stage = "model_download"
-            LiveAsrModel.entries.forEach(::verifyModelDownload)
-            result.putString(stage, "passed")
-            stage = "live_sensevoice"
-            result.putString("${stage}_timing", verifyLiveSpeech().toString())
+            verifyModelDownload(LiveAsrModel.Whisper)
             result.putString(stage, "passed")
             finish(Activity.RESULT_OK, result)
         } catch (error: Throwable) {
@@ -121,19 +138,10 @@ class AndroidRuntimeSmoke : Instrumentation() {
         check(query("live_model").getString("status") == "installed")
     }
 
-    private fun verifyLiveSpeech(): JSONObject {
+    private fun verifyLiveSpeech(model: LiveAsrModel): JSONObject {
         val app = targetContext
-        val clips = listOf("en" to "english", "ja" to "japanese", "zh" to "mandarin")
-            .associate { (language, name) ->
-                val bytes = context.assets.open("live-speech-$name.f32").use { it.readBytes() }
-                val floats = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer()
-                language to ShortArray(floats.remaining()) {
-                    (floats.get() * 32768).toInt().coerceIn(-32768, 32767).toShort()
-                }
-            }
-        val clipStarts = mutableMapOf<String, Long>()
-        val firstFinal = mutableMapOf<String, Long>()
-        val seen = mutableSetOf<LiveLine>()
+        val corpus = context.assets.open("live-speech-corpus.json").bufferedReader().use { JSONArray(it.readText()) }
+        val clips = JSONArray()
         val stages = mutableMapOf<String, Long>()
         val timeline = CaptureTimeline(0)
         val packet = ShortArray(PACKET_FRAMES)
@@ -142,6 +150,7 @@ class AndroidRuntimeSmoke : Instrumentation() {
         var committed = 0
         var firstCommitMs = -1L
         var firstTextMs = -1L
+        var firstFinalMs = -1L
         var maxCommitDelayMs = 0L
         val recordingRoot = File(app.filesDir, "recordings")
         try {
@@ -160,7 +169,7 @@ class AndroidRuntimeSmoke : Instrumentation() {
                     origin = SystemClock.elapsedRealtimeNanos()
                     runOnMainSync {
                         LiveSpeech.reset()
-                        LiveSpeech.start(app, manifest.sessionId, LiveSpeechOptions("auto", false, LiveAsrModel.SenseVoice))
+                        LiveSpeech.start(app, manifest.sessionId, LiveSpeechOptions("auto", false, model))
                     }
                     fun observe() {
                         val state = LiveSpeech.state.value
@@ -170,11 +179,7 @@ class AndroidRuntimeSmoke : Instrumentation() {
                             check(committed > 0) { "Text appeared before the first commit." }
                             firstTextMs = elapsed
                         }
-                        for (line in state.lines) {
-                            if (seen.add(line) && line.language in clipStarts) {
-                                firstFinal.putIfAbsent(line.language, elapsed)
-                            }
-                        }
+                        if (firstFinalMs < 0 && state.lines.isNotEmpty()) firstFinalMs = elapsed
                     }
                     fun append(samples: ShortArray) {
                         for (offset in samples.indices step PACKET_FRAMES) {
@@ -190,39 +195,43 @@ class AndroidRuntimeSmoke : Instrumentation() {
                             observe()
                         }
                     }
-                    for ((language, samples) in clips) {
-                        clipStarts[language] = frames * 1000 / SAMPLE_RATE
+                    for (index in 0 until corpus.length()) {
+                        val fixture = corpus.getJSONObject(index)
+                        val file = fixture.getString("file")
+                        val bytes = context.assets.open(file).use { it.readBytes() }
+                        val floats = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer()
+                        check(floats.remaining() == fixture.getInt("frames"))
+                        val samples = ShortArray(floats.remaining()) {
+                            (floats.get() * 32768).toInt().coerceIn(-32768, 32767).toShort()
+                        }
+                        clips.put(JSONObject().put("file", file).put("start_ns", frames * SECOND_NS / SAMPLE_RATE))
                         append(samples)
                         append(silence)
                     }
-                    repeat(4) {
-                        if (firstFinal.size < clips.size) append(silence)
-                    }
                     check(firstTextMs >= firstCommitMs && firstCommitMs >= 0) { "No visible text during recording." }
-                    check(firstFinal.isNotEmpty()) { "No final text during recording." }
-                    val liveLanguages = firstFinal.keys.toList()
+                    check(firstFinalMs >= firstCommitMs) { "No final text during recording." }
                     val stop = SystemClock.elapsedRealtime()
                     val saved = manifest.finish(StopRequest(CaptureEnd.User, frames * SECOND_NS / SAMPLE_RATE))
                     runOnMainSync(LiveSpeech::drain)
                     while (LiveSpeech.state.value.running && SystemClock.elapsedRealtime() - stop < 50_000) {
                         SystemClock.sleep(50)
-                        observe()
                     }
-                    observe()
                     check(LiveSpeech.state.value.result == 0) {
                         "Could not finish the saved transcript, result ${LiveSpeech.state.value.result}."
                     }
-                    check(firstFinal.keys == clips.keys) { "Got finals in ${firstFinal.keys} after draining." }
-                    return JSONObject().put("first_commit_ms", firstCommitMs)
+                    val completedMs = SystemClock.elapsedRealtime() - stop
+                    val export = JSONObject().put("op", "export").put("session_id", manifest.sessionId).put("format", "json")
+                    val transcript = JSONObject(NativeCore.speechRequest(speechRequest(app, export)).decodeToString())
+                    return JSONObject().put("model", model.id)
+                        .put("first_commit_ms", firstCommitMs)
                         .put("first_visible_text_ms", firstTextMs)
+                        .put("first_final_ms", firstFinalMs)
                         .put("stages_ms", JSONObject(stages))
-                        .put("final_languages_during_capture", JSONArray(liveLanguages))
-                        .put("first_final_ms_from_clip_start", JSONObject(firstFinal.mapValues { (language, elapsed) ->
-                            elapsed - clipStarts.getValue(language)
-                        }))
-                        .put("completion_after_stop_ms", SystemClock.elapsedRealtime() - stop)
+                        .put("completion_after_stop_ms", completedMs)
                         .put("max_commit_delay_ms", maxCommitDelayMs)
                         .put("committed_segments", saved.chunks)
+                        .put("clips", clips)
+                        .put("lines", transcript.getJSONArray("lines"))
                         .put("audio_ms", frames * 1000 / SAMPLE_RATE)
                 }
             }
