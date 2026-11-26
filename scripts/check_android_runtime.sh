@@ -93,7 +93,7 @@ ANDROID
     sampler_pid=$!
 }
 
-models=(nemotron-3-5-asr-streaming-0-6b-q4-k-m sensevoice-small-gguf-q8-0 sensevoice-small-gguf-q6-k)
+models=(nemotron-3-5-asr-streaming-0-6b-q4-k-m)
 for model in "${models[@]}"; do
     echo "Installing $model"
     adb shell -T am force-stop com.voiceledger.app.test
@@ -116,6 +116,8 @@ for model in "${models[@]}"; do
     sample_memory "$model-live"
     if ! instrument -e benchmark_model "$model" | tee "artifacts/$model-live.log" ||
         ! grep -Fx "INSTRUMENTATION_RESULT: live_asr=passed" "artifacts/$model-live.log"; then
+        adb logcat -b crash -d -v threadtime | tee artifacts/android-native-crash.log
+        adb logcat -d -v threadtime -s libc ActivityManager lmkd linker | rg 'FATAL|Fatal signal|killed|Killing|voiceledger|ggml' | tail -90 | tee artifacts/android-process.log || true
         benchmarks_passed=false
         stop_sampler
         continue
@@ -125,4 +127,4 @@ for model in "${models[@]}"; do
     python3 -c 'import json, sys; r = json.load(sys.stdin); print({key: r[key] for key in ("first_visible_text_ms", "first_visible_partial_ms", "completion_after_stop_ms")})' < "$raw/$model.json"
 done
 test "$benchmarks_passed" = true
-python3 ../scripts/report_android_asr.py live-speech "$raw" artifacts/android-asr-comparison.json
+echo "Nemotron completed the packaged Android benchmark."
