@@ -79,11 +79,12 @@ jobs:
           sudo apt-get install -y --no-install-recommends open-jtalk open-jtalk-mecab-naist-jdic hts-voice-nitech-jp-atr503-m001
           samples="$RUNNER_TEMP/voiceledger-asr"
           python3 ../scripts/check_asr_languages.py "$samples"
-          sudo unshare --net --setgid="$(id -g)" --setuid="$(id -u)" -- "$(command -v python3)" \
+          sudo unshare --net --setgid="$(id -g)" --setuid="$(id -u)" -- env \
+            GITHUB_SHA="$GITHUB_SHA" "$(command -v python3)" \
             ../scripts/check_asr_languages.py "$samples" --library artifacts/speech/libvoiceledger_whisper.so \
             --report artifacts/asr-automatic-languages.json
           sudo unshare --net --setgid="$(id -g)" --setuid="$(id -u)" -- env \
-            LD_LIBRARY_PATH="$PWD/artifacts/speech" "$(command -v python3)" \
+            GITHUB_SHA="$GITHUB_SHA" LD_LIBRARY_PATH="$PWD/artifacts/speech" "$(command -v python3)" \
             ../scripts/check_asr_languages.py "$samples" --model sensevoice-small-int8 \
             --library artifacts/speech/libvoiceledger_sensevoice.so --report artifacts/asr-sensevoice-languages.json
       - name: Exercise live committed audio and final-only translation offline

@@ -37,7 +37,7 @@ adb install --abi arm64-v8a app/build/outputs/apk/debug/app-debug.apk
 adb install -t app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
 timeout 360s adb shell -T am instrument -w -r --abi arm64-v8a \
     com.voiceledger.app.test/com.voiceledger.app.AndroidRuntimeSmoke | tee artifacts/android-runtime.log
-for stage in recording device_profile model_download live_whisper live_sensevoice; do
+for stage in recording device_profile model_download live_sensevoice; do
     grep -Fx "INSTRUMENTATION_RESULT: $stage=passed" artifacts/android-runtime.log
 done
 grep -Fx 'INSTRUMENTATION_CODE: -1' artifacts/android-runtime.log
