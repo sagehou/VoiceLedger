@@ -8,7 +8,6 @@
     <string name="model_download">Languages %1$s · Download %2$.1f MiB</string>
     <string name="model_estimate">Estimated peak RAM %1$.1f MiB</string>
     <string name="model_estimate_unknown">Peak RAM estimate unavailable</string>
-    <string name="model_status">Benchmark pending · %1$s</string>
     <string name="model_compatible">Compatible candidate</string>
     <string name="model_device_unknown">Device capabilities unavailable</string>
     <string name="model_incompatible">Incompatible device</string>
@@ -19,6 +18,13 @@
     <string name="model_runtime_unknown">Local runtime unavailable</string>
     <string name="model_compatibility_unknown">Compatibility unconfirmed</string>
     <string name="download_model">Download and verify</string>
+    <string name="model_download_starting">Preparing download…</string>
+    <string name="model_download_progress">Downloaded %1$.1f%%</string>
+    <string name="model_download_verifying">Verifying model…</string>
+    <string name="model_download_complete">Model installed</string>
+    <string name="model_download_storage_failed">Could not save the model.</string>
+    <string name="model_download_runtime_failed">The speech worker could not prepare the model.</string>
+    <string name="model_download_retry">Retry download</string>
     <string name="transcribe_saved">Transcribe latest saved session</string>
     <string name="translate_saved">Translate English transcript</string>
     <string name="add_translation">Add Chinese translation</string>
@@ -38,7 +44,7 @@
     <string name="speech_no_audio">No committed audio is available in this session.</string>
     <string name="speech_not_installed">Download the model first.</string>
     <string name="speech_blocked">Speech task paused by recording or device limits.</string>
-    <string name="speech_transfer">Download interrupted. Retry to resume.</string>
+    <string name="speech_transfer">Download interrupted.</string>
     <string name="speech_integrity">Model checksum failed.</string>
     <string name="speech_busy">Another local speech task is running.</string>
     <string name="speech_deferred">Local task paused. Resume from saved progress.</string>

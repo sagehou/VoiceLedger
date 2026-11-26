@@ -135,11 +135,22 @@ class AndroidRuntimeSmoke : Instrumentation() {
         check(candidate.isNull("blocked_by")) { "${model.id} blocked by ${candidate.getString("blocked_by")}." }
         val action = JSONObject().put("op", "install").put("model_id", model.id).put("approved", true)
         val result = ArrayBlockingQueue<Int>(1)
-        val worker = SpeechConnection(app, speechRequest(app, action), { result.offer(it) }) { _, _ -> }
+        val downloaded = AtomicLong(0)
+        val worker = SpeechConnection(app, speechRequest(app, action), { result.offer(it) }) { progress, _ ->
+            if (progress != null && progress.isNotEmpty()) {
+                downloaded.set(JSONObject(progress.decodeToString()).getLong("downloaded_bytes"))
+            }
+        }
         try {
             runOnMainSync(worker::bind)
-            val code = result.poll(150, TimeUnit.SECONDS)
+            val deadline = SystemClock.elapsedRealtime() + 150_000
+            var code: Int? = null
+            while (code == null && SystemClock.elapsedRealtime() < deadline) {
+                runOnMainSync(worker::poll)
+                code = result.poll(250, TimeUnit.MILLISECONDS)
+            }
             check(code == 0) { "${model.id} installation returned $code." }
+            check(downloaded.get() > 0) { "${model.id} did not report downloaded bytes." }
         } finally {
             runOnMainSync(worker::close)
         }

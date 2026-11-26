@@ -59,6 +59,8 @@ class ModelsActivity : ComponentActivity() {
     private var preparing: Job? = null
     private var playback: Job? = null
     private var working by mutableStateOf(false)
+    private var downloadModelId by mutableStateOf<String?>(null)
+    private var downloadedBytes by mutableStateOf<Long?>(null)
     private var partial by mutableStateOf<String?>(null)
     private var result by mutableStateOf<Int?>(null)
     private var reload by mutableStateOf(0)
@@ -67,13 +69,14 @@ class ModelsActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         val sessions = intent.getBooleanExtra("sessions", false)
         setContent {
-            var report by remember { mutableStateOf<JSONObject?>(null) }
-            var inspection by remember { mutableStateOf<JSONObject?>(null) }
-            var unavailable by remember { mutableStateOf(false) }
+            var selectedSession by remember { mutableStateOf<String?>(null) }
+            var report by remember(selectedSession) { mutableStateOf<JSONObject?>(null) }
+            var inspection by remember(selectedSession) { mutableStateOf<JSONObject?>(null) }
+            var unavailable by remember(selectedSession) { mutableStateOf(false) }
+            var loadedRevision by remember(selectedSession) { mutableStateOf(-1) }
             var language by remember { mutableStateOf("auto") }
             var edit by remember { mutableStateOf<JSONObject?>(null) }
             var editKind by remember { mutableStateOf(RevisionEditor.Transcript) }
-            var selectedSession by remember { mutableStateOf<String?>(null) }
             var rename by remember(selectedSession) { mutableStateOf(false) }
             var trackFilter by remember(selectedSession) { mutableStateOf<String?>(null) }
             var search by remember { mutableStateOf("") }
@@ -92,8 +95,6 @@ class ModelsActivity : ComponentActivity() {
                     historyError = history == null
                     return@LaunchedEffect
                 }
-                report = null
-                inspection = null
                 val selected = selectedSession
                 val loaded = withContext(Dispatchers.IO) {
                     try {
@@ -112,6 +113,7 @@ class ModelsActivity : ComponentActivity() {
                 report = loaded?.first
                 inspection = loaded?.second
                 unavailable = loaded == null
+                loadedRevision = reload
             }
             LaunchedEffect(working) {
                 while (working) {
@@ -161,13 +163,20 @@ class ModelsActivity : ComponentActivity() {
                             return@Column
                         }
                         if (sessions) {
-                            Button(enabled = !working, onClick = { selectedSession = null; edit = null }) {
+                            Button(enabled = !working, onClick = {
+                                selectedSession = null
+                                edit = null
+                                downloadModelId = null
+                                result = null
+                            }) {
                                 Text(stringResource(R.string.back_to_sessions))
                             }
                         }
-                        val status = result?.let(::resultText) ?: inspection?.optJSONObject("job")?.let(::jobStatus)
+                        val status = if (downloadModelId == null) {
+                            result?.let(::resultText) ?: inspection?.optJSONObject("job")?.let(::jobStatus)
+                        } else null
                         status?.let { Text(stringResource(it)) }
-                        if (working) {
+                        if (working && downloadModelId == null) {
                             Text(stringResource(R.string.speech_working))
                             partial?.let { Text(it) }
                             Button(onClick = { finishRequest(-4) }) { Text(stringResource(R.string.cancel_speech)) }
@@ -241,9 +250,16 @@ class ModelsActivity : ComponentActivity() {
                                 val translation = model.has("translation")
                                 val choice = choices?.optJSONObject(index)
                                 val installed = choice?.optBoolean("installed") == true
-                                val allowed = choice?.isNull("blocked_by") == true && idle && !working
+                                val allowed = loadedRevision == reload && choice?.isNull("blocked_by") == true && idle && !working
                                 val canProcess = sessionId != null && !textOnly && (!translation || hasEnglish)
-                                ModelRow(details, choice, allowed && (!installed || canProcess)) {
+                                val currentDownload = model.getString("id") == downloadModelId
+                                ModelRow(
+                                    details, choice, allowed && (!installed || canProcess),
+                                    downloading = currentDownload && working,
+                                    downloadedBytes = downloadedBytes.takeIf { currentDownload },
+                                    downloadResult = result.takeIf { currentDownload },
+                                    cancelDownload = { finishRequest(-4) },
+                                ) {
                                     val action = JSONObject()
                                         .put("model_id", model.getString("id"))
                                         .put("approved", true)
@@ -349,6 +365,7 @@ class ModelsActivity : ComponentActivity() {
                                         saveRevision(action).also { code ->
                                             if (code == 0) {
                                                 edit = null
+                                                downloadModelId = null
                                                 result = code
                                                 reload++
                                             }
@@ -371,6 +388,8 @@ class ModelsActivity : ComponentActivity() {
 
     private fun startRequest(action: JSONObject) {
         if (working || RecordingStatusStore.state.value.phase != RecordingPhase.Idle) return
+        downloadModelId = if (action.getString("op") == "install") action.getString("model_id") else null
+        downloadedBytes = null
         working = true
         result = null
         partial = null
@@ -382,8 +401,13 @@ class ModelsActivity : ComponentActivity() {
                 return@launch
             }
             val request = SpeechConnection(this@ModelsActivity, query(action), ::finishRequest) { bytes, _ ->
-                partial = bytes?.takeIf { it.isNotEmpty() }?.let {
-                    runCatching { JSONObject(it.decodeToString()).getString("text") }.getOrNull()
+                val progress = bytes?.takeIf { it.isNotEmpty() }?.let {
+                    runCatching { JSONObject(it.decodeToString()) }.getOrNull()
+                }
+                if (downloadModelId != null) {
+                    progress?.optLong("downloaded_bytes", -1L)?.takeIf { it >= 0 }?.let { downloadedBytes = it }
+                } else {
+                    partial = progress?.optString("text")?.takeIf { it.isNotEmpty() }
                 }
             }
             connection = request
@@ -562,12 +586,22 @@ private fun TextRevisionEditor(
 }
 
 @Composable
-private fun ModelRow(candidate: JSONObject, choice: JSONObject?, enabled: Boolean, action: () -> Unit) {
+private fun ModelRow(
+    candidate: JSONObject,
+    choice: JSONObject?,
+    enabled: Boolean,
+    downloading: Boolean,
+    downloadedBytes: Long?,
+    downloadResult: Int?,
+    cancelDownload: () -> Unit,
+    action: () -> Unit,
+) {
     val model = candidate.getJSONObject("model")
     val runtime = model.getJSONObject("runtime")
     val languageCodes = model.getJSONArray("languages")
     val languages = (0 until languageCodes.length()).joinToString(", ") { languageCodes.getString(it) }
     val estimate = model.optJSONObject("peak_ram_estimate")
+    val total = candidate.getLong("download_bytes")
     Column(Modifier.padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
         Text(
             stringResource(R.string.model_title, model.getString("name"), model.getString("quantization")),
@@ -575,13 +609,35 @@ private fun ModelRow(candidate: JSONObject, choice: JSONObject?, enabled: Boolea
         )
         Text(stringResource(R.string.model_runtime, runtime.getString("id"), runtime.getString("version"),
             model.getJSONObject("license").getString("id")))
-        Text(stringResource(R.string.model_download, languages, candidate.getLong("download_bytes") / 1048576.0))
+        Text(stringResource(R.string.model_download, languages, total / 1048576.0))
         Text(
             if (estimate == null) stringResource(R.string.model_estimate_unknown)
             else stringResource(R.string.model_estimate, estimate.getLong("bytes") / 1048576.0),
         )
-        Text(stringResource(R.string.model_status, stringResource(reason(choice?.optString("blocked_by") ?: "unknown"))))
+        if (downloading) {
+            Text(
+                when {
+                    downloadedBytes == null -> stringResource(R.string.model_download_starting)
+                    downloadedBytes >= total -> stringResource(R.string.model_download_verifying)
+                    else -> stringResource(R.string.model_download_progress, downloadedBytes * 100.0 / total)
+                },
+            )
+            Button(onClick = cancelDownload) { Text(stringResource(R.string.cancel_speech)) }
+            return@Column
+        }
+        val blockedBy = choice?.optString("blocked_by") ?: "unknown"
+        val blocked = choice?.isNull("blocked_by") == false
+        val status = when (downloadResult) {
+            0 -> if (blocked) reason(blockedBy) else R.string.model_download_complete
+            -30 -> R.string.model_download_storage_failed
+            -31 -> R.string.model_download_runtime_failed
+            -34 -> if (blocked) reason(blockedBy) else R.string.speech_blocked
+            null -> reason(blockedBy)
+            else -> resultText(downloadResult)
+        }
+        Text(stringResource(status))
         val actionLabel = when {
+            choice?.optBoolean("installed") != true && downloadResult == -35 -> R.string.model_download_retry
             choice?.optBoolean("installed") != true -> R.string.download_model
             model.has("translation") -> R.string.translate_saved
             else -> R.string.transcribe_saved

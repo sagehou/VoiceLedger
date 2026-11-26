@@ -31,6 +31,7 @@ pub struct InstallRequest<'a> {
     pub device: &'a DeviceCapabilityProfile,
     pub activity: Activity,
     pub resources: Option<&'a dyn Fn() -> ResourceSample>,
+    pub progress: Option<&'a mut dyn FnMut(u64)>,
 }
 
 #[derive(Debug)]
@@ -111,11 +112,17 @@ pub fn install<'a>(
         fs::create_dir_all(source)?;
     }
 
+    let mut progress = request.progress;
+    let mut completed = 0;
     for artifact in &model.artifacts {
         check_cancel(&cancelled)?;
         let path = source.join(&artifact.file);
         if !published {
-            transfer(&path, artifact, &mut fetch, &cancelled)?;
+            transfer(&path, artifact, &mut fetch, &cancelled, &mut |bytes| {
+                if let Some(publish) = progress.as_mut() {
+                    publish(completed + bytes);
+                }
+            })?;
         }
         if !verify(&path, artifact, &cancelled)? {
             if !published && path.try_exists()? {
@@ -123,6 +130,7 @@ pub fn install<'a>(
             }
             return Err(InstallError::InvalidArtifact);
         }
+        completed += artifact.size_bytes;
     }
     check_cancel(&cancelled)?;
     if let Some(observe) = request.resources {
@@ -175,8 +183,10 @@ fn transfer(
     artifact: &Artifact,
     fetch: &mut impl FnMut(&Artifact, u64) -> io::Result<Download>,
     cancelled: &impl Fn() -> bool,
+    progress: &mut impl FnMut(u64),
 ) -> Result<(), InstallError> {
     let offset = partial_bytes(path, artifact)?;
+    progress(offset);
     if offset == artifact.size_bytes {
         return Ok(());
     }
@@ -191,6 +201,10 @@ fn transfer(
         .truncate(response.start == 0)
         .open(path)?;
     let mut total = response.start;
+    let mut reported = total;
+    if total != offset {
+        progress(total);
+    }
     let mut buffer = [0; 64 * 1024];
     loop {
         check_cancel(cancelled)?;
@@ -208,6 +222,10 @@ fn transfer(
             return Err(InstallError::InvalidArtifact);
         }
         file.write_all(&buffer[..count])?;
+        if total - reported >= 512 * 1024 || total == artifact.size_bytes {
+            progress(total);
+            reported = total;
+        }
     }
     file.sync_all()?;
     if total == artifact.size_bytes {

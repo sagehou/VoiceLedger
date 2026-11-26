@@ -540,6 +540,7 @@ impl Request {
                 recording_active: active,
             },
             resources: Some(&observe),
+            progress: None,
         };
         let interrupted = || cancelled() || observe().emergency().is_some();
         let stop_loading = || {
@@ -572,6 +573,12 @@ impl Request {
                 let agent = transfer::agent();
                 let fetch = |artifact: &voiceledger_core::models::Artifact, offset| {
                     transfer::fetch(&agent, artifact, offset)
+                };
+                let mut progress =
+                    |downloaded_bytes| publish(Some(Update::Download { downloaded_bytes }));
+                let request = InstallRequest {
+                    progress: Some(&mut progress),
+                    ..request
                 };
                 let result = if model.translation.is_some() {
                     let adapter = TranslationAdapter::load(model, &self.adapters)?;
@@ -790,7 +797,10 @@ fn translate_saved(task: TranslateSaved<'_>) -> Result<u64> {
                     }
                     let installed = voiceledger_core::models::install(
                         model,
-                        InstallRequest { ..request },
+                        InstallRequest {
+                            progress: None,
+                            ..request
+                        },
                         &adapter,
                         |_, _| {
                             Err(io::Error::new(
@@ -865,6 +875,9 @@ fn model_ref(model: &Model) -> Result<ModelRef> {
 #[serde(untagged)]
 pub enum Update {
     Partial(Partial),
+    Download {
+        downloaded_bytes: u64,
+    },
     Live {
         stage: LiveStage,
         partials: Vec<Partial>,

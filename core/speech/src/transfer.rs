@@ -7,10 +7,15 @@ use ureq::http::StatusCode;
 use voiceledger_core::models::{Artifact, Download};
 
 pub fn agent() -> Agent {
+    let setup = Some(Duration::from_secs(30));
     Config::builder()
         .https_only(true)
         .max_redirects(8)
-        .timeout_global(Some(Duration::from_secs(600)))
+        .timeout_resolve(setup)
+        .timeout_connect(setup)
+        .timeout_send_request(setup)
+        .timeout_recv_response(setup)
+        .timeout_per_read(Some(Duration::from_secs(60)))
         .build()
         .into()
 }

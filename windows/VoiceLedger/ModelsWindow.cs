@@ -468,7 +468,9 @@ internal sealed class ModelsWindow : Window
                 if (!closed && !cancelled)
                 {
                     using var snapshot = line.Length == 0 ? null : JsonDocument.Parse(line);
-                    partial.Text = snapshot is null ? "" : Read(snapshot.RootElement, "text");
+                    partial.Text = snapshot is not null && snapshot.RootElement.TryGetProperty("text", out var text)
+                        ? text.GetString() ?? ""
+                        : "";
                 }
                 return Task.CompletedTask;
             }, cancellation.Token);

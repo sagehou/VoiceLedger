@@ -69,6 +69,7 @@ impl TempRoot {
             device,
             activity,
             resources: None,
+            progress: None,
         }
     }
 }
@@ -299,9 +300,13 @@ fn download_resumes_then_runs_probe_before_atomic_publication() {
     );
     assert!(matches!(attempt, Err(InstallError::Transfer)));
     assert_eq!(probe.loads.get(), 0);
+    let mut progress = Vec::new();
     let installed = install(
         &model,
-        root.request(&device, SAFE),
+        InstallRequest {
+            progress: Some(&mut |bytes| progress.push(bytes)),
+            ..root.request(&device, SAFE)
+        },
         &probe,
         |_, offset| {
             assert_eq!(offset, 1);
@@ -310,6 +315,7 @@ fn download_resumes_then_runs_probe_before_atomic_publication() {
         || false,
     )
     .unwrap();
+    assert_eq!(progress, [1, 3]);
     assert_eq!(probe.loads.get(), 1);
     assert_eq!(
         fs::read(installed.directory().join(&model.artifacts[0].file)).unwrap(),
