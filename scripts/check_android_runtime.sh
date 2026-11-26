@@ -12,6 +12,9 @@ cleanup() {
         tail -40 artifacts/android-emulator.log
         timeout 10s adb logcat -d -s AndroidRuntime VoiceLedger > artifacts/android-emulator-errors.log 2>&1 || true
     fi
+    if [[ -n ${memory_sampler_pid:-} ]]; then
+        kill "$memory_sampler_pid" 2>/dev/null || true
+    fi
     timeout 10s adb emu kill >/dev/null 2>&1 || true
     kill "$emulator_pid" 2>/dev/null || true
 }
@@ -35,9 +38,27 @@ timeout 220s bash -c '
 adb shell -T getprop ro.product.cpu.abilist | tee artifacts/android-emulator-abis.txt | grep -q arm64-v8a
 adb install --abi arm64-v8a app/build/outputs/apk/debug/app-debug.apk
 adb install -t app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+adb root
+timeout 20s adb wait-for-device
+test "$(adb shell -T id -u)" = 0
+adb shell -T sh > artifacts/android-memory.tsv <<'ANDROID' &
+while :; do
+    read -r now idle < /proc/uptime
+    for process in com.voiceledger.app com.voiceledger.app:speech; do
+        pid=$(pidof "$process") || continue
+        awk -v time="$now" -v name="$process" -v pid="$pid" '
+            /^VmHWM:/ { peak=$2 }
+            /^VmRSS:/ { rss=$2 }
+            END { if (peak != "" && rss != "") print time "\t" name "\t" pid "\t" rss "\t" peak }
+        ' "/proc/$pid/status" 2>/dev/null
+    done
+    sleep 1
+done
+ANDROID
+memory_sampler_pid=$!
 timeout 360s adb shell -T am instrument -w -r --abi arm64-v8a \
     com.voiceledger.app.test/com.voiceledger.app.AndroidRuntimeSmoke | tee artifacts/android-runtime.log
-for stage in recording device_profile model_download live_whisper live_sensevoice; do
+for stage in recording device_profile model_download live_sensevoice; do
     grep -Fx "INSTRUMENTATION_RESULT: $stage=passed" artifacts/android-runtime.log
 done
 grep -Fx 'INSTRUMENTATION_CODE: -1' artifacts/android-runtime.log

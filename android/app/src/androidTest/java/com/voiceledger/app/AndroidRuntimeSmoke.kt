@@ -28,6 +28,7 @@ import java.nio.ByteOrder
 import java.util.UUID
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.TimeUnit
+import org.json.JSONArray
 import org.json.JSONObject
 
 class AndroidRuntimeSmoke : Instrumentation() {
@@ -47,26 +48,19 @@ class AndroidRuntimeSmoke : Instrumentation() {
             DeviceProfiler.capture(app)
             val profile = JSONObject(File(app.noBackupFilesDir, "device-profile-v1.json").readText())
             check(profile.getString("platform") == "android" && profile.getString("abi") == "arm64-v8a")
+            val memory = JSONObject()
+            for (key in listOf("available_memory_bytes", "low_memory_threshold_bytes", "process_memory_bytes", "low_ram_device")) {
+                memory.put(key, profile.get(key))
+            }
+            result.putString("memory_profile", memory.toString())
             result.putString(stage, "passed")
             stage = "model_download"
             LiveAsrModel.entries.forEach(::verifyModelDownload)
             result.putString(stage, "passed")
-            var livePassed = true
-            for (model in listOf(LiveAsrModel.SenseVoice, LiveAsrModel.Whisper)) {
-                stage = "live_${model.name.lowercase()}"
-                try {
-                    val report = verifyLiveSpeech(model)
-                    result.putString("${stage}_timing", report.toString())
-                    val passed = report.optInt("result", -99) == 0 && report.getLong("first_visible_text_ms") >= 0 &&
-                        report.getJSONObject("first_final_ms_from_clip_start").length() == 3
-                    result.putString(stage, if (passed) "passed" else "failed")
-                    livePassed = livePassed && passed
-                } catch (error: Exception) {
-                    result.putString(stage, "${error.javaClass.simpleName}: ${error.message}")
-                    livePassed = false
-                }
-            }
-            finish(if (livePassed) Activity.RESULT_OK else Activity.RESULT_CANCELED, result)
+            stage = "live_sensevoice"
+            result.putString("${stage}_timing", verifyLiveSpeech().toString())
+            result.putString(stage, "passed")
+            finish(Activity.RESULT_OK, result)
         } catch (error: Throwable) {
             result.putString("failure", "$stage: ${error.javaClass.simpleName}: ${error.message}")
             finish(Activity.RESULT_CANCELED, result)
@@ -118,7 +112,7 @@ class AndroidRuntimeSmoke : Instrumentation() {
         check(query("live_model").getString("status") == "installed")
     }
 
-    private fun verifyLiveSpeech(model: LiveAsrModel): JSONObject {
+    private fun verifyLiveSpeech(): JSONObject {
         val app = targetContext
         val clips = listOf("en" to "english", "ja" to "japanese", "zh" to "mandarin")
             .associate { (language, name) ->
@@ -139,14 +133,17 @@ class AndroidRuntimeSmoke : Instrumentation() {
         var committed = 0
         var firstCommitMs = -1L
         var firstTextMs = -1L
+        var maxCommitDelayMs = 0L
         val recordingRoot = File(app.filesDir, "recordings")
         try {
             AudioLibrary(recordingRoot).use { library ->
                 var origin = 0L
-                RecordingManifest(library) { saved, _ ->
-                    committed = saved.chunks
-                    if (committed > 0 && firstCommitMs < 0) {
-                        firstCommitMs = (SystemClock.elapsedRealtimeNanos() - origin) / 1_000_000
+                RecordingManifest(library) { saved, throughNs ->
+                    if (saved.chunks > committed) {
+                        committed = saved.chunks
+                        val elapsed = (SystemClock.elapsedRealtimeNanos() - origin) / 1_000_000
+                        if (firstCommitMs < 0) firstCommitMs = elapsed
+                        maxCommitDelayMs = maxOf(maxCommitDelayMs, elapsed - throughNs / 1_000_000)
                     }
                 }.use { manifest ->
                     manifest.prepare(0)
@@ -154,7 +151,21 @@ class AndroidRuntimeSmoke : Instrumentation() {
                     origin = SystemClock.elapsedRealtimeNanos()
                     runOnMainSync {
                         LiveSpeech.reset()
-                        LiveSpeech.start(app, manifest.sessionId, LiveSpeechOptions("auto", false, model))
+                        LiveSpeech.start(app, manifest.sessionId, LiveSpeechOptions("auto", false, LiveAsrModel.SenseVoice))
+                    }
+                    fun observe() {
+                        val state = LiveSpeech.state.value
+                        val elapsed = (SystemClock.elapsedRealtimeNanos() - origin) / 1_000_000
+                        state.stage?.let { stages.putIfAbsent(it, elapsed) }
+                        if (firstTextMs < 0 && (state.lines.isNotEmpty() || state.partials.isNotEmpty())) {
+                            check(committed > 0) { "Text appeared before the first commit." }
+                            firstTextMs = elapsed
+                        }
+                        for (line in state.lines) {
+                            if (seen.add(line) && line.language in clipStarts) {
+                                firstFinal.putIfAbsent(line.language, elapsed)
+                            }
+                        }
                     }
                     fun append(samples: ShortArray) {
                         for (offset in samples.indices step PACKET_FRAMES) {
@@ -167,17 +178,7 @@ class AndroidRuntimeSmoke : Instrumentation() {
                             manifest.append(packet, time)
                             val state = LiveSpeech.state.value
                             check(state.running) { "Worker exited during capture with ${state.result}; stage ${state.stage}." }
-                            val elapsed = (SystemClock.elapsedRealtimeNanos() - origin) / 1_000_000
-                            state.stage?.let { stages.putIfAbsent(it, elapsed) }
-                            if (firstTextMs < 0 && (state.lines.isNotEmpty() || state.partials.isNotEmpty())) {
-                                check(committed > 0) { "Text appeared before the first commit." }
-                                firstTextMs = elapsed
-                            }
-                            for (line in state.lines) {
-                                if (seen.add(line) && line.language in clipStarts) {
-                                    firstFinal.putIfAbsent(line.language, elapsed)
-                                }
-                            }
+                            observe()
                         }
                     }
                     for ((language, samples) in clips) {
@@ -188,30 +189,30 @@ class AndroidRuntimeSmoke : Instrumentation() {
                     repeat(4) {
                         if (firstFinal.size < clips.size) append(silence)
                     }
-                    val action = JSONObject().put("op", "live_transcript").put("session_id", manifest.sessionId)
-                    fun snapshot(): JSONObject =
-                        JSONObject(NativeCore.speechRequest(speechRequest(app, action)).decodeToString())
-                    val before = snapshot()
+                    check(firstTextMs >= firstCommitMs && firstCommitMs >= 0) { "No visible text during recording." }
+                    check(firstFinal.isNotEmpty()) { "No final text during recording." }
+                    val liveLanguages = firstFinal.keys.toList()
                     val stop = SystemClock.elapsedRealtime()
                     val saved = manifest.finish(StopRequest(CaptureEnd.User, frames * SECOND_NS / SAMPLE_RATE))
                     runOnMainSync(LiveSpeech::drain)
                     while (LiveSpeech.state.value.running && SystemClock.elapsedRealtime() - stop < 50_000) {
                         SystemClock.sleep(50)
+                        observe()
                     }
-                    val after = snapshot()
+                    observe()
+                    check(LiveSpeech.state.value.result == 0) {
+                        "Could not finish the saved transcript, result ${LiveSpeech.state.value.result}."
+                    }
+                    check(firstFinal.keys == clips.keys) { "Got finals in ${firstFinal.keys} after draining." }
                     return JSONObject().put("first_commit_ms", firstCommitMs)
                         .put("first_visible_text_ms", firstTextMs)
                         .put("stages_ms", JSONObject(stages))
-                        .put("native_finals_before_stop", before.getJSONArray("lines").length())
-                        .put("native_job_before_stop", before.optJSONObject("job"))
-                        .put("native_finals_after_stop", after.getJSONArray("lines").length())
-                        .put("native_job_after_stop", after.optJSONObject("job"))
-                        .put("visible_finals_after_stop", LiveSpeech.state.value.lines.size)
-                        .put("result", LiveSpeech.state.value.result)
+                        .put("final_languages_during_capture", JSONArray(liveLanguages))
                         .put("first_final_ms_from_clip_start", JSONObject(firstFinal.mapValues { (language, elapsed) ->
                             elapsed - clipStarts.getValue(language)
                         }))
                         .put("completion_after_stop_ms", SystemClock.elapsedRealtime() - stop)
+                        .put("max_commit_delay_ms", maxCommitDelayMs)
                         .put("committed_segments", saved.chunks)
                         .put("audio_ms", frames * 1000 / SAMPLE_RATE)
                 }

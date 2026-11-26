@@ -1,4 +1,4 @@
-name: Android live transcription diagnostics
+name: Android SenseVoice memory measurement
 
 on:
   push:
@@ -39,13 +39,13 @@ jobs:
           packages: platforms;android-36 build-tools;36.0.0 platform-tools emulator system-images;android-35;google_apis;x86_64
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
-          run-id: 45725708499
+          run-id: 45729917890
           github-token: ${{ github.token }}
           name: voiceledger-core-android-arm64-v8a
           path: android/app/src/main/jniLibs/arm64-v8a
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
-          run-id: 45725708499
+          run-id: 45729917890
           github-token: ${{ github.token }}
           name: voiceledger-speech-android-arm64-v8a
           path: android/app/src/main/jniLibs/arm64-v8a
@@ -55,19 +55,19 @@ jobs:
           mv app/src/main/jniLibs/arm64-v8a/*.md app/src/main/jniLibs/arm64-v8a/*.txt app/src/main/assets/speech-notices/
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
-          run-id: 45725708499
+          run-id: 45729917890
           github-token: ${{ github.token }}
           name: voiceledger-ffi-linux-x64
           path: android/app/native-test
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
-          run-id: 45725708499
+          run-id: 45729917890
           github-token: ${{ github.token }}
           name: domain-fixtures-v1
           path: artifacts/domain-fixtures-v1
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
-          run-id: 45725708499
+          run-id: 45729917890
           github-token: ${{ github.token }}
           name: live-speech
           path: android/live-speech

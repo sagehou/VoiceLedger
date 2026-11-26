@@ -64,12 +64,7 @@ class SpeechWorkerService : Service() {
                 runCatching { NativeCore.updateSpeechResources(DeviceProfiler.speechResources(applicationContext)) }
             }
             val outcome = try {
-                val priority = if (transcript != null) {
-                    Process.THREAD_PRIORITY_DEFAULT + Process.THREAD_PRIORITY_LESS_FAVORABLE
-                } else {
-                    Process.THREAD_PRIORITY_BACKGROUND
-                }
-                Process.setThreadPriority(priority)
+                Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
                 NativeCore.updateSpeechResources(DeviceProfiler.speechResources(applicationContext))
                 NativeCore.speechRequest(request)
                 0
