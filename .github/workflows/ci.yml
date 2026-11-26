@@ -35,7 +35,7 @@ jobs:
       - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
         with:
           cmdline-tools-version: ${{ env.ANDROID_CMDLINE_TOOLS_VERSION }}
-          packages: platforms;android-36 build-tools;36.0.0 platform-tools emulator system-images;android-35;google_apis;x86_64
+          packages: ndk;${{ env.ANDROID_NDK_VERSION }} platforms;android-36 build-tools;36.0.0 platform-tools emulator system-images;android-35;google_apis;x86_64
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           github-token: ${{ github.token }}
@@ -48,6 +48,8 @@ jobs:
           run-id: 45766525454
           name: voiceledger-speech-android-arm64-v8a
           path: android/app/src/main/jniLibs/arm64-v8a
+      - name: Rebuild the GGUF adapter with the native Auto hint
+        run: python3 ../scripts/build_sensevoice_gguf.py --work "$RUNNER_TEMP/voiceledger-gguf" --output app/src/main/jniLibs/arm64-v8a --android-ndk "$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION"
       - name: Include the native speech component notices
         run: |
           mkdir -p app/src/main/assets/speech-notices

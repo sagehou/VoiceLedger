@@ -28,7 +28,8 @@ static const char *nemotron_prompt(int32_t language) {
         case 1: return "zh-CN";
         case 2: return "en-US";
         case 3: return "ja-JP";
-        default: return "auto";
+        // The public language list only accepts locales. A null hint selects the model's Auto slot.
+        default: return nullptr;
     }
 }
 
