@@ -44,11 +44,17 @@ timeout 220s bash -c '
 adb shell -T getprop ro.product.cpu.abilist | tee artifacts/android-emulator-abis.txt | grep -q arm64-v8a
 apk="${1:-app/build/outputs/apk/debug/app-debug.apk}"
 seed_apk="${2:-$RUNNER_TEMP/voiceledger-upgrade-base.apk}"
+version_code() {
+    "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$1" | awk -F "'" '/^package: / {print $4}'
+}
+old_version="$(version_code "$seed_apk")"
+new_version="$(version_code "$apk")"
+test "$new_version" -gt "$old_version"
 adb install --abi arm64-v8a "$seed_apk"
 adb shell -T "run-as com.voiceledger.app sh -c 'mkdir -p files && echo retained > files/ci-upgrade-marker'"
 adb install -r --abi arm64-v8a "$apk"
 test "$(adb shell -T run-as com.voiceledger.app cat files/ci-upgrade-marker)" = retained
-echo 'APK replacement retained app data.' | tee artifacts/android-upgrade.log
+echo "APK replacement retained app data from version code $old_version to $new_version." | tee artifacts/android-upgrade.log
 if [[ $# -gt 0 ]]; then
     exit 0
 fi

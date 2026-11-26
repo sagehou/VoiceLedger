@@ -1,6 +1,6 @@
 # Build and test traceability
 
-The [CI workflow](../../.github/workflows/ci.yml) runs on pull requests to `main` and pushes to implementation branches. Require the `CI gate` check on `main` when repository administration is available. The gate succeeds only if all constituent jobs succeed. Both client builds run on shared-core and contract changes.
+The CI workflow runs on pull requests to `main` and pushes to implementation branches. Require the `CI gate` check on `main`. Both client builds run on shared-core and contract changes. When fixed Android signing is configured, its packaging job is part of the gate. [Workflow](../../.github/workflows/ci.yml)
 
 | Requirement | Actions job and entry point | Evidence |
 | --- | --- | --- |
@@ -30,6 +30,14 @@ The Android build uses strict dependency locking against `android/app/gradle.loc
 ```
 
 Commit the generated lock and verify a fresh run without `--write-locks`.
+
+## Android debug signing
+
+The `android-client` job signs a pair of test APKs with a disposable certificate and verifies that installing the higher version code preserves a file in the app sandbox. `android-debug-package` runs the same upgrade check with the project's fixed debug certificate and publishes `android-debug-upgradeable`. The application ID stays `com.voiceledger.app` and the distributed APK uses the CI run number plus one as its version code.
+
+Create the `android-debug-publish` GitHub environment and allow deployments from `integration/vl-017-device-candidate` and `main`. Store the debug-only PKCS#12 under the alias `androiddebugkey`. Set the environment secret `VOICELEDGER_ANDROID_DEBUG_SIGNING` to a JSON object with `pkcs12` set to the base64-encoded keystore and `password` set to its password. Set the repository variable `VOICELEDGER_ANDROID_DEBUG_CERT_SHA256` to the public DER certificate's lowercase SHA-256. Retain the keystore in the project's private credential storage for future updates.
+
+APK upgrades require the installed package's signing identity. A device with a build from before fixed signing needs its existing recordings and keys preserved before the initial transition.
 
 ## Device acceptance
 

@@ -385,22 +385,26 @@ jobs:
           cp app/build/outputs/apk/debug/app-debug.apk "$RUNNER_TEMP/voiceledger-upgrade-base.apk"
           ./gradlew --no-daemon --stacktrace -PvoiceledgerVersionCode="$((GITHUB_RUN_NUMBER + 1))" \
             :app:lintDebug :app:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest 2>&1 | tee artifacts/android-gradle.log
-      - name: Exercise the signing step with the runner's debug key
+      - name: Exercise the signing step with a disposable debug certificate
         run: |
+          umask 077
           signer="$ANDROID_HOME/build-tools/36.0.0/apksigner"
           store="$RUNNER_TEMP/voiceledger-debug-rehearsal.p12"
           base="$RUNNER_TEMP/voiceledger-upgrade-base.apk"
           apk=app/build/outputs/apk/debug/app-debug.apk
-          keytool -importkeystore -noprompt -srckeystore ~/.android/debug.keystore -srcstorepass android \
-            -srcalias androiddebugkey -destkeystore "$store" -deststoretype PKCS12 -deststorepass android
-          pin="$("$signer" verify --print-certs "$base" | awk -F ': ' '/^Signer #1 certificate SHA-256 digest: / {print $2}')"
+          test_apk=app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+          keytool -genkeypair -alias androiddebugkey -keyalg RSA -keysize 3072 -validity 7 \
+            -dname "CN=VoiceLedger CI Debug" -keystore "$store" -storetype PKCS12 -storepass android
+          pin="$(keytool -exportcert -alias androiddebugkey -keystore "$store" -storepass android | sha256sum | cut -d ' ' -f 1)"
           export VOICELEDGER_ANDROID_DEBUG_CERT_SHA256="$pin"
           VOICELEDGER_ANDROID_DEBUG_SIGNING="$(python3 -c 'import base64,json,pathlib,sys; print(json.dumps({"pkcs12":base64.b64encode(pathlib.Path(sys.argv[1]).read_bytes()).decode(),"password":"android"}))' "$store")" \
             python3 ../scripts/sign_android_debug.py "$signer" \
             "$base" "$RUNNER_TEMP/rehearsal-base.apk" "$apk" "$RUNNER_TEMP/rehearsal-next.apk" \
+            "$test_apk" "$RUNNER_TEMP/rehearsal-test.apk" \
             | tee artifacts/android-rehearsal-cert.txt
           mv "$RUNNER_TEMP/rehearsal-base.apk" "$base"
           mv "$RUNNER_TEMP/rehearsal-next.apk" "$apk"
+          mv "$RUNNER_TEMP/rehearsal-test.apk" "$test_apk"
           rm -f "$store"
       - name: Run the packaged Android ARM64 recording and live transcription
         run: bash ../scripts/check_android_runtime.sh
