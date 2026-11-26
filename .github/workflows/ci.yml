@@ -397,7 +397,8 @@ jobs:
             -dname "CN=VoiceLedger CI Debug" -keystore "$store" -storetype PKCS12 -storepass android
           pin="$(keytool -exportcert -alias androiddebugkey -keystore "$store" -storepass android | sha256sum | cut -d ' ' -f 1)"
           export VOICELEDGER_ANDROID_DEBUG_CERT_SHA256="$pin"
-          VOICELEDGER_ANDROID_DEBUG_SIGNING="$(python3 -c 'import base64,json,pathlib,sys; print(json.dumps({"pkcs12":base64.b64encode(pathlib.Path(sys.argv[1]).read_bytes()).decode(),"password":"android"}))' "$store")" \
+          VOICELEDGER_ANDROID_DEBUG_PKCS12_BASE64="$(base64 "$store")" \
+            VOICELEDGER_ANDROID_DEBUG_PKCS12_PASSWORD=android \
             python3 ../scripts/sign_android_debug.py "$signer" \
             "$base" "$RUNNER_TEMP/rehearsal-base.apk" "$apk" "$RUNNER_TEMP/rehearsal-next.apk" \
             "$test_apk" "$RUNNER_TEMP/rehearsal-test.apk" \
@@ -507,7 +508,8 @@ jobs:
       - name: Sign the verified debug APK
         working-directory: android
         env:
-          VOICELEDGER_ANDROID_DEBUG_SIGNING: ${{ secrets.VOICELEDGER_ANDROID_DEBUG_SIGNING }}
+          VOICELEDGER_ANDROID_DEBUG_PKCS12_BASE64: ${{ secrets.VOICELEDGER_ANDROID_DEBUG_PKCS12_BASE64 }}
+          VOICELEDGER_ANDROID_DEBUG_PKCS12_PASSWORD: ${{ secrets.VOICELEDGER_ANDROID_DEBUG_PKCS12_PASSWORD }}
           VOICELEDGER_ANDROID_DEBUG_CERT_SHA256: ${{ vars.VOICELEDGER_ANDROID_DEBUG_CERT_SHA256 }}
         run: |
           mkdir -p artifacts

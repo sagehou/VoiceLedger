@@ -35,7 +35,12 @@ Commit the generated lock and verify a fresh run without `--write-locks`.
 
 The `android-client` job signs a pair of test APKs with a disposable certificate and verifies that installing the higher version code preserves a file in the app sandbox. `android-debug-package` runs the same upgrade check with the project's fixed debug certificate and publishes `android-debug-upgradeable`. The application ID stays `com.voiceledger.app` and the distributed APK uses the CI run number plus one as its version code.
 
-Create the `android-debug-publish` GitHub environment and allow deployments from `integration/vl-017-device-candidate` and `main`. Store the debug-only PKCS#12 under the alias `androiddebugkey`. Set the environment secret `VOICELEDGER_ANDROID_DEBUG_SIGNING` to a JSON object with `pkcs12` set to the base64-encoded keystore and `password` set to its password. Set the repository variable `VOICELEDGER_ANDROID_DEBUG_CERT_SHA256` to the public DER certificate's lowercase SHA-256. Retain the keystore in the project's private credential storage for future updates.
+In `sagehou/VoiceLedger`, create the `android-debug-publish` GitHub environment and allow deployments from `integration/vl-017-device-candidate` and `main`. The debug-only PKCS#12 uses the alias `androiddebugkey`. Add two secrets to that environment.
+
+- `VOICELEDGER_ANDROID_DEBUG_PKCS12_BASE64` contains the Base64 text of the `.p12` file.
+- `VOICELEDGER_ANDROID_DEBUG_PKCS12_PASSWORD` contains the PKCS#12 export password.
+
+Set the repository variable `VOICELEDGER_ANDROID_DEBUG_CERT_SHA256` to the public DER certificate's lowercase SHA-256. Retain the keystore in the project's private credential storage for future updates.
 
 The `SageAutoman/VoiceLedger` fork can publish the same candidate commit when upstream administration is unavailable. Only its `integration/vl-017-device-candidate` branch can use the signing environment. Record the signed artifact and public certificate fingerprint in #18. Use the same publishing branch and certificate for subsequent upgrades.
 
