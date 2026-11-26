@@ -1,6 +1,6 @@
 # Build and test traceability
 
-The [CI workflow](../../.github/workflows/ci.yml) runs on pull requests to `main` and pushes to implementation branches. Require the `CI gate` check on `main` when repository administration is available. The gate succeeds only if all constituent jobs succeed. Both client builds run on shared-core and contract changes.
+The CI workflow runs on pull requests to `main` and pushes to implementation branches. Require the `CI gate` check on `main`. Both client builds run on shared-core and contract changes. When fixed Android signing is configured, its packaging job is part of the gate. [Workflow](../../.github/workflows/ci.yml)
 
 | Requirement | Actions job and entry point | Evidence |
 | --- | --- | --- |
@@ -16,7 +16,7 @@ The [CI workflow](../../.github/workflows/ci.yml) runs on pull requests to `main
 | Device capability profile | `windows-client` samples the runner through the Windows profiler. `android-client` checks thermal mapping and saves synthetic profiles through JNI. | Windows smoke log, Android JUnit results and [device profile](DEVICE-PROFILE.md) |
 | Model catalog and recommendation | `contracts` validates the catalog schema. Rust tests cover eligibility, download verification and measured workload policy. Both clients read the shared preview through their native binding. | Contracts report, Rust tests, Windows smoke log and Android JUnit results. [Model catalog](MODEL-CATALOG.md) |
 | Local VAD and transcription | Rust tests exercise committed audio, WebRTC VAD, ephemeral revisions and durable results. The native jobs build both inference adapters. Client jobs check speech worker and package integration. | Rust reports, native smoke logs, Windows and Android packages and [local transcription](LOCAL-TRANSCRIPTION.md) |
-| Live transcription and final translation | `rust-core` feeds synthetic speech through active audio manifests and the packaged adapters in an isolated network namespace. It checks track attribution, English-only translation, tail drain and low-memory resumption. `windows-client` checks a final transcript through the published worker while capture is active. `android-client` verifies both model downloads and checks SenseVoice text during paced capture and all three languages by the end of drain. | `live-speech`, `asr-automatic-languages`, and `android-runtime.log`. Physical evidence remains **BLOCKED** in [#18](https://github.com/sagehou/VoiceLedger/issues/18). |
+| Live transcription and final translation | `rust-core` feeds synthetic speech through active audio manifests and the packaged adapters in an isolated network namespace. It checks track attribution, English-only translation, tail drain and low-memory resumption. `windows-client` checks a final transcript through the published worker while capture is active. `android-client` verifies downloads and compares ONNX and GGUF on the same paced audio in the packaged app. | `live-speech`, `asr-automatic-languages`, and `android-sensevoice-comparison.json`. Physical evidence remains **BLOCKED** in [#18](https://github.com/sagehou/VoiceLedger/issues/18). |
 | AI scheduling | Rust fixtures exercise pressure thresholds and recovery, speech queue migration, durable progress and worker interruption. Windows and Android exercise resource samples through the native bindings. | Rust, Windows and Android reports and [AI scheduling](AI-SCHEDULER.md) |
 | Static validation | `security-static` runs actionlint, a secret scan and OSV Scanner against the committed dependency locks and pinned Python requirements | Dependency vulnerability and license report in `security-static-report`, job log and check annotations |
 
@@ -30,6 +30,14 @@ The Android build uses strict dependency locking against `android/app/gradle.loc
 ```
 
 Commit the generated lock and verify a fresh run without `--write-locks`.
+
+## Android debug signing
+
+The `android-client` job signs a pair of test APKs with a disposable certificate and verifies that installing the higher version code preserves a file in the app sandbox. `android-debug-package` runs the same upgrade check with the project's fixed debug certificate and publishes `android-debug-upgradeable`. The application ID stays `com.voiceledger.app` and the distributed APK uses the CI run number plus one as its version code.
+
+Create the `android-debug-publish` GitHub environment and allow deployments from `integration/vl-017-device-candidate` and `main`. Store the debug-only PKCS#12 under the alias `androiddebugkey`. Set the environment secret `VOICELEDGER_ANDROID_DEBUG_SIGNING` to a JSON object with `pkcs12` set to the base64-encoded keystore and `password` set to its password. Set the repository variable `VOICELEDGER_ANDROID_DEBUG_CERT_SHA256` to the public DER certificate's lowercase SHA-256. Retain the keystore in the project's private credential storage for future updates.
+
+APK upgrades require the installed package's signing identity. A device with a build from before fixed signing needs its existing recordings and keys preserved before the initial transition.
 
 ## Device acceptance
 

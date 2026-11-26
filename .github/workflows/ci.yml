@@ -1,4 +1,4 @@
-name: Android GGUF adapter verification
+name: Android GGUF and upgrade diagnostics
 
 on:
   push:
@@ -6,24 +6,153 @@ on:
 
 permissions:
   contents: read
+  actions: read
+
+env:
+  ANDROID_CMDLINE_TOOLS_VERSION: '12266719'
+  JAVA_VERSION: '17.0.18+8'
 
 jobs:
-  android-gguf:
+  android-client:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: android
+        shell: bash
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
-          cmdline-tools-version: '12266719'
-          packages: ndk;28.2.13676358
-      - run: |
-          ndk="$ANDROID_HOME/ndk/28.2.13676358"
-          python3 scripts/build_sensevoice_gguf.py --work "$RUNNER_TEMP/gguf" --output artifacts --android-ndk "$ndk"
-          "$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" -h -d artifacts/libvoiceledger_sensevoice_gguf.so
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: gradle
+          cache-dependency-path: |
+            android/**/*.gradle.kts
+            android/gradle/wrapper/gradle-wrapper.properties
+            android/**/gradle.lockfile
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
         with:
-          name: android-sensevoice-gguf
-          path: artifacts/
+          cmdline-tools-version: ${{ env.ANDROID_CMDLINE_TOOLS_VERSION }}
+          packages: platforms;android-36 build-tools;36.0.0 platform-tools emulator system-images;android-35;google_apis;x86_64
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          run-id: 45738873140
+          github-token: ${{ github.token }}
+          name: voiceledger-core-android-arm64-v8a
+          path: android/app/src/main/jniLibs/arm64-v8a
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          run-id: 45738873140
+          github-token: ${{ github.token }}
+          name: voiceledger-speech-android-arm64-v8a
+          path: android/app/src/main/jniLibs/arm64-v8a
+      - name: Include the native speech component notices
+        run: |
+          mkdir -p app/src/main/assets/speech-notices
+          mv app/src/main/jniLibs/arm64-v8a/*.md app/src/main/jniLibs/arm64-v8a/*.txt app/src/main/assets/speech-notices/
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          run-id: 45738873140
+          github-token: ${{ github.token }}
+          name: voiceledger-ffi-linux-x64
+          path: android/app/native-test
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          run-id: 45738873140
+          github-token: ${{ github.token }}
+          name: domain-fixtures-v1
+          path: artifacts/domain-fixtures-v1
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          run-id: 45738873140
+          github-token: ${{ github.token }}
+          name: live-speech
+          path: android/live-speech
+      - name: Build and check the Android app
+        run: |
+          mkdir -p artifacts app/src/androidTest/assets
+          cp live-speech/*.f32 live-speech/live-speech-corpus.json app/src/androidTest/assets/
+          ./gradlew --no-daemon --stacktrace :app:assembleDebug 2>&1 | tee artifacts/android-upgrade-base-build.log
+          cp app/build/outputs/apk/debug/app-debug.apk "$RUNNER_TEMP/voiceledger-upgrade-base.apk"
+          ./gradlew --no-daemon --stacktrace -PvoiceledgerVersionCode="$((GITHUB_RUN_NUMBER + 1))" \
+            :app:lintDebug :app:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest 2>&1 | tee artifacts/android-gradle.log
+      - name: Exercise the signing step with a disposable debug certificate
+        run: |
+          umask 077
+          signer="$ANDROID_HOME/build-tools/36.0.0/apksigner"
+          store="$RUNNER_TEMP/voiceledger-debug-rehearsal.p12"
+          base="$RUNNER_TEMP/voiceledger-upgrade-base.apk"
+          apk=app/build/outputs/apk/debug/app-debug.apk
+          test_apk=app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+          keytool -genkeypair -alias androiddebugkey -keyalg RSA -keysize 3072 -validity 7 \
+            -dname "CN=VoiceLedger CI Debug" -keystore "$store" -storetype PKCS12 -storepass android
+          pin="$(keytool -exportcert -alias androiddebugkey -keystore "$store" -storepass android | sha256sum | cut -d ' ' -f 1)"
+          export VOICELEDGER_ANDROID_DEBUG_CERT_SHA256="$pin"
+          VOICELEDGER_ANDROID_DEBUG_SIGNING="$(python3 -c 'import base64,json,pathlib,sys; print(json.dumps({"pkcs12":base64.b64encode(pathlib.Path(sys.argv[1]).read_bytes()).decode(),"password":"android"}))' "$store")" \
+            python3 ../scripts/sign_android_debug.py "$signer" \
+            "$base" "$RUNNER_TEMP/rehearsal-base.apk" "$apk" "$RUNNER_TEMP/rehearsal-next.apk" \
+            "$test_apk" "$RUNNER_TEMP/rehearsal-test.apk" \
+            | tee artifacts/android-rehearsal-cert.txt
+          mv "$RUNNER_TEMP/rehearsal-base.apk" "$base"
+          mv "$RUNNER_TEMP/rehearsal-next.apk" "$apk"
+          mv "$RUNNER_TEMP/rehearsal-test.apk" "$test_apk"
+          rm -f "$store"
+      - name: Run the packaged Android ARM64 recording and live transcription
+        run: bash ../scripts/check_android_runtime.sh
+      - name: Check the APK manifest
+        run: |
+          apk=app/build/outputs/apk/debug/app-debug.apk
+          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" > artifacts/android-apk.txt
+          grep -E "^package: name='com\.voiceledger\.app'" artifacts/android-apk.txt
+          grep -E "^launchable-activity: name='com\.voiceledger\.app\.MainActivity'" artifacts/android-apk.txt
+          apkanalyzer manifest print "$apk" > artifacts/android-manifest.xml
+          python3 - "$apk" <<'PY'
+          import sys
+          from xml.etree import ElementTree
+          from zipfile import ZipFile
+
+          with ZipFile(sys.argv[1]) as apk:
+              abi = {p.split("/")[1] for p in apk.namelist() if p.startswith("lib/") and p.endswith(".so")}
+          assert abi == {"arm64-v8a"}, abi
+
+          manifest = ElementTree.parse("artifacts/android-manifest.xml")
+          ns = "{http://schemas.android.com/apk/res/android}"
+          permissions = {entry.get(ns + "name") for entry in manifest.findall("uses-permission")}
+          required = {"RECORD_AUDIO", "FOREGROUND_SERVICE", "FOREGROUND_SERVICE_MICROPHONE", "POST_NOTIFICATIONS", "INTERNET"}
+          assert {"android.permission." + name for name in required} <= permissions, permissions
+          assert "android.permission.RECEIVE_BOOT_COMPLETED" not in permissions
+          application = manifest.find("application")
+          assert application.get(ns + "allowBackup") == "false"
+          assert application.get(ns + "dataExtractionRules")
+          service, = (
+              item for item in manifest.findall("application/service")
+              if item.get(ns + "name", "").endswith(".recording.RecordingService")
+          )
+          service_type = service.get(ns + "foregroundServiceType", "")
+          assert service_type == "microphone" or int(service_type, 0) == 0x80, service.attrib
+          assert service.get(ns + "exported") == "false", service.attrib
+          assert service.get(ns + "directBootAware") != "true", service.attrib
+          speech, = (
+              item for item in manifest.findall("application/service")
+              if item.get(ns + "name", "").endswith(".speech.SpeechWorkerService")
+          )
+          assert speech.get(ns + "exported") == "false", speech.attrib
+          assert speech.get(ns + "process", "").endswith(":speech"), speech.attrib
+          PY
+          unzip -Z1 "$apk" | grep -Fx 'lib/arm64-v8a/libvoiceledger_ffi.so'
+          for library in voiceledger_whisper voiceledger_sensevoice voiceledger_sensevoice_gguf voiceledger_translation voiceledger_speaker sherpa-onnx-c-api onnxruntime; do
+            unzip -Z1 "$apk" | grep -Fx "lib/arm64-v8a/lib${library}.so"
+          done
+          stat -c '%s' app/src/main/jniLibs/arm64-v8a/libvoiceledger_ffi.so > artifacts/android-native-bytes.log
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        if: always()
+        with:
+          name: android-client
+          path: |
+            android/artifacts/
+            android/app/build/reports/
+            android/app/build/test-results/
+            android/app/build/outputs/apk/debug/app-debug.apk

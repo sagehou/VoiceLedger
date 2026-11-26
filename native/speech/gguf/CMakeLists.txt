@@ -9,6 +9,8 @@ foreach(option TRANSCRIBE_BUILD_TESTS TRANSCRIBE_BUILD_EXAMPLES TRANSCRIBE_BUILD
     set(${option} OFF CACHE BOOL "" FORCE)
 endforeach()
 add_subdirectory("${TRANSCRIBE_SOURCE}" transcribe EXCLUDE_FROM_ALL)
+# The upstream target resolves its include directory from the top-level project.
+target_include_directories(transcribe PUBLIC "${TRANSCRIBE_SOURCE}/include")
 
 add_library(voiceledger_sensevoice_gguf SHARED sensevoice.cpp)
 target_link_libraries(voiceledger_sensevoice_gguf PRIVATE transcribe)

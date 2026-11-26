@@ -172,6 +172,7 @@ pub fn adapter_path(runtime: &str, native: &Path) -> Option<PathBuf> {
     let basename = match runtime {
         "whisper.cpp" => "voiceledger_whisper",
         "sherpa-onnx" => "voiceledger_sensevoice",
+        "transcribe.cpp" => "voiceledger_sensevoice_gguf",
         "ctranslate2" => "voiceledger_translation",
         _ => return None,
     };

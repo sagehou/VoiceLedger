@@ -105,8 +105,8 @@ fn fetch_body(start: u64, bytes: &[u8]) -> Download {
 #[test]
 fn published_candidates_use_their_own_download_and_memory_metadata() {
     let catalog = Catalog::bundled().unwrap();
-    let [whisper, sensevoice, translation] = catalog.models() else {
-        panic!("Expected two transcription candidates and one translation candidate");
+    let [whisper, sensevoice, translation, gguf] = catalog.models() else {
+        panic!("Expected three transcription candidates and one translation candidate");
     };
     assert_eq!(whisper.download_bytes(), 32_152_673);
     assert_eq!(
@@ -119,6 +119,10 @@ fn published_candidates_use_their_own_download_and_memory_metadata() {
         1_100_000_000
     );
     assert_eq!(sensevoice.license.id, "LicenseRef-FunASR-Model");
+    assert_eq!(gguf.download_bytes(), 252_684_608);
+    assert_eq!(gguf.runtime.id, "transcribe.cpp");
+    assert_eq!(gguf.targets.len(), 1);
+    assert_eq!(gguf.targets[0].platform, Platform::Android);
     let pair = translation.translation.unwrap();
     assert_eq!(pair.source.code(), "en");
     assert_eq!(pair.target.code(), "zh");

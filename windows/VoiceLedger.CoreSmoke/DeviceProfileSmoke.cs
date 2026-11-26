@@ -29,7 +29,7 @@ internal static class DeviceProfileSmoke
             using var preview = JsonDocument.Parse(NativeCore.ModelPreview(directory));
             Require(preview.RootElement.GetProperty("mode").GetString() == "recording_only", "catalog fallback");
             var models = preview.RootElement.GetProperty("candidates");
-            Require(models.GetArrayLength() == 3, "bundled candidates");
+            Require(models.GetArrayLength() == 4, "bundled candidates");
             Require(models[0].GetProperty("download_bytes").GetInt64() == 32152673, "Whisper download size");
             Require(models[2].GetProperty("model").GetProperty("translation").GetProperty("target").GetString() == "zh",
                 "English to Chinese model");
