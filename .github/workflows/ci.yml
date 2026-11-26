@@ -331,7 +331,7 @@ jobs:
   android-client:
     runs-on: ubuntu-latest
     needs: [rust-core, rust-android, contracts]
-    timeout-minutes: 25
+    timeout-minutes: 35
     defaults:
       run:
         working-directory: android

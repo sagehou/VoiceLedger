@@ -1,7 +1,9 @@
 package com.voiceledger.app
 
+import android.accessibilityservice.AccessibilityServiceInfo
 import android.app.Activity
 import android.app.Instrumentation
+import android.content.Intent
 import android.os.Bundle
 import android.os.SystemClock
 import com.voiceledger.app.core.AudioLibrary
@@ -12,6 +14,8 @@ import com.voiceledger.app.recording.CaptureEnd
 import com.voiceledger.app.recording.CaptureTimeline
 import com.voiceledger.app.recording.PACKET_FRAMES
 import com.voiceledger.app.recording.RecordingManifest
+import com.voiceledger.app.recording.RecordingPhase
+import com.voiceledger.app.recording.RecordingStatusStore
 import com.voiceledger.app.recording.SAMPLE_RATE
 import com.voiceledger.app.recording.SECOND_NS
 import com.voiceledger.app.recording.StopRequest
@@ -27,6 +31,9 @@ import java.nio.ByteOrder
 import java.util.UUID
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
+import kotlin.concurrent.thread
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -54,9 +61,9 @@ class AndroidRuntimeSmoke : Instrumentation() {
                     DeviceProfiler.capture(app)
                     verifyModelDownload(model)
                 } else {
-                    stage = "live_sensevoice"
+                    stage = "live_asr"
                     val report = verifyLiveSpeech(model)
-                    File(app.cacheDir, "sensevoice-comparison.json").writeText(report.toString())
+                    File(app.cacheDir, "asr-comparison.json").writeText(report.toString())
                 }
                 result.putString(stage, "passed")
                 finish(Activity.RESULT_OK, result)
@@ -81,7 +88,7 @@ class AndroidRuntimeSmoke : Instrumentation() {
                 .put("app_reserve_bytes", appReserve)
                 .put("previous_budget_bytes", oldBudget)
                 .put("post_reserve_bytes", remaining).toString())
-            check(oldBudget < 1_000_000_000) { "The old budget would already admit SenseVoice." }
+            check(remaining > 0 && systemReserve > 0 && appReserve > 0) { "Missing memory reserves." }
             result.putString(stage, "passed")
             stage = "model_download"
             verifyModelDownload(LiveAsrModel.Whisper)
@@ -149,11 +156,22 @@ class AndroidRuntimeSmoke : Instrumentation() {
         var frames = 0L
         var committed = 0
         var firstCommitMs = -1L
-        var firstTextMs = -1L
         var firstFinalMs = -1L
         var maxCommitDelayMs = 0L
+        val firstTextMs = AtomicLong(-1)
+        val firstPartialMs = AtomicLong(-1)
+        val observing = AtomicBoolean(true)
         val recordingRoot = File(app.filesDir, "recordings")
+        val screen = startActivitySync(Intent(app, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         try {
+            val readyBy = SystemClock.elapsedRealtime() + 5_000
+            while (RecordingStatusStore.state.value.phase == RecordingPhase.Recovering &&
+                SystemClock.elapsedRealtime() < readyBy) SystemClock.sleep(25)
+            check(RecordingStatusStore.state.value.phase == RecordingPhase.Idle) { "Recording screen did not finish recovery." }
+            val accessibility = uiAutomation
+            accessibility.serviceInfo = accessibility.serviceInfo.apply {
+                flags = flags or AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
+            }
             AudioLibrary(recordingRoot).use { library ->
                 var origin = 0L
                 RecordingManifest(library) { saved, throughNs ->
@@ -168,16 +186,36 @@ class AndroidRuntimeSmoke : Instrumentation() {
                     manifest.beginStream(0, null)
                     origin = SystemClock.elapsedRealtimeNanos()
                     runOnMainSync {
+                        RecordingStatusStore.update { it.copy(phase = RecordingPhase.Recording) }
                         LiveSpeech.reset()
                         LiveSpeech.start(app, manifest.sessionId, LiveSpeechOptions("auto", false, model))
+                    }
+                    val startedAt = origin
+                    // Observe the Compose captions without putting UI queries on the audio writer.
+                    thread(name = "Observe live captions", isDaemon = true) {
+                        while (observing.get()) {
+                            val state = LiveSpeech.state.value
+                            if (state.lines.isNotEmpty() || state.partials.isNotEmpty()) {
+                                val root = accessibility.rootInActiveWindow
+                                val visible = { tag: String ->
+                                    root?.findAccessibilityNodeInfosByViewId(tag).orEmpty()
+                                        .any { it.isVisibleToUser && !it.text.isNullOrBlank() }
+                                }
+                                val partial = visible(LIVE_PARTIAL_TAG)
+                                val elapsed = (SystemClock.elapsedRealtimeNanos() - startedAt) / 1_000_000
+                                if (partial || visible(LIVE_FINAL_TAG)) firstTextMs.compareAndSet(-1, elapsed)
+                                if (partial) firstPartialMs.compareAndSet(-1, elapsed)
+                                if (firstTextMs.get() >= 0 && (model != LiveAsrModel.Nemotron || partial)) break
+                            }
+                            SystemClock.sleep(80)
+                        }
                     }
                     fun observe() {
                         val state = LiveSpeech.state.value
                         val elapsed = (SystemClock.elapsedRealtimeNanos() - origin) / 1_000_000
                         state.stage?.let { stages.putIfAbsent(it, elapsed) }
-                        if (firstTextMs < 0 && (state.lines.isNotEmpty() || state.partials.isNotEmpty())) {
+                        if (state.lines.isNotEmpty() || state.partials.isNotEmpty()) {
                             check(committed > 0) { "Text appeared before the first commit." }
-                            firstTextMs = elapsed
                         }
                         if (firstFinalMs < 0 && state.lines.isNotEmpty()) firstFinalMs = elapsed
                     }
@@ -208,10 +246,15 @@ class AndroidRuntimeSmoke : Instrumentation() {
                         append(samples)
                         append(silence)
                     }
-                    check(firstTextMs >= firstCommitMs && firstCommitMs >= 0) { "No visible text during recording." }
+                    observing.set(false)
+                    check(firstTextMs.get() >= firstCommitMs && firstCommitMs >= 0) { "No visible text during recording." }
+                    if (model == LiveAsrModel.Nemotron) {
+                        check(firstPartialMs.get() >= firstCommitMs) { "No visible streaming partial during recording." }
+                    }
                     check(firstFinalMs >= firstCommitMs) { "No final text during recording." }
                     val stop = SystemClock.elapsedRealtime()
                     val saved = manifest.finish(StopRequest(CaptureEnd.User, frames * SECOND_NS / SAMPLE_RATE))
+                    check(saved.gaps == 0 && !saved.unknownTail) { "Paced capture lost audio." }
                     runOnMainSync(LiveSpeech::drain)
                     while (LiveSpeech.state.value.running && SystemClock.elapsedRealtime() - stop < 110_000) {
                         SystemClock.sleep(50)
@@ -224,7 +267,8 @@ class AndroidRuntimeSmoke : Instrumentation() {
                     val transcript = JSONObject(NativeCore.speechRequest(speechRequest(app, export)).decodeToString())
                     return JSONObject().put("model", model.id)
                         .put("first_commit_ms", firstCommitMs)
-                        .put("first_visible_text_ms", firstTextMs)
+                        .put("first_visible_text_ms", firstTextMs.get())
+                        .put("first_visible_partial_ms", firstPartialMs.get().takeIf { it >= 0 } ?: JSONObject.NULL)
                         .put("first_final_ms", firstFinalMs)
                         .put("stages_ms", JSONObject(stages))
                         .put("completion_after_stop_ms", completedMs)
@@ -236,7 +280,12 @@ class AndroidRuntimeSmoke : Instrumentation() {
                 }
             }
         } finally {
-            runOnMainSync(LiveSpeech::reset)
+            observing.set(false)
+            runOnMainSync {
+                RecordingStatusStore.update { it.copy(phase = RecordingPhase.Idle) }
+                LiveSpeech.reset()
+                screen.finish()
+            }
         }
     }
 }

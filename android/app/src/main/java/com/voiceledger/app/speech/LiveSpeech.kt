@@ -13,6 +13,8 @@ internal enum class LiveAsrModel(val id: String, val label: Int) {
     Whisper("whisper-tiny-multilingual-q5-1", R.string.live_whisper),
     SenseVoice("sensevoice-small-int8", R.string.live_sensevoice),
     SenseVoiceGguf("sensevoice-small-gguf-q8-0", R.string.live_sensevoice_gguf),
+    SenseVoiceGgufQ6("sensevoice-small-gguf-q6-k", R.string.live_sensevoice_gguf_q6),
+    Nemotron("nemotron-3-5-asr-streaming-0-6b-q4-k-m", R.string.live_nemotron),
 }
 
 internal data class LiveSpeechOptions(val language: String, val translate: Boolean, val model: LiveAsrModel)
@@ -144,7 +146,7 @@ internal object LiveSpeech {
             stage = progress?.getString("stage") ?: current.stage,
             partials = if (partials == null) emptyList() else List(partials.length()) { index ->
                 val line = partials.getJSONObject(index)
-                LiveLine(line.getString("language"), line.getString("text"), partial = true)
+                LiveLine(line.optString("language"), line.getString("text"), partial = true)
             },
         )
     }

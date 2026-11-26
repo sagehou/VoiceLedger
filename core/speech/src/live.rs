@@ -16,7 +16,7 @@ use voiceledger_core::scheduler::{Governor, JobKind, Observation, Reason, Resour
 
 use crate::engine::{Adapter, adapter_path};
 use crate::jobs::{Outcome, SourceJob};
-use crate::pipeline::{Processing, Segmenter};
+use crate::pipeline::{Engine, Processing, Segmenter};
 use crate::transcript::{self, Transcripts, Writer};
 use crate::translation_engine::{TranslationAdapter, Translator};
 use crate::{
@@ -26,13 +26,18 @@ use crate::{
 const WHISPER: &str = "whisper-tiny-multilingual-q5-1";
 const SENSEVOICE: &str = "sensevoice-small-int8";
 const SENSEVOICE_GGUF: &str = "sensevoice-small-gguf-q8-0";
+const SENSEVOICE_GGUF_Q6: &str = "sensevoice-small-gguf-q6-k";
+pub(super) const NEMOTRON: &str = "nemotron-3-5-asr-streaming-0-6b-q4-k-m";
 pub(super) const TRANSLATION_MODEL: &str = "opus-mt-en-zh-int8";
 const POLL: Duration = Duration::from_millis(200);
 const QUIET: Duration = Duration::from_secs(3);
 
 pub(super) fn asr_model<'a>(catalog: &'a Catalog, model_id: Option<&str>) -> Result<&'a Model> {
     let id = model_id.unwrap_or(WHISPER);
-    if !matches!(id, WHISPER | SENSEVOICE | SENSEVOICE_GGUF) {
+    if !matches!(
+        id,
+        WHISPER | SENSEVOICE | SENSEVOICE_GGUF | SENSEVOICE_GGUF_Q6 | NEMOTRON
+    ) {
         return Err(Error::Invalid);
     }
     catalog
@@ -221,7 +226,13 @@ impl Task<'_> {
         if !model_memory_ok(self.model, self.device, observe()) {
             return Err(Error::Deferred(Reason::Memory));
         }
-        let mut engine = adapter.engine(self.model, installed.directory(), self.language)?;
+        // A native stream has one cache for the Android microphone track.
+        let mut engine = adapter.engine(
+            self.model,
+            installed.directory(),
+            self.language,
+            tracks.len() == 1,
+        )?;
         let mut heard_audio = false;
         if self.allow_active {
             publish(Some(Update::Live {
@@ -263,7 +274,7 @@ impl Task<'_> {
             })?;
             ready.set(pending);
             // Consume the committed backlog before recomputing unfinished speech.
-            let partials_due = !ended && pending <= tracks.len() as u32;
+            let partials_due = !ended && (engine.streams() || pending <= tracks.len() as u32);
             let tier = policy(None)?;
             if !tier.admits(JobKind::Translation) {
                 translator = None;

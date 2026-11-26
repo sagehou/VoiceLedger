@@ -107,7 +107,9 @@
     <string name="live_model">Transcription model · %1$s</string>
     <string name="live_whisper">Whisper Tiny multilingual</string>
     <string name="live_sensevoice">SenseVoice Small (ONNX)</string>
-    <string name="live_sensevoice_gguf">SenseVoice Small (GGUF)</string>
+    <string name="live_sensevoice_gguf">SenseVoice Small (GGUF Q8_0)</string>
+    <string name="live_sensevoice_gguf_q6">SenseVoice Small (GGUF Q6_K)</string>
+    <string name="live_nemotron">Nemotron 3.5 Streaming (Q4_K_M)</string>
     <string name="live_translate">Translate English to Simplified Chinese</string>
     <string name="live_complete">Transcription complete</string>
     <string name="live_install">Install the selected model in Models.</string>
@@ -129,6 +131,7 @@
     <string name="live_translation_pending">Simplified Chinese translations pending</string>
     <string name="live_line">Microphone · %1$s</string>
     <string name="live_partial">Microphone · %1$s · Partial</string>
+    <string name="live_untagged_partial">Microphone · Partial</string>
     <string name="live_zh">Simplified Chinese · %1$s</string>
     <string name="live_stale_zh">Simplified Chinese (outdated) · %1$s</string>
 </resources>

@@ -30,7 +30,7 @@ avdmanager create avd --force --name voiceledger_ci --device pixel_5 \
 test -s "$ANDROID_AVD_HOME/voiceledger_ci.ini"
 "$ANDROID_HOME/emulator/emulator" -avd voiceledger_ci -port 5554 \
     -no-window -no-snapshot -no-boot-anim -noaudio -gpu swiftshader \
-    -camera-back none -camera-front none -accel on -cores 2 -memory 5120 \
+    -camera-back none -camera-front none -accel on -cores 2 -memory 7168 \
     > artifacts/android-emulator.log 2>&1 &
 emulator_pid=$!
 trap cleanup EXIT
@@ -42,6 +42,8 @@ timeout 220s bash -c '
     done
 ' bash "$emulator_pid"
 adb shell -T getprop ro.product.cpu.abilist | tee artifacts/android-emulator-abis.txt | grep -q arm64-v8a
+adb shell -T settings put system screen_off_timeout 1800000
+adb shell -T wm dismiss-keyguard
 apk="${1:-app/build/outputs/apk/debug/app-debug.apk}"
 seed_apk="${2:-$RUNNER_TEMP/voiceledger-upgrade-base.apk}"
 version_code() {
@@ -87,7 +89,7 @@ ANDROID
     sampler_pid=$!
 }
 
-models=(sensevoice-small-int8 sensevoice-small-gguf-q8-0)
+models=(sensevoice-small-gguf-q8-0 sensevoice-small-gguf-q6-k nemotron-3-5-asr-streaming-0-6b-q4-k-m)
 for model in "${models[@]}"; do
     adb shell -T am force-stop com.voiceledger.app.test
     adb shell -T am force-stop com.voiceledger.app
@@ -107,7 +109,7 @@ for model in "${models[@]}"; do
     sample_memory "$model-live"
     instrument -e benchmark_model "$model" | tee "artifacts/$model-live.log"
     stop_sampler
-    grep -Fx "INSTRUMENTATION_RESULT: live_sensevoice=passed" "artifacts/$model-live.log"
-    adb exec-out run-as com.voiceledger.app cat cache/sensevoice-comparison.json > "$raw/$model.json"
+    grep -Fx "INSTRUMENTATION_RESULT: live_asr=passed" "artifacts/$model-live.log"
+    adb exec-out run-as com.voiceledger.app cat cache/asr-comparison.json > "$raw/$model.json"
 done
-python3 ../scripts/report_android_sensevoice.py live-speech "$raw" artifacts/android-sensevoice-comparison.json
+python3 ../scripts/report_android_asr.py live-speech "$raw" artifacts/android-asr-comparison.json

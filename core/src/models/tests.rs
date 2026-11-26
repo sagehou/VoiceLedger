@@ -105,8 +105,8 @@ fn fetch_body(start: u64, bytes: &[u8]) -> Download {
 #[test]
 fn published_candidates_use_their_own_download_and_memory_metadata() {
     let catalog = Catalog::bundled().unwrap();
-    let [whisper, sensevoice, translation, gguf] = catalog.models() else {
-        panic!("Expected three transcription candidates and one translation candidate");
+    let [whisper, sensevoice, translation, gguf, q6, nemotron] = catalog.models() else {
+        panic!("Expected five transcription candidates and one translation candidate");
     };
     assert_eq!(whisper.download_bytes(), 32_152_673);
     assert_eq!(
@@ -123,6 +123,12 @@ fn published_candidates_use_their_own_download_and_memory_metadata() {
     assert_eq!(gguf.runtime.id, "transcribe.cpp");
     assert_eq!(gguf.targets.len(), 1);
     assert_eq!(gguf.targets[0].platform, Platform::Android);
+    assert_eq!(q6.download_bytes(), 196_438_336);
+    assert_eq!(nemotron.download_bytes(), 495_831_520);
+    assert_eq!(nemotron.runtime.id, gguf.runtime.id);
+    assert_eq!(nemotron.runtime.version, gguf.runtime.version);
+    assert_eq!(nemotron.targets.len(), 1);
+    assert_eq!(nemotron.targets[0].platform, Platform::Android);
     let pair = translation.translation.unwrap();
     assert_eq!(pair.source.code(), "en");
     assert_eq!(pair.target.code(), "zh");

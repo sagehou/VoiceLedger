@@ -37,6 +37,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.testTag
+import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
@@ -57,6 +60,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+
+internal const val LIVE_PARTIAL_TAG = "voiceledger_live_partial"
+internal const val LIVE_FINAL_TAG = "voiceledger_live_final"
 
 class MainActivity : ComponentActivity() {
     private var startRequested = false
@@ -305,13 +311,23 @@ private fun LiveTranscript(status: LiveSpeechStatus) {
     message?.let { Text(stringResource(it)) }
     if (status.translationPending) Text(stringResource(R.string.live_translation_pending))
     for (line in status.partials + status.lines.asReversed()) {
-        val language = stringResource(detectedLanguage(line.language))
         Column {
             Text(
-                stringResource(if (line.partial) R.string.live_partial else R.string.live_line, language),
+                if (line.language.isEmpty()) stringResource(R.string.live_untagged_partial)
+                else stringResource(
+                    if (line.partial) R.string.live_partial else R.string.live_line,
+                    stringResource(detectedLanguage(line.language)),
+                ),
                 style = MaterialTheme.typography.labelMedium,
             )
-            Text(line.text, fontStyle = if (line.partial) FontStyle.Italic else null)
+            Text(
+                line.text,
+                modifier = Modifier.semantics {
+                    testTag = if (line.partial) LIVE_PARTIAL_TAG else LIVE_FINAL_TAG
+                    testTagsAsResourceId = true
+                },
+                fontStyle = if (line.partial) FontStyle.Italic else null,
+            )
             line.translation?.let {
                 Text(stringResource(if (line.stale) R.string.live_stale_zh else R.string.live_zh, it))
             }

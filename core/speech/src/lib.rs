@@ -666,7 +666,7 @@ impl Request {
             if !model_memory_ok(model, &device, observe()) {
                 return Err(Error::Deferred(Reason::Memory));
             }
-            let mut engine = adapter.engine(model, installed.directory(), language)?;
+            let mut engine = adapter.engine(model, installed.directory(), language, true)?;
             let mut publish_partial = |value: Option<Partial>| publish(value.map(Update::Partial));
             let mut writer = Writer {
                 transcripts: &transcripts,

@@ -221,7 +221,7 @@ fn check_memory_with_peak(
             "sherpa-onnx",
             "1.12.20",
         ) | (
-            "sensevoice-small-gguf-q8-0",
+            "sensevoice-small-gguf-q8-0" | "sensevoice-small-gguf-q6-k",
             "ff8f085a8fa2e5ccae0e849ef19ebc6dc18e608b",
             "transcribe.cpp",
             "0.4.2",

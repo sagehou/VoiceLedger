@@ -1,4 +1,4 @@
-"""Score two Android runs of the same paced synthetic recording."""
+"""Score Android model runs of the same paced synthetic recording."""
 from bisect import bisect_right
 from collections import Counter
 from hashlib import sha256
@@ -9,7 +9,7 @@ import sys
 
 from check_asr_languages import ROOT, edits, units
 
-MODELS = ("sensevoice-small-int8", "sensevoice-small-gguf-q8-0")
+MODELS = ("sensevoice-small-gguf-q8-0", "sensevoice-small-gguf-q6-k", "nemotron-3-5-asr-streaming-0-6b-q4-k-m")
 SPEECH_WORKER = "com.voiceledger.app:speech"
 
 
@@ -51,6 +51,7 @@ def compare(fixtures, raw, output):
         recognized = [[] for _ in corpus]
         for line in result.pop("lines"):
             index = bisect_right(starts, line["start_ns"]) - 1
+            assert index >= 0, "Transcript line preceded the corpus."
             recognized[index].append(line)
         samples = []
         for clip, lines in zip(corpus, recognized):
@@ -86,14 +87,16 @@ def compare(fixtures, raw, output):
             **result,
             "runtime": model["runtime"]["version"],
             "model_sha256": model["artifacts"][0]["sha256"],
+            "stream_lookahead_ms": 1040 if identifier == MODELS[-1] else None,
             "peak_rss_bytes": {"install": install, "live": live},
             "scores": scores, "samples": samples,
         })
     report = {
         "commit": os.environ.get("GITHUB_SHA"),
-        "environment": "Android API 35 x86_64 emulator, ARM64 translation, 2 vCPUs, 5 GiB",
+        "environment": "Android API 35 x86_64 emulator, ARM64 translation, 2 vCPUs, 7 GiB",
         "workload": "six paced 48 kHz synthetic clips, 2 s silence between clips, Auto, translation disabled",
         "peak_method": "VmHWM of each process from /proc; fresh app and worker for each run",
+        "first_text_method": "From paced capture start to the first visible caption in the Compose accessibility tree",
         "scoring": "NFKC, case-folded, punctuation excluded; Chinese script variants scored as written",
         "corpus_sha256": sha256(data).hexdigest(),
         "models": reports, "failures": failures,

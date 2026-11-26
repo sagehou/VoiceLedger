@@ -6,7 +6,7 @@ use libloading::Library;
 use voiceledger_core::contracts::{Language, LanguagePolicy};
 use voiceledger_core::models::{Model, RuntimeIdentity, RuntimeProbe};
 
-use crate::pipeline::{Engine, Recognition};
+use crate::pipeline::{Engine, Recognition, StreamText};
 use crate::{Error, Result, check_cancel};
 
 type Open = unsafe extern "C" fn(*const c_char, *const c_char, i32, i32) -> *mut c_void;
@@ -21,6 +21,17 @@ type Run = unsafe extern "C" fn(
     Cancel,
     *mut c_void,
 ) -> i32;
+type StreamStep = unsafe extern "C" fn(
+    *mut c_void,
+    *const f32,
+    i32,
+    *mut c_char,
+    i32,
+    *mut i32,
+    Cancel,
+    *mut c_void,
+    bool,
+) -> i32;
 type Close = unsafe extern "C" fn(*mut c_void);
 
 pub struct Adapter {
@@ -29,6 +40,7 @@ pub struct Adapter {
     threads: i32,
     open: Open,
     run: Run,
+    stream_step: Option<StreamStep>,
     close: Close,
     _library: Library,
 }
@@ -48,6 +60,11 @@ impl Adapter {
             }
             let open = *library.get::<Open>(b"vl_asr_open")?;
             let run = *library.get::<Run>(b"vl_asr_run")?;
+            let stream_step = if model.id == crate::live::NEMOTRON {
+                Some(*library.get::<StreamStep>(b"vl_asr_stream_step")?)
+            } else {
+                None
+            };
             let close = *library.get::<Close>(b"vl_asr_close")?;
             Ok(Self {
                 identity: model.runtime.id.clone(),
@@ -55,6 +72,7 @@ impl Adapter {
                 threads,
                 open,
                 run,
+                stream_step,
                 close,
                 _library: library,
             })
@@ -66,6 +84,7 @@ impl Adapter {
         model: &Model,
         root: &Path,
         language: LanguagePolicy,
+        stream: bool,
     ) -> Result<NativeEngine<'a>> {
         let weights = model.artifacts.first().ok_or(Error::Invalid)?;
         let weights = c_path(&root.join(&weights.file))?;
@@ -87,6 +106,7 @@ impl Adapter {
         Ok(NativeEngine {
             adapter: self,
             context: NonNull::new(context).ok_or(Error::Runtime)?,
+            stream_step: self.stream_step.filter(|_| stream),
             _weights: weights,
             _tokens: tokens,
         })
@@ -107,13 +127,17 @@ impl RuntimeProbe for Adapter {
         directory: &Path,
         cancelled: &dyn Fn() -> bool,
     ) -> bool {
-        !cancelled() && self.engine(model, directory, LanguagePolicy::Auto).is_ok()
+        !cancelled()
+            && self
+                .engine(model, directory, LanguagePolicy::Auto, false)
+                .is_ok()
     }
 }
 
 pub struct NativeEngine<'a> {
     adapter: &'a Adapter,
     context: NonNull<c_void>,
+    stream_step: Option<StreamStep>,
     _weights: CString,
     _tokens: Option<CString>,
 }
@@ -131,35 +155,79 @@ impl Engine for NativeEngine<'_> {
         _: LanguagePolicy,
         cancelled: &(dyn Fn() -> bool + Sync),
     ) -> Result<Option<Recognition>> {
+        Ok(self
+            .infer(samples, cancelled, None)?
+            .and_then(StreamText::confirmed))
+    }
+
+    fn streams(&self) -> bool {
+        self.stream_step.is_some()
+    }
+
+    fn stream_step(
+        &mut self,
+        samples: &[f32],
+        finish: bool,
+        cancelled: &(dyn Fn() -> bool + Sync),
+    ) -> Result<Option<StreamText>> {
+        self.infer(samples, cancelled, Some(finish))
+    }
+}
+
+impl NativeEngine<'_> {
+    fn infer(
+        &self,
+        samples: &[f32],
+        cancelled: &(dyn Fn() -> bool + Sync),
+        finish: Option<bool>,
+    ) -> Result<Option<StreamText>> {
         let mut text = [0_u8; 8 * 1024];
         let mut language = 0;
         let mut cancellation = cancelled;
+        let count = i32::try_from(samples.len()).map_err(|_| Error::Invalid)?;
+        let context = self.context.as_ptr();
+        let capacity = text.len() as i32;
+        let user = std::ptr::from_mut(&mut cancellation).cast();
         let length = unsafe {
-            (self.adapter.run)(
-                self.context.as_ptr(),
-                samples.as_ptr(),
-                i32::try_from(samples.len()).map_err(|_| Error::Invalid)?,
-                text.as_mut_ptr().cast(),
-                text.len() as i32,
-                &mut language,
-                cancel_callback,
-                std::ptr::from_mut(&mut cancellation).cast(),
-            )
+            if let Some(finish) = finish {
+                (self.stream_step.ok_or(Error::Runtime)?)(
+                    context,
+                    samples.as_ptr(),
+                    count,
+                    text.as_mut_ptr().cast(),
+                    capacity,
+                    &mut language,
+                    cancel_callback,
+                    user,
+                    finish,
+                )
+            } else {
+                (self.adapter.run)(
+                    context,
+                    samples.as_ptr(),
+                    count,
+                    text.as_mut_ptr().cast(),
+                    capacity,
+                    &mut language,
+                    cancel_callback,
+                    user,
+                )
+            }
         };
         check_cancel(cancelled)?;
         let length = usize::try_from(length).map_err(|_| Error::Runtime)?;
         let language = match language {
-            1 => Language::Zh,
-            2 => Language::En,
-            3 => Language::Ja,
-            _ => return Ok(None),
+            1 => Some(Language::Zh),
+            2 => Some(Language::En),
+            3 => Some(Language::Ja),
+            _ => None,
         };
         let output = text.get(..length).ok_or(Error::Runtime)?;
         let text = std::str::from_utf8(output)
             .map_err(|_| Error::Runtime)?
             .trim()
             .to_owned();
-        Ok(Some(Recognition { language, text }))
+        Ok((!text.is_empty()).then_some(StreamText { language, text }))
     }
 }
 

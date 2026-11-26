@@ -103,7 +103,7 @@ impl Model {
             && https(&self.runtime.source_url)
             && matches!(
                 self.license.id.as_str(),
-                "MIT" | "LicenseRef-FunASR-Model" | "Apache-2.0"
+                "MIT" | "LicenseRef-FunASR-Model" | "Apache-2.0" | "OpenMDW-1.1"
             )
             && https(&self.license.url)
             && self.valid_languages()
