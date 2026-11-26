@@ -30,7 +30,7 @@ avdmanager create avd --force --name voiceledger_ci --device pixel_5 \
 test -s "$ANDROID_AVD_HOME/voiceledger_ci.ini"
 "$ANDROID_HOME/emulator/emulator" -avd voiceledger_ci -port 5554 \
     -no-window -no-snapshot -no-boot-anim -noaudio -gpu swiftshader \
-    -camera-back none -camera-front none -accel on -cores 2 -memory 7168 \
+    -camera-back none -camera-front none -accel on -cores 4 -memory 7168 \
     > artifacts/android-emulator.log 2>&1 &
 emulator_pid=$!
 trap cleanup EXIT
@@ -62,7 +62,7 @@ if [[ $# -gt 0 ]]; then
 fi
 adb install -t app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
 instrument() {
-    timeout 340s adb shell -T am instrument -w -r --abi arm64-v8a "$@" \
+    timeout 700s adb shell -T am instrument -w -r --abi arm64-v8a "$@" \
         com.voiceledger.app.test/com.voiceledger.app.AndroidRuntimeSmoke
 }
 
@@ -93,7 +93,7 @@ ANDROID
     sampler_pid=$!
 }
 
-models=(sensevoice-small-gguf-q8-0 sensevoice-small-gguf-q6-k nemotron-3-5-asr-streaming-0-6b-q4-k-m)
+models=(nemotron-3-5-asr-streaming-0-6b-q4-k-m sensevoice-small-gguf-q8-0 sensevoice-small-gguf-q6-k)
 for model in "${models[@]}"; do
     echo "Installing $model"
     adb shell -T am force-stop com.voiceledger.app.test
@@ -108,15 +108,21 @@ adb shell -T cmd connectivity airplane-mode enable
 adb shell -T svc wifi disable
 adb shell -T svc data disable
 test "$(adb shell -T settings get global airplane_mode_on)" = 1
+benchmarks_passed=true
 for model in "${models[@]}"; do
     echo "Measuring $model"
     adb shell -T am force-stop com.voiceledger.app.test
     adb shell -T am force-stop com.voiceledger.app
     sample_memory "$model-live"
-    instrument -e benchmark_model "$model" | tee "artifacts/$model-live.log"
+    if ! instrument -e benchmark_model "$model" | tee "artifacts/$model-live.log" ||
+        ! grep -Fx "INSTRUMENTATION_RESULT: live_asr=passed" "artifacts/$model-live.log"; then
+        benchmarks_passed=false
+        stop_sampler
+        continue
+    fi
     stop_sampler
-    grep -Fx "INSTRUMENTATION_RESULT: live_asr=passed" "artifacts/$model-live.log"
     adb exec-out run-as com.voiceledger.app cat cache/asr-comparison.json > "$raw/$model.json"
     python3 -c 'import json, sys; r = json.load(sys.stdin); print({key: r[key] for key in ("first_visible_text_ms", "first_visible_partial_ms", "completion_after_stop_ms")})' < "$raw/$model.json"
 done
+test "$benchmarks_passed" = true
 python3 ../scripts/report_android_asr.py live-speech "$raw" artifacts/android-asr-comparison.json

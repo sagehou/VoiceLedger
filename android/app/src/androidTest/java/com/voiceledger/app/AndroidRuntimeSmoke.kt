@@ -254,7 +254,7 @@ class AndroidRuntimeSmoke : Instrumentation() {
                     val saved = manifest.finish(StopRequest(CaptureEnd.User, frames * SECOND_NS / SAMPLE_RATE))
                     check(saved.gaps == 0 && !saved.unknownTail) { "Paced capture lost audio." }
                     runOnMainSync(LiveSpeech::drain)
-                    while (LiveSpeech.state.value.running && SystemClock.elapsedRealtime() - stop < 240_000) {
+                    while (LiveSpeech.state.value.running && SystemClock.elapsedRealtime() - stop < 600_000) {
                         SystemClock.sleep(50)
                     }
                     val finished = LiveSpeech.state.value

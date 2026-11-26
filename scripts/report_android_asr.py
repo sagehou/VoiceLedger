@@ -93,7 +93,7 @@ def compare(fixtures, raw, output):
         })
     report = {
         "commit": os.environ.get("GITHUB_SHA"),
-        "environment": "Android API 35 x86_64 emulator, ARM64 translation, 2 vCPUs, 7 GiB",
+        "environment": "Android API 35 x86_64 emulator, ARM64 translation, 4 vCPUs, 7 GiB",
         "workload": "six paced 48 kHz synthetic clips, 2 s silence between clips, Auto, translation disabled",
         "peak_method": "VmHWM of each process from /proc; fresh app and worker for each run",
         "first_text_method": "From paced capture start to the first visible caption in the Compose accessibility tree",

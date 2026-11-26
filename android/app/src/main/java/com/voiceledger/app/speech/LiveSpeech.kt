@@ -82,7 +82,7 @@ internal object LiveSpeech {
 
     private fun restartDrainTimeout() {
         main.removeCallbacks(timeout)
-        main.postDelayed(timeout, 45_000)
+        main.postDelayed(timeout, 120_000)
     }
 
     fun interrupt() {
