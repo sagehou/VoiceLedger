@@ -213,7 +213,7 @@ class AndroidRuntimeSmoke : Instrumentation() {
                     val stop = SystemClock.elapsedRealtime()
                     val saved = manifest.finish(StopRequest(CaptureEnd.User, frames * SECOND_NS / SAMPLE_RATE))
                     runOnMainSync(LiveSpeech::drain)
-                    while (LiveSpeech.state.value.running && SystemClock.elapsedRealtime() - stop < 50_000) {
+                    while (LiveSpeech.state.value.running && SystemClock.elapsedRealtime() - stop < 110_000) {
                         SystemClock.sleep(50)
                     }
                     check(LiveSpeech.state.value.result == 0) {

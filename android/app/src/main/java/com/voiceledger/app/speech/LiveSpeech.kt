@@ -41,6 +41,7 @@ internal object LiveSpeech {
     private val main = Handler(Looper.getMainLooper())
     private var generation = 0
     private var worker: SpeechConnection? = null
+    private var latestFinal: String? = null
     private val polling = object : Runnable {
         override fun run() {
             val connection = worker ?: return
@@ -72,8 +73,13 @@ internal object LiveSpeech {
     fun drain() {
         if (state.value.running) {
             state.value = state.value.copy(draining = true)
-            main.postDelayed(timeout, 45_000)
+            restartDrainTimeout()
         }
+    }
+
+    private fun restartDrainTimeout() {
+        main.removeCallbacks(timeout)
+        main.postDelayed(timeout, 45_000)
     }
 
     fun interrupt() {
@@ -118,6 +124,9 @@ internal object LiveSpeech {
         if (snapshot != null) {
             val report = JSONObject(snapshot.decodeToString())
             val lines = report.getJSONArray("lines")
+            val revision = lines.optJSONObject(lines.length() - 1)?.getString("revision_id")
+            if (current.draining && revision != null && revision != latestFinal) restartDrainTimeout()
+            latestFinal = revision
             current = current.copy(
                 lines = List(lines.length()) { index ->
                     val line = lines.getJSONObject(index)
@@ -151,5 +160,6 @@ internal object LiveSpeech {
         main.removeCallbacks(timeout)
         worker?.close()
         worker = null
+        latestFinal = null
     }
 }

@@ -208,15 +208,31 @@ fn check_memory_with_peak(
     }
     let available = sample.available_memory_bytes.ok_or(Block::MemoryUnknown)?;
     let reserve = sample.low_memory_threshold_bytes.unwrap_or(0);
+    let sensevoice = matches!(
+        (
+            model.id.as_str(),
+            model.version.as_str(),
+            model.runtime.id.as_str(),
+            model.runtime.version.as_str(),
+        ),
+        (
+            "sensevoice-small-int8",
+            "2365baeacb507f821a0c8120fcee3d484dba7a07",
+            "sherpa-onnx",
+            "1.12.20",
+        ) | (
+            "sensevoice-small-gguf-q8-0",
+            "ff8f085a8fa2e5ccae0e849ef19ebc6dc18e608b",
+            "transcribe.cpp",
+            "0.4.2",
+        )
+    );
     let budget = if device.platform == Platform::Android
         && device.abi == "arm64-v8a"
         && device.low_ram_device == Some(false)
         && sample.low_memory == Some(false)
         && reserve > 0
-        && model.id == "sensevoice-small-int8"
-        && model.version == "2365baeacb507f821a0c8120fcee3d484dba7a07"
-        && model.runtime.id == "sherpa-onnx"
-        && model.runtime.version == "1.12.20"
+        && sensevoice
     {
         // Leave another full estimated peak after the app and Android reserves.
         memory_headroom(device, available, reserve).map(|headroom| headroom / 2)

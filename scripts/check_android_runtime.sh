@@ -60,7 +60,7 @@ if [[ $# -gt 0 ]]; then
 fi
 adb install -t app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
 instrument() {
-    timeout 200s adb shell -T am instrument -w -r --abi arm64-v8a "$@" \
+    timeout 230s adb shell -T am instrument -w -r --abi arm64-v8a "$@" \
         com.voiceledger.app.test/com.voiceledger.app.AndroidRuntimeSmoke
 }
 

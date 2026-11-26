@@ -216,6 +216,20 @@ fn android_sensevoice_keeps_two_estimated_peaks_after_reserves() {
         check_candidate(model, &windows, &[runtime], false),
         Err(Block::MemoryBudget)
     );
+
+    let gguf = &catalog.models()[3];
+    let runtimes = [RuntimeIdentity {
+        id: &gguf.runtime.id,
+        version: &gguf.runtime.version,
+    }];
+    profile.low_memory = Some(false);
+    profile.available_memory_bytes = Some(1_700_000_000i64.try_into().unwrap());
+    assert_eq!(check_candidate(gguf, &profile, &runtimes, false), Ok(()));
+    profile.available_memory_bytes = Some(1_699_999_999i64.try_into().unwrap());
+    assert_eq!(
+        check_candidate(gguf, &profile, &runtimes, false),
+        Err(Block::MemoryBudget)
+    );
 }
 
 #[test]
