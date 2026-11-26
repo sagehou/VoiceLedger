@@ -3,12 +3,18 @@ package com.voiceledger.app.speech
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import com.voiceledger.app.R
 import com.voiceledger.app.core.DeviceProfiler
 import kotlin.concurrent.thread
 import kotlinx.coroutines.flow.MutableStateFlow
 import org.json.JSONObject
 
-internal data class LiveSpeechOptions(val language: String, val translate: Boolean)
+internal enum class LiveAsrModel(val id: String, val label: Int) {
+    Whisper("whisper-tiny-multilingual-q5-1", R.string.live_whisper),
+    SenseVoice("sensevoice-small-int8", R.string.live_sensevoice),
+}
+
+internal data class LiveSpeechOptions(val language: String, val translate: Boolean, val model: LiveAsrModel)
 
 internal data class LiveLine(
     val language: String,
@@ -20,6 +26,7 @@ internal data class LiveLine(
 
 internal data class LiveSpeechStatus(
     val running: Boolean = false,
+    val draining: Boolean = false,
     val result: Int? = null,
     val stage: String? = null,
     val reason: String? = null,
@@ -62,7 +69,10 @@ internal object LiveSpeech {
     }
 
     fun drain() {
-        if (state.value.running) main.postDelayed(timeout, 45_000)
+        if (state.value.running) {
+            state.value = state.value.copy(draining = true)
+            main.postDelayed(timeout, 45_000)
+        }
     }
 
     fun interrupt() {
@@ -71,6 +81,7 @@ internal object LiveSpeech {
 
     private fun bind(app: Context, sessionId: String, options: LiveSpeechOptions, attempt: Int, retries: Int) {
         val action = JSONObject().put("op", "transcribe_live").put("session_id", sessionId)
+            .put("model_id", options.model.id)
             .put("language", options.language).put("translate", options.translate).put("approved", true)
         val transcript = JSONObject().put("op", "live_transcript").put("session_id", sessionId)
         val request = SpeechConnection(
@@ -115,7 +126,6 @@ internal object LiveSpeech {
                 },
                 translationPending = translate && report.getBoolean("translation_pending"),
                 reason = report.optJSONObject("job")?.optString("reason"),
-
             )
         }
         val progress = partial?.takeUnless { it.isEmpty() }?.let { JSONObject(it.decodeToString()) }
@@ -132,7 +142,7 @@ internal object LiveSpeech {
     private fun finish(code: Int) {
         generation++
         release()
-        state.value = state.value.copy(running = false, result = code, partials = emptyList())
+        state.value = state.value.copy(running = false, draining = false, result = code, partials = emptyList())
     }
 
     private fun release() {

@@ -1,4 +1,4 @@
-"""Exercise the packaged Whisper adapter in Auto mode with synthetic speech."""
+"""Evaluate the packaged offline ASR adapters on the same synthetic speech."""
 import argparse
 from array import array
 import ctypes
@@ -6,6 +6,9 @@ import hashlib
 import io
 import json
 import os
+import platform
+import re
+import unicodedata
 from pathlib import Path
 import subprocess
 import sys
@@ -26,21 +29,27 @@ SAMPLES = {
            "The microphone is ready for the next test. Check the battery before you start, and write down the time when you finish."),
 }
 CODES = {1: "zh", 2: "en", 3: "ja"}
+WHISPER = "whisper-tiny-multilingual-q5-1"
+SENSEVOICE = "sensevoice-small-int8"
 
 
-def artifact():
+def candidate(model_id):
     catalog = json.loads((ROOT / "models/catalog-v1.json").read_text(encoding="utf-8"))
-    model = next(model for model in catalog["models"] if model["id"] == "whisper-tiny-multilingual-q5-1")
-    return model["artifacts"][0]
+    return next(model for model in catalog["models"] if model["id"] == model_id)
+
+
+def download(folder, model):
+    folder.mkdir(parents=True, exist_ok=True)
+    for artifact in model["artifacts"]:
+        path = fetch(folder, artifact["file"], artifact["url"], artifact["sha256"])
+        if path.stat().st_size != artifact["size_bytes"]:
+            raise RuntimeError("Unexpected model size")
 
 
 def prepare(folder):
     folder = folder.resolve()
-    folder.mkdir(parents=True, exist_ok=True)
-    model = artifact()
-    path = fetch(folder, model["file"], model["url"], model["sha256"])
-    if path.stat().st_size != model["size_bytes"]:
-        raise RuntimeError("Unexpected model size")
+    for model_id in (WHISPER, SENSEVOICE):
+        download(folder, candidate(model_id))
     cli = "sherpa-onnx-v1.12.20-linux-x64-shared"
     voice_package = "kokoro-int8-multi-lang-v1_0"
     unpack(fetch(folder, cli + ".tar.bz2", SHERPA_RELEASE + cli + ".tar.bz2",
@@ -91,12 +100,33 @@ def waveform(path):
     ))
 
 
-def evaluate(folder, library, report):
-    model = artifact()
-    weights = folder / model["file"]
-    with weights.open("rb") as stream:
-        if hashlib.file_digest(stream, "sha256").hexdigest() != model["sha256"]:
-            raise RuntimeError("Whisper model verification failed")
+def units(text, language):
+    text = unicodedata.normalize("NFKC", text).casefold()
+    if language == "en":
+        return re.findall(r"[a-z0-9]+(?:['’][a-z]+)?", text)
+    return [char for char in text if char.isalnum()]
+
+
+def edits(reference, text):
+    row = list(range(len(text) + 1))
+    for i, expected in enumerate(reference, 1):
+        next_row = [i]
+        for j, actual in enumerate(text, 1):
+            next_row.append(min(next_row[-1] + 1, row[j] + 1, row[j - 1] + (actual != expected)))
+        row = next_row
+    return row[-1]
+
+
+def evaluate(folder, library, report, model):
+    import resource
+
+    paths = []
+    for artifact in model["artifacts"]:
+        path = folder / artifact["file"]
+        with path.open("rb") as stream:
+            if path.stat().st_size != artifact["size_bytes"] or hashlib.file_digest(stream, "sha256").hexdigest() != artifact["sha256"]:
+                raise RuntimeError(f"Model verification failed for {path.name}")
+        paths.append(os.fsencode(path.resolve()))
     dll = ctypes.CDLL(str(library.resolve()))
     dll.vl_asr_version.restype = ctypes.c_char_p
     dll.vl_asr_open.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int32, ctypes.c_int32]
@@ -108,9 +138,11 @@ def evaluate(folder, library, report):
     dll.vl_asr_run.restype = ctypes.c_int32
     dll.vl_asr_close.argtypes = [ctypes.c_void_p]
     dll.vl_asr_close.restype = None
-    engine = dll.vl_asr_open(str(weights.resolve()).encode(), None, 0, 2)
+    began = perf_counter()
+    engine = dll.vl_asr_open(paths[0], paths[1] if len(paths) > 1 else None, 0, 2)
+    load_ms = round((perf_counter() - began) * 1000)
     if not engine:
-        raise RuntimeError("Whisper Tiny could not initialize")
+        raise RuntimeError(f"{model['name']} could not initialize")
     results = []
     try:
         for expected, (_, *sentences) in SAMPLES.items():
@@ -122,25 +154,45 @@ def evaluate(folder, library, report):
                 language = ctypes.c_int32()
                 started = perf_counter()
                 length = dll.vl_asr_run(engine, audio, len(pcm), text, len(text), ctypes.byref(language), None, None)
+                elapsed = perf_counter() - started
                 if not 0 <= length <= len(text):
-                    raise RuntimeError("Whisper inference failed")
+                    raise RuntimeError("ASR inference failed")
+                transcript = text.raw[:length].decode("utf-8").strip()
+                expected_units = units(reference, expected)
                 results.append({
                     "fixture": sample.name,
                     "sha256": hashlib.sha256(sample.read_bytes()).hexdigest(),
                     "expected": expected,
                     "detected": CODES.get(language.value, "unknown"),
                     "reference": reference,
-                    "text": text.raw[:length].decode("utf-8").strip(),
-                    "latency_ms": round((perf_counter() - started) * 1000),
+                    "text": transcript,
+                    "audio_ms": round(len(pcm) * 1000 / RATE),
+                    "latency_ms": round(elapsed * 1000),
+                    "rtf": round(elapsed * RATE / len(pcm), 4),
+                    "edits": edits(expected_units, units(transcript, expected)),
+                    "reference_units": len(expected_units),
                 })
     finally:
         dll.vl_asr_close(engine)
+    scores = {}
+    for lang in SAMPLES:
+        subset = [sample for sample in results if sample["expected"] == lang]
+        scores[lang] = {
+            "metric": "WER" if lang == "en" else "CER",
+            "error_rate": round(sum(sample["edits"] for sample in subset) / sum(sample["reference_units"] for sample in subset), 4),
+            "rtf": round(sum(sample["latency_ms"] for sample in subset) / sum(sample["audio_ms"] for sample in subset), 4),
+            "lang_correct": sum(sample["detected"] == lang for sample in subset),
+        }
     report.write_text(json.dumps({
-        "platform": os.name, "model_sha256": model["sha256"], "runtime": dll.vl_asr_version().decode(),
-        "policy": "auto", "inputs": {"zh": "Kokoro 1.0 INT8 / zh sid 45", "ja": "Open JTalk / Nitech ATR503", "en": "eSpeak NG en-us"}, "samples": results,
+        "platform": platform.platform(), "commit": os.environ.get("GITHUB_SHA"),
+        "model": model["id"], "model_sha256": model["artifacts"][0]["sha256"],
+        "runtime": dll.vl_asr_version().decode(), "policy": "auto", "threads": 2,
+        "load_ms": load_ms, "peak_rss_kib": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
+        "scoring": "NFKC, case-folded, punctuation excluded; Chinese script variants are scored as written",
+        "inputs": {"zh": "Kokoro 1.0 INT8 / zh sid 45", "ja": "Open JTalk / Nitech ATR503", "en": "eSpeak NG en-us"},
+        "scores": scores, "samples": results,
     }, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    for sample in results:
-        print(sample["fixture"], sample["expected"], sample["detected"], bool(sample["text"]))
+    print(model["id"], scores)
     if any(sample["expected"] != sample["detected"] or not sample["text"] for sample in results):
         raise RuntimeError("Auto policy did not recognize every fixture")
 
@@ -150,9 +202,10 @@ def main():
     parser.add_argument("folder", type=Path)
     parser.add_argument("--library", type=Path)
     parser.add_argument("--report", type=Path)
+    parser.add_argument("--model", choices=(WHISPER, SENSEVOICE), default=WHISPER)
     args = parser.parse_args()
     if args.library:
-        evaluate(args.folder, args.library, args.report)
+        evaluate(args.folder, args.library, args.report, candidate(args.model))
     else:
         prepare(args.folder)
 

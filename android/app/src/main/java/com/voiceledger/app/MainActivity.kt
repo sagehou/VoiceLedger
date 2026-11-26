@@ -21,6 +21,8 @@ import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -28,6 +30,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -45,6 +48,7 @@ import com.voiceledger.app.recording.RecordingService
 import com.voiceledger.app.recording.RecordingStatus
 import com.voiceledger.app.recording.RecordingStatusStore
 import com.voiceledger.app.recording.SECOND_NS
+import com.voiceledger.app.speech.LiveAsrModel
 import com.voiceledger.app.speech.LiveSpeech
 import com.voiceledger.app.speech.LiveSpeechOptions
 import com.voiceledger.app.speech.LiveSpeechStatus
@@ -57,7 +61,7 @@ import org.json.JSONObject
 class MainActivity : ComponentActivity() {
     private var startRequested = false
     private var pendingSpeech: LiveSpeechOptions? = null
-    private var liveModel by mutableStateOf<String?>(null)
+    private var liveModels by mutableStateOf<Map<LiveAsrModel, String>>(emptyMap())
     private val microphonePermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             if (startRequested) {
@@ -82,7 +86,7 @@ class MainActivity : ComponentActivity() {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     Box(Modifier.safeDrawingPadding().padding(24.dp), contentAlignment = Alignment.Center) {
                         RecordingScreen(
-                            status, liveSpeech, liveModel, ::requestStart,
+                            status, liveSpeech, liveModels, ::requestStart,
                             { RecordingService.stop(this@MainActivity) },
                             { startActivity(Intent(this@MainActivity, ModelsActivity::class.java)) },
                             { startActivity(Intent(this@MainActivity, ModelsActivity::class.java).putExtra("sessions", true)) },
@@ -97,11 +101,14 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         lifecycleScope.launch {
-            liveModel = withContext(Dispatchers.IO) {
-                runCatching {
-                    val request = speechRequest(applicationContext, JSONObject().put("op", "live_model"))
-                    JSONObject(NativeCore.speechRequest(request).decodeToString()).getString("status")
-                }.getOrDefault("unavailable")
+            liveModels = withContext(Dispatchers.IO) {
+                LiveAsrModel.entries.associateWith { model ->
+                    runCatching {
+                        val action = JSONObject().put("op", "live_model").put("model_id", model.id)
+                        val request = speechRequest(applicationContext, action)
+                        JSONObject(NativeCore.speechRequest(request).decodeToString()).getString("status")
+                    }.getOrDefault("unavailable")
+                }
             }
         }
     }
@@ -158,7 +165,7 @@ class MainActivity : ComponentActivity() {
 private fun RecordingScreen(
     status: RecordingStatus,
     speech: LiveSpeechStatus,
-    liveModel: String?,
+    liveModels: Map<LiveAsrModel, String>,
     start: (LiveSpeechOptions?) -> Unit,
     stop: () -> Unit,
     openModels: () -> Unit,
@@ -168,6 +175,7 @@ private fun RecordingScreen(
     var transcribe by rememberSaveable { mutableStateOf(false) }
     var language by rememberSaveable { mutableStateOf("auto") }
     var translate by rememberSaveable { mutableStateOf(false) }
+    var model by rememberSaveable { mutableStateOf(LiveAsrModel.Whisper) }
     val idle = status.phase == RecordingPhase.Idle
     val recording = status.phase == RecordingPhase.Preparing || status.phase == RecordingPhase.Recording
     Column(
@@ -210,12 +218,12 @@ private fun RecordingScreen(
         if (idle) {
             RecordingOption(R.string.live_transcription, transcribe) { transcribe = it }
             if (transcribe) {
+                LiveModelPicker(model) { model = it }
                 LanguagePicker(language, enabled = true) { language = it }
                 RecordingOption(R.string.live_translate, translate) { translate = it }
-                val modelStatus = when (liveModel) {
-                    "installed" -> R.string.live_ready
+                val modelStatus = when (liveModels[model]) {
+                    "installed", null -> null
                     "not_installed" -> R.string.live_install
-                    null -> null
                     else -> R.string.live_worker_unavailable
                 }
                 modelStatus?.let { Text(stringResource(it)) }
@@ -223,7 +231,7 @@ private fun RecordingScreen(
         }
         Button(
             onClick = if (recording) stop else {
-                { start(if (transcribe) LiveSpeechOptions(language, translate) else null) }
+                { start(if (transcribe) LiveSpeechOptions(language, translate, model) else null) }
             },
             enabled = recording || idle,
         ) {
@@ -233,6 +241,24 @@ private fun RecordingScreen(
         Button(onClick = openSessions) { Text(stringResource(R.string.sessions)) }
         Button(onClick = openModels) { Text(stringResource(R.string.models)) }
         Button(onClick = openSyncPrivacy) { Text(stringResource(R.string.sync_privacy)) }
+    }
+}
+
+@Composable
+private fun LiveModelPicker(model: LiveAsrModel, select: (LiveAsrModel) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        Button(onClick = { expanded = true }) {
+            Text(stringResource(R.string.live_model, stringResource(model.label)))
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            LiveAsrModel.entries.forEach { choice ->
+                DropdownMenuItem(text = { Text(stringResource(choice.label)) }, onClick = {
+                    select(choice)
+                    expanded = false
+                })
+            }
+        }
     }
 }
 
@@ -251,6 +277,7 @@ private fun RecordingOption(label: Int, checked: Boolean, onChange: (Boolean) ->
 @Composable
 private fun LiveTranscript(status: LiveSpeechStatus) {
     val message = when {
+        status.draining -> R.string.live_draining
         status.running -> when (status.stage) {
             "loading" -> R.string.live_loading
             "waiting_for_audio" -> R.string.live_waiting_audio

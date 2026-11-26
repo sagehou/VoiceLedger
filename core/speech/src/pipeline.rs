@@ -15,7 +15,7 @@ const FRAME: usize = RATE / 50;
 const PREROLL: usize = 8;
 const TAIL: usize = 12;
 const WINDOW: usize = RATE * 12;
-const PARTIAL_EVERY: usize = RATE * 3;
+const FIRST_PARTIAL: usize = RATE * 3 / 2;
 
 pub struct Recognition {
     pub text: String,
@@ -64,7 +64,6 @@ struct Window {
     pcm: Vec<f32>,
     spans: Vec<ChunkSpan>,
     quiet: usize,
-    next_partial: usize,
     last_partial: usize,
     revision: u32,
 }
@@ -162,7 +161,7 @@ impl Segmenter {
             };
             self.accept(frame, voiced, processing)?;
         }
-        Ok(())
+        self.preview(processing)
     }
 
     fn accept(
@@ -184,7 +183,6 @@ impl Segmenter {
                 pcm: Vec::new(),
                 spans: Vec::new(),
                 quiet: 0,
-                next_partial: PARTIAL_EVERY,
                 last_partial: 0,
                 revision: 0,
             };
@@ -199,15 +197,24 @@ impl Segmenter {
         if window.pcm.len() >= WINDOW || window.quiet >= TAIL {
             return self.flush(processing);
         }
-        if processing.partials && window.pcm.len() >= window.next_partial {
-            let cadence = (processing.policy)(None)?.partial_seconds() * RATE;
-            let due = window.last_partial + cadence;
-            if window.pcm.len() < due {
-                window.next_partial = due;
-                return Ok(());
-            }
+        Ok(())
+    }
+
+    fn preview(&mut self, processing: &mut Processing<'_>) -> Result<()> {
+        let Some(window) = self.window.as_mut() else {
+            return Ok(());
+        };
+        if !processing.partials || window.pcm.len() < FIRST_PARTIAL {
+            return Ok(());
+        }
+        let tier = (processing.policy)(None)?;
+        let due = if window.last_partial == 0 && tier < Tier::ReducePartials {
+            FIRST_PARTIAL
+        } else {
+            window.last_partial + tier.partial_seconds() * RATE
+        };
+        if window.pcm.len() >= due {
             window.last_partial = window.pcm.len();
-            window.next_partial = window.last_partial + PARTIAL_EVERY;
             if let Some(value) = recognize(processing, &window.pcm)? {
                 window.revision = window.revision.saturating_add(1);
                 processing.output.partial(Some(Partial {
@@ -366,11 +373,15 @@ mod tests {
             segmenter
                 .accept(voiced_frame(frame, chunk), true, &mut processing)
                 .unwrap();
+            if frame % 100 == 99 {
+                segmenter.preview(&mut processing).unwrap();
+            }
         }
         segmenter.flush(&mut processing).unwrap();
         assert_eq!(sink.updates.len(), 3);
         let first = sink.updates[0].as_ref().unwrap();
         let second = sink.updates[1].as_ref().unwrap();
+        assert_eq!(first.text, (2 * RATE).to_string());
         assert_eq!(first.id, second.id);
         assert_eq!((first.revision, second.revision), (1, 2));
         assert!(sink.updates[2].is_none());
@@ -410,6 +421,9 @@ mod tests {
             segmenter
                 .accept(voiced_frame(frame, uid(2)), true, &mut processing)
                 .unwrap();
+            if frame % 100 == 99 {
+                segmenter.preview(&mut processing).unwrap();
+            }
         }
         stopped.set(true);
         assert!(matches!(

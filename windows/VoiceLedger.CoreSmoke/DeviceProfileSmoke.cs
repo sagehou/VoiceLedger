@@ -33,8 +33,8 @@ internal static class DeviceProfileSmoke
             Require(models[0].GetProperty("download_bytes").GetInt64() == 32152673, "Whisper download size");
             Require(models[2].GetProperty("model").GetProperty("translation").GetProperty("target").GetString() == "zh",
                 "English to Chinese model");
-            Require(models[1].GetProperty("model").GetProperty("peak_ram_estimate").ValueKind == JsonValueKind.Null,
-                "unknown SenseVoice peak RAM");
+            Require(models[1].GetProperty("model").GetProperty("peak_ram_estimate").GetProperty("bytes").GetInt64() == 1_000_000_000,
+                "SenseVoice peak RAM estimate");
             NativeCore.UpdateSpeechResources(DeviceProfiler.SpeechResources(directory));
             Console.WriteLine("Windows device profiler passed native queries and local profile refresh on the hosted runner.");
             Console.WriteLine("Windows P/Invoke passed the bundled model preview.");

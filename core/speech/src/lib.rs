@@ -112,12 +112,15 @@ pub struct Request {
 #[derive(Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 enum Action {
-    LiveModel,
+    LiveModel {
+        model_id: Option<String>,
+    },
     LiveTranscript {
         session_id: StableId,
     },
     TranscribeLive {
         session_id: StableId,
+        model_id: Option<String>,
         language: LanguagePolicy,
         translate: bool,
         approved: bool,
@@ -185,7 +188,7 @@ impl Request {
     pub fn read_only(&self) -> bool {
         matches!(
             self.action,
-            Action::LiveModel
+            Action::LiveModel { .. }
                 | Action::LiveTranscript { .. }
                 | Action::Inspect { .. }
                 | Action::History { .. }
@@ -209,8 +212,8 @@ impl Request {
         {
             return Err(Error::Invalid);
         }
-        if matches!(self.action, Action::LiveModel) {
-            return live::model_status(&self.profiles, &self.adapters);
+        if let Action::LiveModel { model_id } = &self.action {
+            return live::model_status(&self.profiles, &self.adapters, model_id.as_deref());
         }
         let reader = audio_reader(&self.recordings)?;
         match &self.action {
@@ -412,6 +415,7 @@ impl Request {
         let action = match self.action {
             Action::TranscribeLive {
                 session_id,
+                model_id,
                 language,
                 translate,
                 ..
@@ -420,11 +424,7 @@ impl Request {
                 let device = device
                     .as_ref()
                     .ok_or(Error::Blocked(Block::DeviceProfile))?;
-                let model = catalog
-                    .models()
-                    .iter()
-                    .find(|model| model.id == live::ASR_MODEL)
-                    .ok_or(Error::Invalid)?;
+                let model = live::asr_model(&catalog, model_id.as_deref())?;
                 let translation = if translate {
                     Some(
                         catalog
@@ -492,7 +492,7 @@ impl Request {
             action => action,
         };
         let id = match &action {
-            Action::LiveModel
+            Action::LiveModel { .. }
             | Action::LiveTranscript { .. }
             | Action::TranscribeLive { .. }
             | Action::Inspect { .. }

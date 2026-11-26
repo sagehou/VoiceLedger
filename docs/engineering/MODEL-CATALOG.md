@@ -5,7 +5,7 @@ Windows and Android open the same read-only catalog from the Models screen. The 
 | Candidate | Download | Peak RAM | Model terms |
 | --- | --- | --- | --- |
 | Whisper Tiny multilingual Q5_1 | 32,152,673 bytes | Upstream 273 MB estimate for the Tiny family. Target measurements pending. | [MIT](https://github.com/openai/whisper/blob/6e3be77e1a105e59086e3e21ff5f609fd6fa89a5/LICENSE) |
-| SenseVoice Small INT8 | 239,549,735 bytes, including the token table | Unknown | [FunASR Model License](https://github.com/modelscope/FunASR/blob/58830eca4012644aac0c3218c3ccc7d98f003fda/MODEL_LICENSE) |
+| SenseVoice Small INT8 | 239,549,735 bytes, including the token table | Provisional 1 GB estimate. Hosted Linux x64 process peak was 786,332 KiB on the six-clip corpus. [Actions measurement](https://github.com/sagehou/VoiceLedger/actions/runs/45724680385) | [FunASR Model License](https://github.com/modelscope/FunASR/blob/58830eca4012644aac0c3218c3ccc7d98f003fda/MODEL_LICENSE) |
 
 The catalog pins each artifact's SHA-256, size and upstream revision. The Windows x64 and Android arm64 runtime targets are integration candidates. The app displays the runtime as unavailable until a matching native adapter is packaged.
 

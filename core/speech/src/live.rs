@@ -23,18 +23,31 @@ use crate::{
     Error, LiveStage, Result, Update, check_cancel, model_dir, model_memory_ok, model_ref,
 };
 
-pub(super) const ASR_MODEL: &str = "whisper-tiny-multilingual-q5-1";
+const WHISPER: &str = "whisper-tiny-multilingual-q5-1";
+const SENSEVOICE: &str = "sensevoice-small-int8";
 pub(super) const TRANSLATION_MODEL: &str = "opus-mt-en-zh-int8";
 const POLL: Duration = Duration::from_millis(200);
 const QUIET: Duration = Duration::from_secs(3);
 
-pub(super) fn model_status(profiles: &Path, adapters: &Path) -> Result<Vec<u8>> {
-    let catalog = Catalog::bundled().map_err(|_| Error::Invalid)?;
-    let model = catalog
+pub(super) fn asr_model<'a>(catalog: &'a Catalog, model_id: Option<&str>) -> Result<&'a Model> {
+    let id = model_id.unwrap_or(WHISPER);
+    if !matches!(id, WHISPER | SENSEVOICE) {
+        return Err(Error::Invalid);
+    }
+    catalog
         .models()
         .iter()
-        .find(|model| model.id == ASR_MODEL)
-        .ok_or(Error::Invalid)?;
+        .find(|model| model.id == id)
+        .ok_or(Error::Invalid)
+}
+
+pub(super) fn model_status(
+    profiles: &Path,
+    adapters: &Path,
+    model_id: Option<&str>,
+) -> Result<Vec<u8>> {
+    let catalog = Catalog::bundled().map_err(|_| Error::Invalid)?;
+    let model = asr_model(&catalog, model_id)?;
     let status = if !adapter_path(&model.runtime.id, adapters).is_some_and(|path| path.is_file()) {
         "runtime_unavailable"
     } else if !model_dir(&profiles.join("models"), model).is_dir() {
@@ -248,6 +261,8 @@ impl Task<'_> {
                     .map(|count| total + count)
             })?;
             ready.set(pending);
+            // Consume the committed backlog before recomputing unfinished speech.
+            let partials_due = !ended && pending <= tracks.len() as u32;
             let tier = policy(None)?;
             if !tier.admits(JobKind::Translation) {
                 translator = None;
@@ -296,7 +311,7 @@ impl Task<'_> {
                     output: &mut writer,
                     language: self.language,
                     cancelled: &interrupted,
-                    partials: true,
+                    partials: partials_due,
                     policy: &mut policy,
                 };
                 if let Some(chunk) = chunk {

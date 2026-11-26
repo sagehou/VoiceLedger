@@ -112,7 +112,10 @@ fn published_candidates_use_their_own_download_and_memory_metadata() {
         273_000_000
     );
     assert_eq!(sensevoice.download_bytes(), 239_549_735);
-    assert!(sensevoice.peak_ram_estimate.is_none());
+    assert_eq!(
+        sensevoice.peak_ram_estimate.as_ref().unwrap().bytes,
+        1_000_000_000
+    );
     assert_eq!(sensevoice.license.id, "LicenseRef-FunASR-Model");
     let pair = translation.translation.unwrap();
     assert_eq!(pair.source.code(), "en");

@@ -82,6 +82,10 @@ jobs:
           sudo unshare --net --setgid="$(id -g)" --setuid="$(id -u)" -- "$(command -v python3)" \
             ../scripts/check_asr_languages.py "$samples" --library artifacts/speech/libvoiceledger_whisper.so \
             --report artifacts/asr-automatic-languages.json
+          sudo unshare --net --setgid="$(id -g)" --setuid="$(id -u)" -- env \
+            LD_LIBRARY_PATH="$PWD/artifacts/speech" "$(command -v python3)" \
+            ../scripts/check_asr_languages.py "$samples" --model sensevoice-small-int8 \
+            --library artifacts/speech/libvoiceledger_sensevoice.so --report artifacts/asr-sensevoice-languages.json
       - name: Exercise live committed audio and final-only translation offline
         run: |
           sudo unshare --net --setgid="$(id -g)" --setuid="$(id -u)" -- "$(command -v python3)" \
@@ -92,13 +96,13 @@ jobs:
           name: live-speech
           path: |
             core/artifacts/live-speech.json
-            core/artifacts/live-speech-english.f32
+            core/artifacts/live-speech-*.f32
           if-no-files-found: error
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         if: always()
         with:
           name: asr-automatic-languages
-          path: core/artifacts/asr-automatic-languages.json
+          path: core/artifacts/asr-*-languages.json
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         if: always()
         with:
@@ -365,11 +369,16 @@ jobs:
         with:
           name: domain-fixtures-v1
           path: artifacts/domain-fixtures-v1
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: live-speech
+          path: android/live-speech
       - name: Build and check the Android app
         run: |
-          mkdir -p artifacts
+          mkdir -p artifacts app/src/androidTest/assets
+          cp live-speech/*.f32 app/src/androidTest/assets/
           ./gradlew --no-daemon --stacktrace :app:lintDebug :app:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest 2>&1 | tee artifacts/android-gradle.log
-      - name: Run the packaged Android ARM64 startup and model download
+      - name: Run the packaged Android ARM64 recording and live transcription
         run: bash ../scripts/check_android_runtime.sh
       - name: Check the APK manifest
         run: |

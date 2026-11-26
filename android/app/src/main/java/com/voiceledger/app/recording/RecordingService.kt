@@ -20,6 +20,7 @@ import android.os.SystemClock
 import com.voiceledger.app.MainActivity
 import com.voiceledger.app.R
 import com.voiceledger.app.core.AudioLibrary
+import com.voiceledger.app.speech.LiveAsrModel
 import com.voiceledger.app.speech.LiveSpeech
 import com.voiceledger.app.speech.LiveSpeechOptions
 import java.io.File
@@ -37,7 +38,9 @@ class RecordingService : Service() {
         when (intent?.action) {
             START -> if (active == null) {
                 val options = intent.getStringExtra(LIVE_LANGUAGE)?.let {
-                    LiveSpeechOptions(it, intent.getBooleanExtra(LIVE_TRANSLATE, false))
+                    val modelId = intent.getStringExtra(LIVE_MODEL)
+                    val model = LiveAsrModel.entries.firstOrNull { model -> model.id == modelId } ?: LiveAsrModel.Whisper
+                    LiveSpeechOptions(it, intent.getBooleanExtra(LIVE_TRANSLATE, false), model)
                 }
                 startRecording(options)
             }
@@ -213,6 +216,7 @@ class RecordingService : Service() {
         private const val RECORDING_ORIGIN = "recording_origin"
         private const val LIVE_LANGUAGE = "live_language"
         private const val LIVE_TRANSLATE = "live_translate"
+        private const val LIVE_MODEL = "live_model"
         private const val CHANNEL = "recording"
         private const val NOTIFICATION_ID = 1
         private val recoveryStarted = AtomicBoolean()
@@ -258,6 +262,7 @@ class RecordingService : Service() {
                 val request = Intent(context, RecordingService::class.java).setAction(START)
                 if (speech != null) {
                     request.putExtra(LIVE_LANGUAGE, speech.language).putExtra(LIVE_TRANSLATE, speech.translate)
+                        .putExtra(LIVE_MODEL, speech.model.id)
                 }
                 context.startForegroundService(request)
             } catch (_: SecurityException) {
