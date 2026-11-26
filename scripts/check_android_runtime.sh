@@ -72,9 +72,13 @@ for stage in recording device_profile sensevoice_memory model_download; do
 done
 grep -Fx 'INSTRUMENTATION_CODE: -1' artifacts/android-runtime.log
 
-adb root
-timeout 20s adb wait-for-device
-test "$(adb shell -T id -u)" = 0
+timeout 45s bash -c '
+    until [[ "$(adb shell -T id -u 2>/dev/null)" == 0 ]]; do
+        adb root || true
+        adb wait-for-device
+        sleep 2
+    done
+'
 raw="$(mktemp -d "$RUNNER_TEMP/android-asr.XXXXXX")"
 sample_memory() {
     adb shell -T sh > "$raw/$1.tsv" <<'ANDROID' &
