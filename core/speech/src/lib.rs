@@ -868,6 +868,7 @@ pub enum Update {
     Live {
         stage: LiveStage,
         partials: Vec<Partial>,
+        processed_chunks: u64,
     },
 }
 

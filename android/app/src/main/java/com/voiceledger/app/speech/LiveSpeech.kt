@@ -33,6 +33,7 @@ internal data class LiveSpeechStatus(
     val result: Int? = null,
     val stage: String? = null,
     val reason: String? = null,
+    val processedChunks: Long = 0,
     val lines: List<LiveLine> = emptyList(),
     val partials: List<LiveLine> = emptyList(),
     val translationPending: Boolean = false,
@@ -142,8 +143,11 @@ internal object LiveSpeech {
         }
         val progress = partial?.takeUnless { it.isEmpty() }?.let { JSONObject(it.decodeToString()) }
         val partials = progress?.getJSONArray("partials")
+        val processed = progress?.optLong("processed_chunks", current.processedChunks) ?: current.processedChunks
+        if (current.draining && processed > current.processedChunks) restartDrainTimeout()
         state.value = current.copy(
             stage = progress?.getString("stage") ?: current.stage,
+            processedChunks = processed,
             partials = if (partials == null) emptyList() else List(partials.length()) { index ->
                 val line = partials.getJSONObject(index)
                 LiveLine(line.optString("language"), line.getString("text"), partial = true)

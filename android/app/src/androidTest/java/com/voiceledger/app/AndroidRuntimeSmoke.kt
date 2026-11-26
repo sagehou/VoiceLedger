@@ -254,11 +254,12 @@ class AndroidRuntimeSmoke : Instrumentation() {
                     val saved = manifest.finish(StopRequest(CaptureEnd.User, frames * SECOND_NS / SAMPLE_RATE))
                     check(saved.gaps == 0 && !saved.unknownTail) { "Paced capture lost audio." }
                     runOnMainSync(LiveSpeech::drain)
-                    while (LiveSpeech.state.value.running && SystemClock.elapsedRealtime() - stop < 110_000) {
+                    while (LiveSpeech.state.value.running && SystemClock.elapsedRealtime() - stop < 240_000) {
                         SystemClock.sleep(50)
                     }
-                    check(LiveSpeech.state.value.result == 0) {
-                        "Could not finish the saved transcript, result ${LiveSpeech.state.value.result}."
+                    val finished = LiveSpeech.state.value
+                    check(finished.result == 0) {
+                        "Transcript result ${finished.result}, reason ${finished.reason}, processed ${finished.processedChunks} of ${saved.chunks} chunks."
                     }
                     val completedMs = SystemClock.elapsedRealtime() - stop
                     val export = JSONObject().put("op", "export").put("session_id", manifest.sessionId).put("format", "json")

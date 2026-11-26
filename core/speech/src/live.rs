@@ -206,6 +206,7 @@ impl Task<'_> {
             publish(Some(Update::Live {
                 stage: LiveStage::Loading,
                 partials: Vec::new(),
+                processed_chunks: 0,
             }));
         }
         if !model_dir(self.model_root, self.model).is_dir() {
@@ -238,6 +239,7 @@ impl Task<'_> {
             publish(Some(Update::Live {
                 stage: LiveStage::WaitingForAudio,
                 partials: Vec::new(),
+                processed_chunks: 0,
             }));
         }
 
@@ -262,6 +264,7 @@ impl Task<'_> {
         let mut translation_failed = false;
         let mut partials = BTreeMap::new();
         let mut saved = 0;
+        let mut processed_chunks = 0;
         loop {
             let state = self.state()?;
             let ended = state == SessionState::Completed as i32
@@ -279,7 +282,7 @@ impl Task<'_> {
             if !tier.admits(JobKind::Translation) {
                 translator = None;
             }
-            let mut advanced = false;
+            let mut advanced = 0;
             for track in &mut *tracks {
                 let chunk = self
                     .reader
@@ -290,6 +293,7 @@ impl Task<'_> {
                         publish(Some(Update::Live {
                             stage: LiveStage::Listening,
                             partials: Vec::new(),
+                            processed_chunks,
                         }));
                     }
                 }
@@ -303,6 +307,7 @@ impl Task<'_> {
                         (publish)(Some(Update::Live {
                             stage: LiveStage::Listening,
                             partials: partials.values().cloned().collect(),
+                            processed_chunks,
                         }));
                     } else {
                         (publish)(partials.values().next_back().cloned().map(Update::Partial));
@@ -333,7 +338,7 @@ impl Task<'_> {
                         .ingest(chunk, track.next_ns, &mut processing)?;
                     track.next_ns = end_ns;
                     track.last_chunk = Some(Instant::now());
-                    advanced = true;
+                    advanced += 1;
                 } else if (ended
                     || state == SessionState::Paused as i32
                     || track.last_chunk.is_some_and(|at| at.elapsed() >= QUIET))
@@ -349,7 +354,15 @@ impl Task<'_> {
                 saved += writer.saved;
             }
             // Check for more committed audio before scheduling each optional sentence.
-            if advanced {
+            if advanced > 0 {
+                processed_chunks += advanced;
+                if self.allow_active && heard_audio {
+                    publish(Some(Update::Live {
+                        stage: LiveStage::Listening,
+                        partials: partials.values().cloned().collect(),
+                        processed_chunks,
+                    }));
+                }
                 continue;
             }
             if let Some(translation) = &translation
