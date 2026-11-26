@@ -19,6 +19,7 @@ cleanup() {
     if (( $? != 0 )); then
         tail -40 artifacts/android-emulator.log
         timeout 10s adb logcat -d -s AndroidRuntime VoiceLedger > artifacts/android-emulator-errors.log 2>&1 || true
+        timeout 10s adb logcat -b crash -d > artifacts/android-native-crash.log 2>&1 || true
     fi
     stop_sampler
     timeout 10s adb emu kill >/dev/null 2>&1 || true
