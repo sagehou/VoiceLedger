@@ -12,7 +12,7 @@ def main():
     signer, *paths = sys.argv[1:]
     if not paths or len(paths) % 2:
         raise SystemExit("Expected input and output APK pairs.")
-    pin = os.environ.pop("VOICELEDGER_ANDROID_DEBUG_CERT_SHA256", "").lower()
+    pin = os.environ.pop("VOICELEDGER_ANDROID_DEBUG_CERT_SHA256", "").strip().lower()
     if not re.fullmatch("[0-9a-f]{64}", pin):
         raise SystemExit("The fixed Android debug certificate fingerprint is missing or invalid.")
     encoded_store = "".join(os.environ.pop("VOICELEDGER_ANDROID_DEBUG_PKCS12_BASE64", "").split())
@@ -42,7 +42,7 @@ def main():
             if digests != [pin]:
                 Path(signed).unlink()
                 raise SystemExit("APK signer differs from the pinned Android debug certificate.")
-    print(f"Android debug signer SHA-256 {pin}")
+    print(f"Android debug signer SHA-256 {digests[0]}")
 
 
 if __name__ == "__main__":

@@ -40,7 +40,7 @@ In `sagehou/VoiceLedger`, create the `android-debug-publish` GitHub environment 
 - `VOICELEDGER_ANDROID_DEBUG_PKCS12_BASE64` contains the Base64 text of the `.p12` file.
 - `VOICELEDGER_ANDROID_DEBUG_PKCS12_PASSWORD` contains the PKCS#12 export password.
 
-Set the repository variable `VOICELEDGER_ANDROID_DEBUG_CERT_SHA256` to the public DER certificate's lowercase SHA-256. Retain the keystore in the project's private credential storage for future updates.
+Set `VOICELEDGER_ANDROID_DEBUG_CERT_SHA256` to the public DER certificate's lowercase SHA-256. The repository variable enables fixed signing on eligible builds. If the fingerprint is saved as an Environment Secret, run CI on the upstream candidate branch with `sign_android_debug` enabled. Retain the keystore in the project's private credential storage for future updates.
 
 The `SageAutoman/VoiceLedger` fork can publish the same candidate commit when upstream administration is unavailable. Only its `integration/vl-017-device-candidate` branch can use the signing environment. Record the signed artifact and public certificate fingerprint in #18. Use the same publishing branch and certificate for subsequent upgrades.
 
