@@ -6,6 +6,7 @@ import android.app.Instrumentation
 import android.content.Intent
 import android.os.Bundle
 import android.os.SystemClock
+import android.view.accessibility.AccessibilityNodeInfo
 import com.voiceledger.app.core.AudioLibrary
 import com.voiceledger.app.core.CoreException
 import com.voiceledger.app.core.DeviceProfiler
@@ -196,14 +197,11 @@ class AndroidRuntimeSmoke : Instrumentation() {
                         while (observing.get()) {
                             val state = LiveSpeech.state.value
                             if (state.lines.isNotEmpty() || state.partials.isNotEmpty()) {
-                                val root = accessibility.rootInActiveWindow
-                                val visible = { tag: String ->
-                                    root?.findAccessibilityNodeInfosByViewId(tag).orEmpty()
-                                        .any { it.isVisibleToUser && !it.text.isNullOrBlank() }
-                                }
-                                val partial = visible(LIVE_PARTIAL_TAG)
+                                val visible = mutableSetOf<String>()
+                                collectVisibleCaptions(accessibility.rootInActiveWindow, visible)
+                                val partial = LIVE_PARTIAL_TAG in visible
                                 val elapsed = (SystemClock.elapsedRealtimeNanos() - startedAt) / 1_000_000
-                                if (partial || visible(LIVE_FINAL_TAG)) firstTextMs.compareAndSet(-1, elapsed)
+                                if (partial || LIVE_FINAL_TAG in visible) firstTextMs.compareAndSet(-1, elapsed)
                                 if (partial) firstPartialMs.compareAndSet(-1, elapsed)
                                 if (firstTextMs.get() >= 0 && (model != LiveAsrModel.Nemotron || partial)) break
                             }
@@ -287,5 +285,14 @@ class AndroidRuntimeSmoke : Instrumentation() {
                 screen.finish()
             }
         }
+    }
+
+    private fun collectVisibleCaptions(node: AccessibilityNodeInfo?, captions: MutableSet<String>) {
+        if (node == null || !node.isVisibleToUser) return
+        val tag = node.viewIdResourceName
+        if ((tag == LIVE_PARTIAL_TAG || tag == LIVE_FINAL_TAG) && !node.text.isNullOrBlank()) {
+            captions.add(tag)
+        }
+        for (index in 0 until node.childCount) collectVisibleCaptions(node.getChild(index), captions)
     }
 }
