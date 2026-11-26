@@ -463,7 +463,11 @@ jobs:
             android/app/build/test-results/
             android/app/build/outputs/apk/debug/app-debug.apk
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
-        if: github.repository == 'sagehou/VoiceLedger' && vars.VOICELEDGER_ANDROID_DEBUG_CERT_SHA256 != '' && (github.ref == 'refs/heads/integration/vl-017-device-candidate' || github.ref == 'refs/heads/main')
+        if: >-
+          vars.VOICELEDGER_ANDROID_DEBUG_CERT_SHA256 != '' &&
+          ((github.repository == 'sagehou/VoiceLedger' && github.ref == 'refs/heads/main') ||
+          ((github.repository == 'sagehou/VoiceLedger' || github.repository == 'SageAutoman/VoiceLedger') &&
+          github.ref == 'refs/heads/integration/vl-017-device-candidate'))
         with:
           name: android-upgrade-base
           path: ${{ runner.temp }}/voiceledger-upgrade-base.apk
@@ -471,7 +475,11 @@ jobs:
           if-no-files-found: error
 
   android-debug-package:
-    if: github.repository == 'sagehou/VoiceLedger' && vars.VOICELEDGER_ANDROID_DEBUG_CERT_SHA256 != '' && (github.ref == 'refs/heads/integration/vl-017-device-candidate' || github.ref == 'refs/heads/main')
+    if: >-
+      vars.VOICELEDGER_ANDROID_DEBUG_CERT_SHA256 != '' &&
+      ((github.repository == 'sagehou/VoiceLedger' && github.ref == 'refs/heads/main') ||
+      ((github.repository == 'sagehou/VoiceLedger' || github.repository == 'SageAutoman/VoiceLedger') &&
+      github.ref == 'refs/heads/integration/vl-017-device-candidate'))
     needs: android-client
     environment: android-debug-publish
     runs-on: ubuntu-latest
