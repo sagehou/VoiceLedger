@@ -5,8 +5,9 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest, Sha256};
 
 use crate::contracts::DeviceCapabilityProfile;
+use crate::scheduler::ResourceSample;
 
-use super::policy::{check_pressure, estimate, preflight};
+use super::policy::{check_model_memory, check_pressure, estimate, preflight};
 use super::{Activity, Artifact, Block, Model, RuntimeIdentity};
 
 pub struct Download {
@@ -29,6 +30,7 @@ pub struct InstallRequest<'a> {
     pub root: &'a Path,
     pub device: &'a DeviceCapabilityProfile,
     pub activity: Activity,
+    pub resources: Option<&'a dyn Fn() -> ResourceSample>,
 }
 
 #[derive(Debug)]
@@ -123,6 +125,9 @@ pub fn install<'a>(
         }
     }
     check_cancel(&cancelled)?;
+    if let Some(observe) = request.resources {
+        check_model_memory(model, request.device, observe()).map_err(InstallError::Blocked)?;
+    }
     if !runtime.load_and_release(model, source, &cancelled) {
         check_cancel(&cancelled)?;
         return Err(InstallError::RuntimeLoad);

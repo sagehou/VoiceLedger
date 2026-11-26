@@ -26,7 +26,7 @@ use voiceledger_core::contracts::{
 use voiceledger_core::device_profile;
 use voiceledger_core::models::{
     Activity, Block, Catalog, InstallError, InstallRequest, Model, RuntimeIdentity,
-    check_candidate, current_memory_budget,
+    check_candidate, check_model_memory,
 };
 use voiceledger_core::scheduler::{Governor, Heat, JobKind, Observation, Reason, ResourceSample};
 
@@ -530,6 +530,8 @@ impl Request {
         let threads = device
             .logical_cpu_count
             .map_or(1, |value| value.get().min(2) as i32);
+        let initial = initial_resources(&device);
+        let observe = || resource_sample().unwrap_or_default().with_fallback(initial);
         let request = InstallRequest {
             root: &model_root,
             device: &device,
@@ -537,9 +539,8 @@ impl Request {
                 approved: true,
                 recording_active: active,
             },
+            resources: Some(&observe),
         };
-        let initial = initial_resources(&device);
-        let observe = || resource_sample().unwrap_or_default().with_fallback(initial);
         let interrupted = || cancelled() || observe().emergency().is_some();
         let stop_loading = || {
             interrupted()
@@ -653,20 +654,18 @@ impl Request {
             };
             policy(None)?;
             let adapter = Adapter::load(model, &self.adapters, threads)?;
-            let installed = voiceledger_core::models::install(
+            let installed = voiceledger_core::models::verify_installed(
                 model,
-                request,
-                &adapter,
-                |_, _| {
-                    Err(io::Error::new(
-                        io::ErrorKind::NotFound,
-                        "Model not installed.",
-                    ))
-                },
+                &model_root,
+                &device,
+                runtime,
                 stop_loading,
             )?;
             check_cancel(&interrupted)?;
             policy(None)?;
+            if !model_memory_ok(model, &device, observe()) {
+                return Err(Error::Deferred(Reason::Memory));
+            }
             let mut engine = adapter.engine(model, installed.directory(), language)?;
             let mut publish_partial = |value: Option<Partial>| publish(value.map(Update::Partial));
             let mut writer = Writer {
@@ -845,17 +844,7 @@ fn model_memory_ok(
     device: &DeviceCapabilityProfile,
     sample: ResourceSample,
 ) -> bool {
-    sample
-        .available_memory_bytes
-        .and_then(|available| {
-            current_memory_budget(
-                device,
-                available,
-                sample.low_memory_threshold_bytes.unwrap_or(0),
-            )
-        })
-        .zip(model.peak_ram_estimate.as_ref())
-        .is_some_and(|(budget, peak)| budget >= peak.bytes)
+    check_model_memory(model, device, sample).is_ok()
 }
 
 fn model_ref(model: &Model) -> Result<ModelRef> {

@@ -49,6 +49,20 @@ class AndroidRuntimeSmoke : Instrumentation() {
             val profile = JSONObject(File(app.noBackupFilesDir, "device-profile-v1.json").readText())
             check(profile.getString("platform") == "android" && profile.getString("abi") == "arm64-v8a")
             result.putString(stage, "passed")
+            stage = "sensevoice_memory"
+            val available = profile.getLong("available_memory_bytes")
+            val systemReserve = profile.getLong("low_memory_threshold_bytes")
+            val appReserve = profile.getLong("process_memory_bytes")
+            val remaining = (available - systemReserve - appReserve).coerceAtLeast(0)
+            val oldBudget = remaining / 10 * 3
+            result.putString("sensevoice_memory_profile", JSONObject()
+                .put("available_bytes", available)
+                .put("system_reserve_bytes", systemReserve)
+                .put("app_reserve_bytes", appReserve)
+                .put("previous_budget_bytes", oldBudget)
+                .put("post_reserve_bytes", remaining).toString())
+            check(oldBudget < 1_000_000_000) { "The old budget would already admit SenseVoice." }
+            result.putString(stage, "passed")
             stage = "model_download"
             LiveAsrModel.entries.forEach(::verifyModelDownload)
             result.putString(stage, "passed")

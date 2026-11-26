@@ -7,7 +7,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
-use crate::contracts::{BenchmarkStage, DeviceCapabilityProfile};
+use crate::contracts::{BenchmarkStage, DeviceCapabilityProfile, Platform};
+use crate::scheduler::ResourceSample;
 
 use super::*;
 
@@ -67,6 +68,7 @@ impl TempRoot {
             root: &self.0,
             device,
             activity,
+            resources: None,
         }
     }
 }
@@ -114,7 +116,7 @@ fn published_candidates_use_their_own_download_and_memory_metadata() {
     assert_eq!(sensevoice.download_bytes(), 239_549_735);
     assert_eq!(
         sensevoice.peak_ram_estimate.as_ref().unwrap().bytes,
-        1_000_000_000
+        1_100_000_000
     );
     assert_eq!(sensevoice.license.id, "LicenseRef-FunASR-Model");
     let pair = translation.translation.unwrap();
@@ -163,6 +165,93 @@ fn candidate_retains_hard_gates_and_the_recording_only_default() {
         model_options(models, Some(&current), &[RUNTIME]).candidates[0].blocked_by,
         Some(Block::StorageSpace)
     );
+}
+
+#[test]
+fn android_sensevoice_keeps_two_estimated_peaks_after_reserves() {
+    let catalog = Catalog::bundled().unwrap();
+    let model = &catalog.models()[1];
+    let runtime = RuntimeIdentity {
+        id: &model.runtime.id,
+        version: &model.runtime.version,
+    };
+    let mut profile = device();
+    profile.platform = Platform::Android;
+    profile.os_version = "35".into();
+    profile.abi = "arm64-v8a".into();
+    profile.cpu_features = vec!["neon".into()];
+    profile.low_ram_device = Some(false);
+    profile.low_memory_threshold_bytes = Some(300_000_000i64.try_into().unwrap());
+    profile.available_memory_bytes = Some(2_600_000_000i64.try_into().unwrap());
+    assert_eq!(check_candidate(model, &profile, &[runtime], false), Ok(()));
+
+    let sample = ResourceSample {
+        low_memory: Some(false),
+        available_memory_bytes: Some(2_599_999_999),
+        low_memory_threshold_bytes: Some(300_000_000),
+        ..ResourceSample::default()
+    };
+    assert_eq!(
+        check_model_memory(model, &profile, sample),
+        Err(Block::MemoryBudget)
+    );
+    profile.low_ram_device = Some(true);
+    assert_eq!(
+        check_candidate(model, &profile, &[runtime], false),
+        Err(Block::MemoryBudget)
+    );
+    profile.low_ram_device = Some(false);
+    profile.low_memory = Some(true);
+    assert_eq!(
+        check_candidate(model, &profile, &[runtime], false),
+        Err(Block::MemoryPressure)
+    );
+    let mut windows = device();
+    windows.available_memory_bytes = Some(2_600_000_000i64.try_into().unwrap());
+    assert_eq!(
+        check_candidate(model, &windows, &[runtime], false),
+        Err(Block::MemoryBudget)
+    );
+}
+
+#[test]
+fn installer_rechecks_memory_before_probing_downloaded_weights() {
+    let root = TempRoot::new();
+    let model = model();
+    let device = device();
+    let probe = Probe {
+        loads: Cell::new(0),
+        accepts: true,
+    };
+    let resources = || ResourceSample {
+        available_memory_bytes: Some(800_000_000),
+        ..ResourceSample::default()
+    };
+    let result = install(
+        &model,
+        InstallRequest {
+            resources: Some(&resources),
+            ..root.request(&device, SAFE)
+        },
+        &probe,
+        |_, offset| Ok(fetch_body(offset, b"abc")),
+        || false,
+    );
+    assert!(matches!(
+        result,
+        Err(InstallError::Blocked(Block::MemoryBudget))
+    ));
+    assert_eq!(probe.loads.get(), 0);
+    let installed = install(
+        &model,
+        root.request(&device, SAFE),
+        &probe,
+        |_, _| panic!("verified staged download must be reused"),
+        || false,
+    )
+    .unwrap();
+    assert!(installed.directory().is_dir());
+    assert_eq!(probe.loads.get(), 1);
 }
 
 #[test]
