@@ -8,6 +8,7 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
+voiceledger-audio = { path = "../audio" }
 voiceledger-core = { path = ".." }
 
 [target.'cfg(any(target_os = "android", target_os = "linux"))'.dependencies]

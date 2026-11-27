@@ -1,8 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
-using System.Security.Cryptography;
-using System.Text.Json;
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
 using VoiceLedger;
@@ -15,15 +13,23 @@ internal static class RecordingSmoke
     {
         await VerifyEndpointDiscoveryAsync();
         VerifyTimeline();
+        VerifyResampling();
         string scratch = Path.Combine(Path.GetTempPath(), "VoiceLedger-synthetic-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(scratch);
         try
         {
-            await VerifyBothAsync(scratch);
-            await VerifySilentLoopbackAsync(scratch);
-            await VerifyIdleSealsAsync(scratch);
-            await VerifySuspendAsync(scratch);
-            Console.WriteLine("Windows capture smoke passed synthetic packet positions, loopback silence, idle sealing, independent tracks, endpoint loss, pause, reconnect, format changes, and suspend.");
+            using (var store = new AudioStore(scratch))
+            {
+                await VerifyBothAsync(store);
+                await VerifySilentLoopbackAsync(store);
+                await VerifyIdleSealsAsync(store);
+                await VerifySuspendAsync(store);
+            }
+            using var reopened = new AudioStore(scratch);
+            Expect(reopened.History().Count(track => track.CommittedChunks > 0) >= 3
+                && reopened.Recovery().MissingChunks == 0 && reopened.Recovery().CorruptChunks == 0,
+                "reopened Windows store keeps committed track history");
+            Console.WriteLine("Windows capture smoke passed Opus persistence, seek, loopback silence, idle sealing, independent tracks, endpoint loss, pause, reconnect, format changes, and suspend.");
         }
         finally
         {
@@ -69,12 +75,21 @@ internal static class RecordingSmoke
         Expect(system.Place(estimated, 1, 150_000_000).Estimated, "unreliable QPC is marked estimated");
     }
 
-    private static async Task VerifyBothAsync(string scratch)
+    private static void VerifyResampling()
+    {
+        var source = new WaveFormat(44100, 16, 2);
+        byte[] bytes = Enumerable.Repeat((byte)16, 441 * source.BlockAlign).ToArray();
+        float[] samples = ChunkPcm.AtPlaybackRate(source, bytes);
+        Expect(samples.Length == 480 * 2 && samples.Any(value => value > 0.05f),
+            "44.1 kHz stereo reaches the exact authored Opus frame count");
+    }
+
+    private static async Task VerifyBothAsync(AudioStore store)
     {
         var factory = new ScriptedFactory();
         var mic = Endpoint(CaptureSource.Mic);
         var system = Endpoint(CaptureSource.System);
-        await using RecordingSession session = await RecordingSession.StartAsync(scratch, [mic, system], factory.Open);
+        await using RecordingSession session = await RecordingSession.StartAsync(store, [mic, system], factory.Open);
         Expect(session.State == SessionState.Recording, "both selected endpoints start");
         var micTrack = session.Tracks.Single(track => track.Files.Endpoint.Source == CaptureSource.Mic);
         var systemTrack = session.Tracks.Single(track => track.Files.Endpoint.Source == CaptureSource.System);
@@ -110,27 +125,27 @@ internal static class RecordingSmoke
         await session.StopAsync();
         Expect(session.State == SessionState.Completed, "stop is idempotent");
 
-        VerifyStream(session.OutputDirectory, micTrack, 11, qpc, expectedGap: true);
-        VerifyStream(session.OutputDirectory, systemTrack, 22, qpc, expectedGap: false);
+        VerifyStream(store, session.OutputDirectory, micTrack, expectedGap: true);
+        VerifyStream(store, session.OutputDirectory, systemTrack, expectedGap: false);
     }
 
-    private static async Task VerifySilentLoopbackAsync(string scratch)
+    private static async Task VerifySilentLoopbackAsync(AudioStore store)
     {
         var factory = new ScriptedFactory();
-        await using RecordingSession session = await RecordingSession.StartAsync(scratch, [Endpoint(CaptureSource.System)], factory.Open);
+        await using RecordingSession session = await RecordingSession.StartAsync(store, [Endpoint(CaptureSource.System)], factory.Open);
         await session.StopAsync();
-        string directory = TrackDirectory(session.OutputDirectory, session.Tracks.Single());
-        Expect(Directory.GetFiles(directory, "*.wav").Length == 0, "idle loopback writes no fake audio frames");
-        var events = ReadEvents(directory);
-        Expect(events.Any(row => Kind(row) == "silence") && events.All(row => Kind(row) != "gap"),
+        var track = session.Tracks.Single();
+        Expect(store.History().Single(item => item.Id == track.Files.Id).CommittedChunks == 0, "idle loopback writes no fake audio frames");
+        TimelineRow[] events = store.Timeline(track.Files.Id);
+        Expect(events.Any(row => row.Kind == "silence") && events.All(row => row.Kind != "gap"),
             "elapsed loopback without callbacks is silence, not a disconnect");
     }
 
-    private static async Task VerifySuspendAsync(string scratch)
+    private static async Task VerifySuspendAsync(AudioStore store)
     {
         var factory = new ScriptedFactory();
         var mic = Endpoint(CaptureSource.Mic);
-        await using RecordingSession session = await RecordingSession.StartAsync(scratch, [mic], factory.Open);
+        await using RecordingSession session = await RecordingSession.StartAsync(store, [mic], factory.Open);
         RecordingTrack track = session.Tracks.Single();
         CaptureRun run = track.Run!;
         session.Suspend();
@@ -149,54 +164,43 @@ internal static class RecordingSmoke
             "format change stops the old stream and waits for explicit reconnect");
     }
 
-    private static async Task VerifyIdleSealsAsync(string scratch)
+    private static async Task VerifyIdleSealsAsync(AudioStore store)
     {
         var factory = new ScriptedFactory();
         var system = Endpoint(CaptureSource.System);
-        await using RecordingSession session = await RecordingSession.StartAsync(scratch, [system], factory.Open);
+        await using RecordingSession session = await RecordingSession.StartAsync(store, [system], factory.Open);
         var track = session.Tracks.Single();
         factory.Latest(system.Id).Push(42, 0, Qpc100Ns());
         await UntilAsync(() => track.Files.SealedSegments == 1, "loopback idle seals existing audio while recording stays active");
         Expect(session.State == SessionState.Recording && track.Run?.Completion.IsCompleted == false,
             "idle checkpoint keeps capture running");
+        Expect(track.Run?.QueuedPackets is >= 0 and <= CaptureRun.QueuePackets, "bounded writer queue reports its depth");
     }
 
-    private static void VerifyStream(string output, RecordingTrack track, byte first, long qpc, bool expectedGap)
+    private static void VerifyStream(AudioStore store, string output, RecordingTrack track, bool expectedGap)
     {
-        string directory = TrackDirectory(output, track);
-        var events = ReadEvents(directory);
-        JsonElement[] segments = events.Where(row => Kind(row) == "wav_segment").ToArray();
+        string directory = Path.Combine(output, track.Files.Id.ToString("D"));
+        TimelineRow[] events = store.Timeline(track.Files.Id);
+        TimelineRow[] segments = events.Where(row => row.Kind == "audio").ToArray();
         Expect(segments.Length > 0, "real test PCM reached a sealed segment");
-        long sequence = -1;
-        foreach (JsonElement segment in segments)
+        string[] files = Directory.GetFiles(directory, "*.opus");
+        Expect(files.Length == segments.Length && Directory.GetFiles(directory, "*.partial").Length == 0,
+            "each committed row resolves to exactly one sealed Opus file");
+        foreach (string path in files)
         {
-            long current = segment.GetProperty("sequence").GetInt64();
-            Expect(current > sequence, "segment sequence remains monotonic across stream restarts");
-            sequence = current;
-            string filename = Path.Combine(directory, segment.GetProperty("filename").GetString()!);
-            using var file = File.OpenRead(filename);
-            Expect(Convert.ToHexStringLower(SHA256.HashData(file)) == segment.GetProperty("sha256").GetString(), "sealed WAV bytes match journal checksum");
+            using var file = File.OpenRead(path);
+            var signature = new byte[4];
+            file.ReadExactly(signature);
+            Expect(signature.AsSpan().SequenceEqual("OggS"u8), "the sealed media uses Ogg Opus");
         }
-        JsonElement packet = segments[0].GetProperty("packets")[0];
-        Expect(packet.GetProperty("qpc100ns").GetInt64() == qpc && packet.GetProperty("device_position_frames").GetInt64() == 0,
-            "native packet device and QPC positions are preserved");
-        using (var wave = new WaveFileReader(Path.Combine(directory, segments[0].GetProperty("filename").GetString()!)))
-        {
-            var pcm = new byte[wave.WaveFormat.BlockAlign];
-            Expect(wave.Read(pcm, 0, pcm.Length) == pcm.Length && pcm[0] == first,
-                "each WAV stores its own track's original frame bytes");
-        }
-        bool hasEndpointGap = events.Any(row => Kind(row) == "gap" && row.GetProperty("cause").GetString() == "endpoint_lost");
-        Expect(hasEndpointGap == expectedGap, "endpoint loss marks only the affected track");
+        TimelineRow first = segments[0];
+        PlaybackChunk full = store.Seek(track.Files.Id, first.StartNs);
+        PlaybackChunk partial = store.Seek(track.Files.Id, first.StartNs + (first.EndNs - first.StartNs) / 2);
+        Expect(full.Channels == 1 && full.NextNs == first.EndNs && partial.Samples.Length > 0
+            && partial.Samples.Length < full.Samples.Length, "an in-segment seek decodes committed samples from the selected track");
+        Expect(events.Any(row => row.Kind == "gap" && row.Cause == "endpoint_lost") == expectedGap,
+            "endpoint loss marks only the affected track");
     }
-
-    private static string TrackDirectory(string output, RecordingTrack track) =>
-        Directory.GetDirectories(output).Single(path => path.EndsWith(track.Files.Id.ToString("D"), StringComparison.Ordinal));
-
-    private static JsonElement[] ReadEvents(string directory) => File.ReadLines(Path.Combine(directory, "timeline.jsonl"))
-        .Select(row => JsonSerializer.Deserialize<JsonElement>(row)).ToArray();
-
-    private static string? Kind(JsonElement record) => record.GetProperty("kind").GetString();
 
     private static CaptureEndpoint Endpoint(CaptureSource source) => new($"synthetic-{source}", source.ToString(), source,
         DeviceState.Active, true, "48000 Hz / PCM16");

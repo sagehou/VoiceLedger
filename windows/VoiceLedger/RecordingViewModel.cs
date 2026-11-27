@@ -2,10 +2,12 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using NAudio.Wave;
 using VoiceLedger.Capture;
 using VoiceLedger.Core;
 
@@ -18,6 +20,11 @@ internal sealed class RecordingViewModel : INotifyPropertyChanged, IAsyncDisposa
     private static readonly string RecordingRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "VoiceLedger", "Recordings");
     private RecordingSession? session;
+    private AudioStore? store;
+    private WasapiOut? playback;
+    private HistoryTrack? historySelection;
+    private string seekTime = "0";
+    private string? recoveryStatus;
     private SourceMode mode;
     private CaptureEndpoint? mic;
     private CaptureEndpoint? system;
@@ -31,6 +38,24 @@ internal sealed class RecordingViewModel : INotifyPropertyChanged, IAsyncDisposa
     public IReadOnlyList<CaptureEndpoint> Microphones { get; private set; } = Array.Empty<CaptureEndpoint>();
     public IReadOnlyList<CaptureEndpoint> RenderEndpoints { get; private set; } = Array.Empty<CaptureEndpoint>();
     public IReadOnlyList<TrackRow> Tracks => rows;
+    public IReadOnlyList<HistoryTrack> History { get; private set; } = Array.Empty<HistoryTrack>();
+
+    public HistoryTrack? HistorySelection
+    {
+        get => historySelection;
+        set
+        {
+            if (historySelection == value) return;
+            historySelection = value;
+            SeekTime = ((value?.FirstNs ?? 0) / 1_000_000_000m).ToString(CultureInfo.CurrentCulture);
+        }
+    }
+
+    public string SeekTime
+    {
+        get => seekTime;
+        set { seekTime = value; Update(); }
+    }
 
     public SourceMode Mode
     {
@@ -55,12 +80,15 @@ internal sealed class RecordingViewModel : INotifyPropertyChanged, IAsyncDisposa
     public bool CanSelect => !busy && !Active;
     public bool CanSelectMic => CanSelect && mode != SourceMode.System;
     public bool CanSelectSystem => CanSelect && mode != SourceMode.Mic;
-    public bool CanStart => CanSelect && (mode == SourceMode.System || mic?.IsAvailable == true)
+    public bool CanStart => CanSelect && store is not null && playback is null && (mode == SourceMode.System || mic?.IsAvailable == true)
         && (mode == SourceMode.Mic || system?.IsAvailable == true);
     public bool CanPause => !busy && session?.State == SessionState.Recording;
     public bool CanResume => !busy && Active && session!.Tracks.Any(track => track.Core.State == TrackState.Paused);
     public bool CanStop => !busy && Active;
-    public bool HasOutput => session is not null;
+    public bool HasOutput => session is not null || historySelection is not null;
+    public bool CanChooseHistory => CanSelect && playback is null;
+    public bool CanPlay => CanChooseHistory && historySelection?.CommittedChunks > 0;
+    public bool CanStopPlayback => !busy && playback is not null;
     public string Duration
     {
         get
@@ -76,7 +104,8 @@ internal sealed class RecordingViewModel : INotifyPropertyChanged, IAsyncDisposa
         {
             if (error is not null) return error;
             if (busy) return "Updating recording…";
-            if (session is null) return "Ready";
+            if (playback is not null) return "Playing saved audio.";
+            if (session is null) return recoveryStatus ?? "Ready";
             if (session.JournalError) return "Recording metadata could not be saved. Check available storage.";
             if (session.State == SessionState.Paused && session.Tracks.All(track => track.Core.State != TrackState.Paused))
                 return "Recording paused. Reconnect a selected endpoint or stop.";
@@ -89,6 +118,34 @@ internal sealed class RecordingViewModel : INotifyPropertyChanged, IAsyncDisposa
             }
             return session.State.ToString();
         }
+    }
+
+    internal async Task InitializeAsync(bool initial)
+    {
+        if (store is null)
+        {
+            await ExecuteAsync(async () =>
+            {
+                try { store = await Task.Run(() => new AudioStore(RecordingRoot)); }
+                catch (CoreException failure) when (failure.Code == AudioStore.Locked)
+                {
+                    error = "The recording library is open in another VoiceLedger window.";
+                    return;
+                }
+                RecoveryReport report = store.Recovery();
+                if (report.InterruptedSessions > 0 || report.RestoredChunks > 0 || report.MissingChunks > 0
+                    || report.CorruptChunks > 0 || report.UncommittedChunks > 0 || report.QuarantinedFiles > 0)
+                {
+                    int gaps = report.MissingChunks + report.CorruptChunks + report.UncommittedChunks;
+                    recoveryStatus = $"Recovery · {report.ElapsedMs} ms · {report.InterruptedSessions} interrupted sessions · "
+                        + $"{report.RestoredChunks} restored · {gaps} unavailable segments · "
+                        + $"known tail loss {report.KnownTailLossNs / 1_000_000d:F1} ms · {report.QuarantinedFiles} quarantined files";
+                }
+                await RefreshHistoryAsync();
+            }, "The recording library could not be recovered. Check available storage.");
+            if (store is null) return;
+        }
+        await RefreshDevicesAsync(initial);
     }
 
     internal Task RefreshDevicesAsync(bool initial = false) => ExecuteAsync(async () =>
@@ -106,7 +163,8 @@ internal sealed class RecordingViewModel : INotifyPropertyChanged, IAsyncDisposa
 
     internal Task StartAsync() => ExecuteAsync(async () =>
     {
-        if (Active) return;
+        if (Active || playback is not null) return;
+        AudioStore library = store ?? throw new InvalidOperationException("Recording storage is unavailable.");
         var endpoints = new List<CaptureEndpoint>();
         if (mode != SourceMode.System && mic is { } microphone) endpoints.Add(microphone);
         if (mode != SourceMode.Mic && system is { } renderEndpoint) endpoints.Add(renderEndpoint);
@@ -117,21 +175,86 @@ internal sealed class RecordingViewModel : INotifyPropertyChanged, IAsyncDisposa
             await session.DisposeAsync();
             Volatile.Write(ref session, null);
         }
-        RecordingSession recording = await RecordingSession.StartAsync(RecordingRoot, endpoints);
+        RecordingSession recording;
+        try { recording = await RecordingSession.StartAsync(library, endpoints); }
+        catch (StorageReserveException)
+        {
+            error = "Free 64 MiB on the recording volume to start.";
+            return;
+        }
         Volatile.Write(ref session, recording);
+        if (!recording.Active) await RefreshHistoryAsync();
     }, "Recording could not start. Check the selected endpoints, microphone access and storage.");
 
     internal Task PauseAsync() => ExecuteAsync(() => session?.PauseAsync() ?? Task.CompletedTask, "Recording could not be paused.");
     internal Task ResumeAsync() => ExecuteAsync(() => session?.ResumeAsync() ?? Task.CompletedTask, "Recording could not resume.");
     internal Task ReconnectAsync(Guid id) => ExecuteAsync(() => session?.ReconnectAsync(id) ?? Task.CompletedTask,
         "The selected endpoint could not reconnect.");
-    internal Task StopAsync() => ExecuteAsync(() => session?.StopAsync() ?? Task.CompletedTask, "Recording could not finish cleanly.");
+    internal Task StopAsync() => ExecuteAsync(async () =>
+    {
+        if (session is not null) await session.StopAsync();
+        await RefreshHistoryAsync();
+    }, "Recording could not finish cleanly.");
+
+    internal Task PlayAsync() => ExecuteAsync(async () =>
+    {
+        if (Active || playback is not null || store is not { } library || historySelection is not { } selected) return;
+        if (!decimal.TryParse(SeekTime, NumberStyles.Number, CultureInfo.CurrentCulture, out decimal seconds)
+            || seconds < 0 || seconds > long.MaxValue / 1_000_000_000m)
+        {
+            error = "Enter a valid session time in seconds.";
+            return;
+        }
+        long atNs = (long)(seconds * 1_000_000_000m);
+        PlaybackChunk first;
+        try { first = await Task.Run(() => library.Seek(selected.Id, atNs)); }
+        catch (CoreException failure) when (failure.Code == AudioStore.Unavailable)
+        {
+            await RefreshHistoryAsync();
+            error = "Saved audio is unavailable at that time.";
+            return;
+        }
+
+        var output = new WasapiOut();
+        playback = output;
+        try
+        {
+            output.Init(new CommittedPlayback(library, selected.Id, first));
+            output.PlaybackStopped += PlaybackStopped;
+            output.Play();
+        }
+        catch
+        {
+            StopPlayback();
+            throw;
+        }
+    }, "Saved audio could not be played.");
+
+    internal void StopPlayback()
+    {
+        if (playback is not { } output) return;
+        playback = null;
+        output.PlaybackStopped -= PlaybackStopped;
+        output.Dispose();
+        Update();
+    }
+
+    private void PlaybackStopped(object? sender, StoppedEventArgs result)
+    {
+        if (!ReferenceEquals(sender, playback)) return;
+        error = result.Exception is null ? "Playback ended." : "Saved audio playback stopped.";
+        StopPlayback();
+    }
 
     internal async Task RefreshRecordingAsync()
     {
         if (busy || refreshing || session?.Active != true) return;
         refreshing = true;
-        try { await session.RefreshAsync(); }
+        try
+        {
+            await session.RefreshAsync();
+            if (!session.Active) await RefreshHistoryAsync();
+        }
         catch (Exception) { error = "Recording state could not be refreshed."; }
         finally
         {
@@ -144,13 +267,25 @@ internal sealed class RecordingViewModel : INotifyPropertyChanged, IAsyncDisposa
 
     internal void OpenFolder()
     {
-        if (session is null) return;
-        try { Process.Start(new ProcessStartInfo(session.OutputDirectory) { UseShellExecute = true }); }
+        string? path = session?.OutputDirectory;
+        if (!Active && historySelection is { } selected && store is { } library)
+            path = library.SessionDirectory(selected.SessionId);
+        if (path is null) return;
+        try { Process.Start(new ProcessStartInfo(path) { UseShellExecute = true }); }
         catch (Exception)
         {
             error = "The recording folder could not be opened.";
             Update();
         }
+    }
+
+    private async Task RefreshHistoryAsync()
+    {
+        if (store is not { } library) return;
+        Guid? selectedId = historySelection?.Id;
+        HistoryTrack[] rows = await Task.Run(library.History);
+        History = rows;
+        HistorySelection = rows.FirstOrDefault(track => track.Id == selectedId) ?? rows.FirstOrDefault();
     }
 
     private async Task ExecuteAsync(Func<Task> operation, string failure)
@@ -174,8 +309,9 @@ internal sealed class RecordingViewModel : INotifyPropertyChanged, IAsyncDisposa
             track.Files.Endpoint.Source == CaptureSource.Mic ? "Microphone" : "System loopback",
             track.Files.Endpoint.Name,
             track.LastEnd is CaptureEnd reason && reason is not (CaptureEnd.Stop or CaptureEnd.Pause)
-                ? $"Gap · {FailureLabel(reason)}" : track.Core.State.ToString(),
-            $"{track.Files.SealedSegments} saved segments · epoch {track.Core.Epoch}",
+                ? $"Gap · {FailureLabel(reason)}"
+                : track.Run?.QueuedPackets >= CaptureRun.QueuePackets * 3 / 4 ? "Writer lag" : track.Core.State.ToString(),
+            $"{track.Files.SealedSegments} saved segments · epoch {track.Core.Epoch} · queue {track.Run?.QueuedPackets ?? 0}/{CaptureRun.QueuePackets}",
             !busy && Active && track.Core.State == TrackState.Disconnected)).ToArray() ?? Array.Empty<TrackRow>();
         if (!rows.SequenceEqual(updated)) rows = updated;
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(null));
@@ -192,11 +328,15 @@ internal sealed class RecordingViewModel : INotifyPropertyChanged, IAsyncDisposa
         CaptureEnd.SystemSuspend => "System suspended",
         CaptureEnd.QueueOverflow => "Writer queue full",
         CaptureEnd.StorageFailure => "Storage write failed",
+        CaptureEnd.StorageExhausted => "Storage is below the 64 MiB reserve",
+        CaptureEnd.UnsupportedFormat => "Endpoint PCM format unsupported",
         _ => "Audio source failed"
     };
 
     public async ValueTask DisposeAsync()
     {
+        StopPlayback();
         if (session is not null) await session.DisposeAsync();
+        store?.Dispose();
     }
 }

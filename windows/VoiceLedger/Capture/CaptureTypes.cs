@@ -12,7 +12,8 @@ internal enum SourceMode { Mic, System, Both }
 
 internal enum CaptureEnd
 {
-    Stop, Pause, EndpointLost, FormatChanged, SystemSuspend, QueueOverflow, StorageFailure, SourceFailure
+    Stop, Pause, EndpointLost, FormatChanged, SystemSuspend, QueueOverflow, StorageFailure,
+    StorageExhausted, SourceFailure, UnsupportedFormat
 }
 
 internal sealed record CaptureEndpoint(string Id, string Name, CaptureSource Source, DeviceState State, bool IsDefault, string MixFormat)
@@ -87,6 +88,7 @@ internal static class CaptureReason
         CaptureEnd.SystemSuspend => "system_suspend",
         CaptureEnd.QueueOverflow => "queue_overflow",
         CaptureEnd.StorageFailure => "writer_failure",
+        CaptureEnd.StorageExhausted => "storage_exhausted",
         _ => "unknown_capture"
     };
 }

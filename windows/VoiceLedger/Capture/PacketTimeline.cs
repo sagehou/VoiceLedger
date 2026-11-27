@@ -39,6 +39,10 @@ internal sealed class PacketTimeline(CaptureSource source, int sampleRate, long 
             {
                 before = new CaptureInterval("silence", EndNs, placedStart);
             }
+            else
+            {
+                before = new CaptureInterval("gap", EndNs, placedStart, "unknown_capture");
+            }
         }
         EndNs = checked(placedStart + duration);
         previousPositionEnd = reliablePosition ? stamp.Position + stamp.Frames : null;

@@ -34,18 +34,20 @@ public partial class MainWindow : Window
         timer.Tick += async (_, _) => await viewModel.RefreshRecordingAsync();
         Loaded += async (_, _) =>
         {
-            await viewModel.RefreshDevicesAsync(initial: true);
+            await viewModel.InitializeAsync(initial: true);
             timer.Start();
         };
         SystemEvents.PowerModeChanged += PowerModeChanged;
     }
 
-    private async void RefreshDevices(object sender, RoutedEventArgs e) => await viewModel.RefreshDevicesAsync();
+    private async void RefreshDevices(object sender, RoutedEventArgs e) => await viewModel.InitializeAsync(initial: false);
     private async void StartRecording(object sender, RoutedEventArgs e) => await viewModel.StartAsync();
     private async void PauseRecording(object sender, RoutedEventArgs e) => await viewModel.PauseAsync();
     private async void ResumeRecording(object sender, RoutedEventArgs e) => await viewModel.ResumeAsync();
     private async void StopRecording(object sender, RoutedEventArgs e) => await viewModel.StopAsync();
     private void OpenRecordingFolder(object sender, RoutedEventArgs e) => viewModel.OpenFolder();
+    private async void PlaySavedAudio(object sender, RoutedEventArgs e) => await viewModel.PlayAsync();
+    private void StopPlayback(object sender, RoutedEventArgs e) => viewModel.StopPlayback();
 
     private async void ReconnectEndpoint(object sender, RoutedEventArgs e)
     {
