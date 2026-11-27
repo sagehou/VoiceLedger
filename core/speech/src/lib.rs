@@ -3,6 +3,7 @@ mod jobs;
 mod library;
 mod live;
 mod pipeline;
+mod remote;
 mod sync_data;
 mod sync_request;
 mod transcript;
@@ -32,7 +33,7 @@ use voiceledger_core::scheduler::{Governor, Heat, JobKind, Observation, Reason, 
 
 use crate::engine::{Adapter, adapter_path};
 pub use crate::pipeline::Partial;
-use crate::pipeline::{Processing, Segmenter};
+use crate::pipeline::{Processing, process_saved_track};
 pub use crate::sync_request::request as sync_request;
 use crate::transcript::{Transcripts, Writer};
 use crate::translation_engine::TranslationAdapter;
@@ -51,6 +52,11 @@ pub enum Error {
     Busy,
     RevisionConflict,
     TranslationTextLimit,
+    ExternalConfiguration,
+    ExternalAuthentication,
+    ExternalRateLimit,
+    ExternalConnection,
+    ExternalResponse,
     Deferred(Reason),
 }
 
@@ -172,6 +178,7 @@ enum Action {
         language: LanguagePolicy,
         approved: bool,
     },
+    TranscribeExternal(remote::Job),
     Translate {
         model_id: String,
         session_id: StableId,
@@ -376,6 +383,7 @@ impl Request {
                 tracks,
                 title,
                 text_only,
+                external_transcription_providers: &remote::PROVIDERS,
             })?);
         }
         check_cancel(cancelled)?;
@@ -390,7 +398,10 @@ impl Request {
             } | Action::Transcribe {
                 approved: false,
                 ..
-            } | Action::Translate {
+            } | Action::TranscribeExternal(remote::Job {
+                approved: false,
+                ..
+            }) | Action::Translate {
                 approved: false,
                 ..
             }
@@ -413,6 +424,10 @@ impl Request {
             .open(self.profiles.join(WORKER_LOCK))?;
         lock.try_lock().map_err(|_| Error::Busy)?;
         let action = match self.action {
+            Action::TranscribeExternal(job) => {
+                let reader = reader.as_ref().ok_or(Error::NoAudio)?;
+                return processed(job.run(reader, &self.recordings, cancelled, resource_sample)?);
+            }
             Action::TranscribeLive {
                 session_id,
                 model_id,
@@ -495,6 +510,7 @@ impl Request {
             Action::LiveModel { .. }
             | Action::LiveTranscript { .. }
             | Action::TranscribeLive { .. }
+            | Action::TranscribeExternal(_)
             | Action::Inspect { .. }
             | Action::History { .. }
             | Action::Export { .. }
@@ -674,11 +690,12 @@ impl Request {
                 return Err(Error::Deferred(Reason::Memory));
             }
             let mut engine = adapter.engine(model, installed.directory(), language, true)?;
+            let provenance = model_ref(model)?;
             let mut publish_partial = |value: Option<Partial>| publish(value.map(Update::Partial));
             let mut writer = Writer {
                 transcripts: &transcripts,
                 session: &session,
-                model,
+                model: &provenance,
                 language,
                 job: Some(&asr),
                 translate: None,
@@ -694,23 +711,12 @@ impl Request {
                 policy: &mut policy,
             };
             for track in &tracks {
-                let mut from_ns = match &cursor {
+                let from_ns = match &cursor {
                     Some(saved) if track.track_id < saved.track => continue,
                     Some(saved) if track.track_id == saved.track => saved.next_ns,
                     _ => track.start_ns,
                 };
-                let mut segments = Segmenter::new();
-                loop {
-                    (processor.policy)(None)?;
-                    check_cancel(&interrupted)?;
-                    let Some(chunk) = reader.input_chunk(&session, track, from_ns)? else {
-                        break;
-                    };
-                    let end = chunk.end_ns;
-                    segments.ingest(chunk, from_ns, &mut processor)?;
-                    from_ns = end;
-                }
-                segments.flush(&mut processor)?;
+                process_saved_track(reader, &session, track, from_ns, &mut processor)?;
                 queue.checkpoint(&asr, &track.track_id, track.end_ns)?;
             }
             Ok(writer.saved)
@@ -914,6 +920,7 @@ struct Inspection<'a> {
     tracks: Vec<HistoryTrack>,
     title: Option<String>,
     text_only: bool,
+    external_transcription_providers: &'static [remote::Provider],
 }
 
 const WORKER_LOCK: &str = "speech-worker.lock";

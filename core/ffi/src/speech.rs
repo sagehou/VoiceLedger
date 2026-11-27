@@ -30,6 +30,11 @@ impl From<voiceledger_speech::Error> for Error {
             Speech::Deferred(_) => Self::SpeechDeferred,
             Speech::RevisionConflict => Self::SpeechRevisionConflict,
             Speech::TranslationTextLimit => Self::SpeechTranslationTextLimit,
+            Speech::ExternalConfiguration => Self::SpeechExternalConfiguration,
+            Speech::ExternalAuthentication => Self::SpeechExternalAuthentication,
+            Speech::ExternalRateLimit => Self::SpeechExternalRateLimit,
+            Speech::ExternalConnection => Self::SpeechExternalConnection,
+            Speech::ExternalResponse => Self::SpeechExternalResponse,
         }
     }
 }

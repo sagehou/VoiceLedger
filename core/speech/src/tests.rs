@@ -49,7 +49,7 @@ fn retry_and_second_language_preserve_the_selected_durable_revision() {
     let mut writer = Writer {
         transcripts: &store,
         session: &session,
-        model,
+        model: &model_ref(model).unwrap(),
         language: LanguagePolicy::Auto,
         job: None,
         translate: None,
@@ -117,6 +117,210 @@ fn unapproved_install_does_not_create_model_storage_or_network_operation() {
 }
 
 #[test]
+fn external_transcription_sends_one_saved_track_and_keeps_manual_text_selected() {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    use serde_json::json;
+    use voiceledger_audio::Store;
+
+    let root = Directory::new();
+    let audio = Store::open(&root.0).unwrap();
+    let send = |value, samples: &[f32]| {
+        audio
+            .execute_json(&serde_json::to_vec(&value).unwrap(), samples)
+            .unwrap();
+    };
+    let session = id(1);
+    let mic = id(2);
+    let loopback = id(3);
+    let end_ns = 240_000_000_i64;
+    let samples: Vec<f32> = (0..11_520)
+        .map(|index| {
+            let phase = index as f32 * std::f32::consts::TAU * 220.0 / 48_000.0;
+            0.4 * phase.sin() + 0.1 * (3.0 * phase).sin() + 0.05 * (6.0 * phase).sin()
+        })
+        .collect();
+    send(
+        json!({"op":"create_session","id":session,"created_at_ms":1,"clock":"synthetic","clock_origin":0,
+            "tracks":[{"id":mic,"source":"mic","endpoint_id":"synthetic"},
+                      {"id":loopback,"source":"system_loopback","endpoint_id":"synthetic"}]}),
+        &[],
+    );
+    for (track, chunk) in [(&mic, id(4)), (&loopback, id(5))] {
+        send(
+            json!({"op":"begin_stream","track_id":track,"epoch":0,"start_ns":0,"rate":48000,
+                "channels":1,"sample_format":"pcm_f32le","native_format":"synthetic"}),
+            &[],
+        );
+        send(
+            json!({"op":"begin_chunk","id":chunk,"track_id":track,"epoch":0,"start_ns":0,"end_ns":end_ns}),
+            &[],
+        );
+        send(
+            json!({"op":"seal_chunk","id":chunk,"end_ns":end_ns,"packets":[
+                {"start_ns":0,"end_ns":end_ns,"frames":samples.len(),"device_position_frames":0,"qpc100ns":0,
+                "flags":0,"estimated_timestamp":false}]}),
+            &samples,
+        );
+    }
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+    let action = |approved, model_id: &str| {
+        json!({"op":"transcribe_external","session_id":session,"track_id":mic,"language":"en","approved":approved,
+            "settings":{"provider":"custom","base_url":base_url,"model_id":model_id,"api_key":"fixture"}})
+    };
+    let request = |action| {
+        let bytes = serde_json::to_vec(
+            &json!({"action":action,"recordings":root.0,"profiles":root.0,"adapters":root.0}),
+        )
+        .unwrap();
+        Request::decode(&bytes)
+            .unwrap()
+            .run(&|| false, &|| None, |_| {})
+    };
+    assert!(matches!(
+        request(action(false, "fixture-first")),
+        Err(Error::Blocked(Block::ApprovalRequired))
+    ));
+    assert!(matches!(
+        request(action(true, "fixture-first")),
+        Err(Error::Blocked(Block::RecordingActive))
+    ));
+    assert!(matches!(listener.accept(), Err(error) if error.kind() == io::ErrorKind::WouldBlock));
+    assert!(!root.0.join(transcript::PATH).exists());
+
+    send(
+        json!({"op":"session_state","id":session,"state":6,"elapsed_ns":end_ns,"snapshot":{}}),
+        &[],
+    );
+    let server = thread::spawn(move || {
+        for (model, status, text) in [
+            ("fixture-first", "200 OK", r#"{"text":"initial draft"}"#),
+            (
+                "fixture-second",
+                "307 Temporary Redirect",
+                "provider diagnostic",
+            ),
+            (
+                "fixture-second",
+                "429 Too Many Requests",
+                "provider diagnostic",
+            ),
+            ("fixture-second", "200 OK", r#"{"text":"external draft"}"#),
+        ] {
+            let deadline = Instant::now() + Duration::from_secs(12);
+            let mut socket = loop {
+                match listener.accept() {
+                    Ok((socket, _)) => break socket,
+                    Err(error)
+                        if error.kind() == io::ErrorKind::WouldBlock
+                            && Instant::now() < deadline =>
+                    {
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("fixture did not receive its expected request: {error}"),
+                }
+            };
+            socket.set_nonblocking(false).unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(4)))
+                .unwrap();
+            let mut reader = BufReader::new(&mut socket);
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            assert_eq!(line, "POST /v1/audio/transcriptions HTTP/1.1\r\n");
+            let mut length = 0;
+            let mut authorized = false;
+            loop {
+                line.clear();
+                assert_ne!(reader.read_line(&mut line).unwrap(), 0);
+                if line == "\r\n" {
+                    break;
+                }
+                let (name, value) = line.split_once(':').unwrap();
+                if name.eq_ignore_ascii_case("content-length") {
+                    length = value.trim().parse().unwrap();
+                }
+                if name.eq_ignore_ascii_case("authorization") {
+                    authorized = value.trim() == "Bearer fixture";
+                }
+            }
+            assert!(authorized && (45..=16_384).contains(&length));
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).unwrap();
+            let model_field = format!("name=\"model\"\r\n\r\n{model}\r\n");
+            assert!(
+                body.windows(model_field.len())
+                    .any(|part| part == model_field.as_bytes())
+            );
+            let language = b"name=\"language\"\r\n\r\nen\r\n";
+            assert!(body.windows(language.len()).any(|part| part == language));
+            let start = body.windows(4).position(|part| part == b"RIFF").unwrap();
+            let wave = &body[start..];
+            assert_eq!(&wave[8..12], b"WAVE");
+            assert_eq!(&wave[22..24], &1u16.to_le_bytes());
+            assert_eq!(&wave[24..28], &16_000u32.to_le_bytes());
+            assert_eq!(&wave[34..36], &16u16.to_le_bytes());
+            let data_bytes = u32::from_le_bytes(wave[40..44].try_into().unwrap());
+            assert!((640..=7_680).contains(&data_bytes));
+            write!(
+                socket,
+                "HTTP/1.1 {status}\r\nConnection: close\r\nContent-Type: application/json\r\nLocation: /other-endpoint\r\nContent-Length: {}\r\n\r\n{text}",
+                text.len()
+            )
+            .unwrap();
+        }
+    });
+
+    assert_eq!(
+        request(action(true, "fixture-first")).unwrap(),
+        br#"{"saved":1}"#
+    );
+    let inspect = || {
+        let bytes = request(json!({"op":"inspect","session_id":session})).unwrap();
+        serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()
+    };
+    let report = inspect();
+    assert_eq!(
+        report["external_transcription_providers"]
+            .as_array()
+            .unwrap()
+            .len(),
+        4
+    );
+    let line = &report["lines"][0];
+    assert_eq!(line["text"], "initial draft");
+    assert_eq!(line["source"], "mic");
+    request(json!({
+        "op":"save_utterance","session_id":session,"utterance_id":line["utterance_id"],
+        "expected_revision_id":line["revision_id"],"text":"manual edit",
+    }))
+    .unwrap();
+    let rerun = action(true, "fixture-second");
+    assert!(matches!(
+        request(rerun.clone()),
+        Err(Error::ExternalResponse)
+    ));
+    assert!(matches!(
+        request(rerun.clone()),
+        Err(Error::ExternalRateLimit)
+    ));
+    assert_eq!(request(rerun.clone()).unwrap(), br#"{"saved":1}"#);
+    server.join().unwrap();
+    assert_eq!(request(rerun).unwrap(), br#"{"saved":0}"#);
+    let report = inspect();
+    assert_eq!(report["lines"].as_array().unwrap().len(), 1);
+    let line = &report["lines"][0];
+    assert_eq!(line["text"], "manual edit");
+    assert_eq!(line["external_draft"], "external draft");
+}
+
+#[test]
 fn interrupted_jobs_resume_with_one_identity_and_atomic_final_progress() {
     let root = Directory::new();
     let catalog = Catalog::bundled().unwrap();
@@ -152,7 +356,7 @@ fn interrupted_jobs_resume_with_one_identity_and_atomic_final_progress() {
         let mut writer = Writer {
             transcripts: &store,
             session: &session,
-            model,
+            model: &model_ref(model).unwrap(),
             language: LanguagePolicy::Auto,
             job: Some(&asr),
             translate: None,
@@ -269,7 +473,7 @@ fn translation_versions_keep_manual_edits_and_bind_to_the_selected_source() {
     let mut writer = Writer {
         transcripts: &store,
         session: &session,
-        model,
+        model: &model_ref(model).unwrap(),
         language: LanguagePolicy::En,
         job: None,
         translate: None,
@@ -485,7 +689,7 @@ fn native_translation_app_flow() {
     Writer {
         transcripts: &store,
         session: &session,
-        model: &catalog.models()[0],
+        model: &model_ref(&catalog.models()[0]).unwrap(),
         language: LanguagePolicy::En,
         job: None,
         translate: None,

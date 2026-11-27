@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 
 use serde::Serialize;
-use voiceledger_audio::CommittedChunk;
+use voiceledger_audio::{CommittedChunk, CommittedReader, TrackInput};
 use voiceledger_core::contracts::{
     ChunkSpan, Count, Language, LanguagePolicy, StableId, TimeRange,
 };
@@ -15,6 +15,7 @@ const FRAME: usize = RATE / 50;
 const PREROLL: usize = 8;
 const TAIL: usize = 12;
 const WINDOW: usize = RATE * 12;
+pub(crate) const MAX_WINDOW_SAMPLES: usize = WINDOW + FRAME - 1;
 const FIRST_PARTIAL: usize = RATE * 3 / 2;
 
 pub struct Recognition {
@@ -141,6 +142,27 @@ pub struct Processing<'a> {
     pub cancelled: &'a (dyn Fn() -> bool + Sync),
     pub partials: bool,
     pub policy: &'a mut dyn FnMut(Option<f64>) -> Result<Tier>,
+}
+
+pub(crate) fn process_saved_track(
+    reader: &CommittedReader,
+    session: &StableId,
+    track: &TrackInput,
+    mut from_ns: i64,
+    processing: &mut Processing<'_>,
+) -> Result<()> {
+    let mut segments = Segmenter::new();
+    loop {
+        (processing.policy)(None)?;
+        crate::check_cancel(processing.cancelled)?;
+        let Some(chunk) = reader.input_chunk(session, track, from_ns)? else {
+            break;
+        };
+        let end = chunk.end_ns;
+        segments.ingest(chunk, from_ns, processing)?;
+        from_ns = end;
+    }
+    segments.flush(processing)
 }
 
 impl Segmenter {

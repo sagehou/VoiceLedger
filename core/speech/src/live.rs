@@ -262,6 +262,7 @@ impl Task<'_> {
             .transpose()?;
         let mut translator = None;
         let mut translation_failed = false;
+        let provenance = model_ref(self.model)?;
         let mut partials = BTreeMap::new();
         let mut saved = 0;
         let mut processed_chunks = 0;
@@ -316,7 +317,7 @@ impl Task<'_> {
                 let mut writer = Writer {
                     transcripts: self.store,
                     session: self.session,
-                    model: self.model,
+                    model: &provenance,
                     language: self.language,
                     job: Some(&track.asr),
                     translate: translation.as_ref().map(|task| &task.provenance),

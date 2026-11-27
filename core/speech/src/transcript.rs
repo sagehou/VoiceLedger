@@ -8,7 +8,6 @@ use serde::Serialize;
 use voiceledger_core::contracts::{
     Count, Language, LanguagePolicy, ModelRef, StableId, UtteranceKind, UtteranceRevision,
 };
-use voiceledger_core::models::Model;
 
 use crate::jobs::{self, Queue};
 use crate::pipeline::{Final, Output, Partial};
@@ -96,7 +95,7 @@ impl Transcripts {
     fn save(
         &self,
         session_id: &StableId,
-        model: &Model,
+        model: &ModelRef,
         language: LanguagePolicy,
         job: Option<&str>,
         translate: Option<&ModelRef>,
@@ -107,12 +106,11 @@ impl Transcripts {
         let start = value.range.start_ns.get() as i64;
         let end = value.range.end_ns.get() as i64;
         let provisional = String::from(value.id);
-        let artifact = model.artifacts.first().ok_or(Error::Invalid)?;
         let machine_key = serde_json::to_string(&(
-            &model.id,
-            &model.version,
-            &model.runtime.version,
-            &artifact.sha256,
+            &model.model_id,
+            &model.model_version,
+            &model.runtime_version,
+            &model.sha256,
             language,
         ))?;
         let tx = self.db.unchecked_transaction()?;
@@ -161,12 +159,7 @@ impl Transcripts {
             language: value.recognition.language,
             text: value.recognition.text,
             confidence: None,
-            model: Some(ModelRef {
-                model_id: model.id.clone(),
-                model_version: model.version.clone(),
-                runtime_version: model.runtime.version.clone(),
-                sha256: artifact.sha256.clone(),
-            }),
+            model: Some(model.clone()),
             created_at_unix_ms: timestamp()?,
         };
         let id = String::from(id);
@@ -197,7 +190,7 @@ impl Transcripts {
 pub(crate) struct Writer<'a> {
     pub transcripts: &'a Transcripts,
     pub session: &'a StableId,
-    pub model: &'a Model,
+    pub model: &'a ModelRef,
     pub language: LanguagePolicy,
     pub job: Option<&'a str>,
     pub translate: Option<&'a ModelRef>,
@@ -239,6 +232,8 @@ pub struct Line {
     pub translation: Option<TranslationLine>,
     pub speaker: Option<crate::library::SpeakerLine>,
     pub(crate) conflicts: Vec<crate::sync_data::ConflictRevision>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) external_draft: Option<String>,
 }
 
 pub fn selected(root: &Path, session: &StableId) -> Result<Vec<Line>> {
@@ -312,6 +307,17 @@ pub(crate) fn visit_selected(
         } else {
             Vec::new()
         };
+        let external_draft = if limit >= 0 && !latest && conflicts.is_empty() {
+            db.query_row(
+                "SELECT json_extract(payload,'$.text') FROM revisions
+                 WHERE utterance_id=?1 AND revision>?2 AND json_extract(payload,'$.model.runtime_version')=?3
+                 ORDER BY revision DESC LIMIT 1",
+                params![String::from(value.utterance_id.clone()), value.revision.get(), crate::remote::PROTOCOL],
+                |row| row.get(0),
+            ).optional()?
+        } else {
+            None
+        };
         visit(Line {
             source,
             start_ns: u64::try_from(start_ns).map_err(|_| Error::Storage)?,
@@ -322,6 +328,7 @@ pub(crate) fn visit_selected(
             translation,
             speaker,
             conflicts,
+            external_draft,
         })?;
     }
     Ok(())

@@ -41,7 +41,7 @@ Cross-device continuity is optional and uses client-side encrypted objects in a 
 ## Non-goals for MVP
 - Meeting summaries, action items, LLM chat.
 - Team collaboration, multi-tenant server, central database.
-- Public cloud AI or automatic remote inference fallback.
+- Automatic remote inference fallback. The user can send a saved track to a configured service for [on-demand transcription](../adr/0004-on-demand-external-transcription.md).
 - Generic Android internal audio / third-party call recording.
 - Hidden recording or automatic microphone activation after reboot.
 - Destructive merging of microphone and system tracks.
