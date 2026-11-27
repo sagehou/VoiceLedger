@@ -22,13 +22,15 @@ internal const val PARTIAL = 3
 class SpeechWorkerService : Service() {
     private val main = Handler(Looper.getMainLooper())
     private var working = false
+    private var owner: Messenger? = null
     private val messenger = Messenger(Handler(Looper.getMainLooper()) { message ->
         when (message.what) {
             RUN -> runRequest(message)
             PARTIAL -> {
-                val bytes = runCatching { NativeCore.speechPartial() }.getOrNull()
+                val bytes = if (owner == message.replyTo) runCatching { NativeCore.speechPartial() }.getOrNull() else null
                 val reply = Message.obtain(null, PARTIAL)
                 reply.data.putByteArray("partial", bytes)
+                reply.data.putByteArray("transcript", readTranscript(message.data.getString("transcript")))
                 replyTo(message.replyTo, reply)
             }
         }
@@ -50,11 +52,13 @@ class SpeechWorkerService : Service() {
     private fun runRequest(message: Message) {
         val reply = message.replyTo
         val request = message.data.getString("request")
+        val transcript = message.data.getString("transcript")
         if (request == null || working) {
             replyTo(reply, Message.obtain(null, RESULT, if (working) -37 else -1, 0))
             return
         }
         working = true
+        owner = reply
         thread(name = "VoiceLedger speech") {
             val sampling = timer(name = "VoiceLedger speech resources", daemon = true, initialDelay = 1000L, period = 1000L) {
                 runCatching { NativeCore.updateSpeechResources(DeviceProfiler.speechResources(applicationContext)) }
@@ -73,12 +77,19 @@ class SpeechWorkerService : Service() {
             } finally {
                 sampling.cancel()
             }
+            val snapshot = readTranscript(transcript)
             main.post {
                 working = false
-                replyTo(reply, Message.obtain(null, RESULT, outcome, 0))
+                owner = null
+                val completed = Message.obtain(null, RESULT, outcome, 0)
+                completed.data.putByteArray("transcript", snapshot)
+                replyTo(reply, completed)
             }
         }
     }
+
+    private fun readTranscript(request: String?): ByteArray? =
+        request?.let { runCatching { NativeCore.speechRequest(it) }.getOrNull() }
 
     private fun replyTo(peer: Messenger?, value: Message) {
         try {

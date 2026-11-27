@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using NAudio.Wave;
@@ -32,6 +33,29 @@ internal sealed class RecordingViewModel : INotifyPropertyChanged, IAsyncDisposa
     private bool refreshing;
     private TrackRow[] rows = Array.Empty<TrackRow>();
     private string? error;
+    private CancellationTokenSource? liveWorker;
+    private bool liveEnabled;
+    private string? liveSetup;
+
+    public string[] SpeechLanguages => SpeechWorker.Languages;
+    public int SpeechLanguage { get; set; }
+    public bool TranslateLive { get; set; }
+    public bool LiveEnabled
+    {
+        get => liveEnabled;
+        set
+        {
+            if (liveEnabled == value) return;
+            liveEnabled = value;
+            if (value) _ = RefreshLiveModelAsync();
+            Update();
+        }
+    }
+    public bool CanConfigureSpeech => CanSelect && LiveEnabled;
+    private string? liveStatus;
+    public string? LiveStatus => liveStatus ?? (LiveEnabled ? liveSetup : null);
+    public string? LiveTranslationStatus { get; private set; }
+    public LiveLine[] LiveLines { get; private set; } = Array.Empty<LiveLine>();
 
     public event PropertyChangedEventHandler? PropertyChanged;
     public SourceMode[] Modes { get; } = Enum.GetValues<SourceMode>();
@@ -175,6 +199,11 @@ internal sealed class RecordingViewModel : INotifyPropertyChanged, IAsyncDisposa
             await session.DisposeAsync();
             Volatile.Write(ref session, null);
         }
+        liveWorker?.Cancel();
+        liveWorker = null;
+        LiveLines = Array.Empty<LiveLine>();
+        liveStatus = null;
+        LiveTranslationStatus = null;
         RecordingSession recording;
         try { recording = await RecordingSession.StartAsync(library, endpoints); }
         catch (StorageReserveException)
@@ -183,7 +212,10 @@ internal sealed class RecordingViewModel : INotifyPropertyChanged, IAsyncDisposa
             return;
         }
         Volatile.Write(ref session, recording);
-        if (!recording.Active) await RefreshHistoryAsync();
+        if (recording.Active && LiveEnabled)
+            _ = WatchSpeechAsync(recording, SpeechWorker.LanguageCode(SpeechLanguage), TranslateLive);
+        else if (!recording.Active)
+            await RefreshHistoryAsync();
     }, "Recording could not start. Check the selected endpoints, microphone access and storage.");
 
     internal Task PauseAsync() => ExecuteAsync(() => session?.PauseAsync() ?? Task.CompletedTask, "Recording could not be paused.");
@@ -193,6 +225,7 @@ internal sealed class RecordingViewModel : INotifyPropertyChanged, IAsyncDisposa
     internal Task StopAsync() => ExecuteAsync(async () =>
     {
         if (session is not null) await session.StopAsync();
+        if (!Active) liveWorker?.CancelAfter(TimeSpan.FromSeconds(45));
         await RefreshHistoryAsync();
     }, "Recording could not finish cleanly.");
 
@@ -253,13 +286,128 @@ internal sealed class RecordingViewModel : INotifyPropertyChanged, IAsyncDisposa
         try
         {
             await session.RefreshAsync();
-            if (!session.Active) await RefreshHistoryAsync();
+            if (!session.Active)
+            {
+                liveWorker?.CancelAfter(TimeSpan.FromSeconds(45));
+                await RefreshHistoryAsync();
+            }
         }
         catch (Exception) { error = "Recording state could not be refreshed."; }
         finally
         {
             refreshing = false;
             Update();
+        }
+    }
+
+    internal async Task RefreshLiveModelAsync()
+    {
+        if (!LiveEnabled) return;
+        try
+        {
+            string model = await Task.Run(LiveTranscript.ModelStatus);
+            liveSetup = model switch
+            {
+                "installed" => "Live transcription ready for the next recording.",
+                "not_installed" => "Install Whisper Tiny multilingual in Models.",
+                _ => "Whisper runtime unavailable.",
+            };
+        }
+        catch (Exception error) when (error is InvalidOperationException or JsonException or TypeInitializationException
+            or EntryPointNotFoundException)
+        {
+            liveSetup = "Could not check the transcription model.";
+        }
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(LiveStatus)));
+    }
+
+    private async Task WatchSpeechAsync(RecordingSession recording, string language, bool translate)
+    {
+        using var worker = new CancellationTokenSource();
+        liveWorker = worker;
+        liveStatus = "Starting live transcription…";
+        Update();
+        string snapshot = SpeechWorker.Request(new { op = "live_transcript", session_id = recording.Id });
+        var sources = recording.Tracks.ToDictionary(track => track.Files.Id, track =>
+            track.Files.Endpoint.Source == CaptureSource.Mic ? "Microphone" : "System loopback");
+        string? jobReason = null;
+        async Task RefreshAsync(string partial)
+        {
+            if (liveWorker != worker) return;
+            try
+            {
+                var (lines, pending, stage, reason) = await Task.Run(() => LiveTranscript.Read(snapshot, partial, sources));
+                if (liveWorker != worker) return;
+                jobReason = reason;
+                string? message = stage switch
+                {
+                    "loading" => "Loading Whisper Tiny multilingual…",
+                    "waiting_for_audio" => "Waiting for the first saved audio segment…",
+                    "listening" when lines.Length == 0 => "Listening for speech…",
+                    "listening" => "Live transcription active.",
+                    _ => liveStatus,
+                };
+                if (message != liveStatus)
+                {
+                    liveStatus = message;
+                    PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(LiveStatus)));
+                }
+                if (!LiveLines.SequenceEqual(lines))
+                {
+                    LiveLines = lines;
+                    PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(LiveLines)));
+                }
+                string? status = translate && pending ? "Simplified Chinese translations pending" : null;
+                if (LiveTranslationStatus != status)
+                {
+                    LiveTranslationStatus = status;
+                    PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(LiveTranslationStatus)));
+                }
+            }
+            catch (Exception error) when (error is InvalidOperationException or JsonException or TypeInitializationException
+                or EntryPointNotFoundException) { }
+        }
+
+        int result = -31;
+        try
+        {
+            bool profiled = await Task.Run(() => DeviceProfiler.Capture(SpeechWorker.ProfileDirectory));
+            if (liveWorker != worker) return;
+            result = profiled
+                ? await SpeechWorker.RunAsync(SpeechWorker.Request(new
+                    { op = "transcribe_live", session_id = recording.Id, language, translate, approved = true }),
+                    RefreshAsync, worker.Token)
+                : -34;
+            await RefreshAsync("");
+        }
+        finally
+        {
+            if (liveWorker == worker)
+            {
+                liveWorker = null;
+                liveStatus = result switch
+                {
+                    0 when LiveLines.Length == 0 => "Recording ended without recognized speech.",
+                    0 => "Transcription complete.",
+                    -30 => "Could not read or save the local transcript.",
+                    -32 => "No committed audio for transcription.",
+                    -33 => "Install Whisper Tiny multilingual in Models.",
+                    -36 => "Whisper model checksum failed.",
+                    -37 => "Another local speech task is running.",
+                    -38 => jobReason switch
+                    {
+                        "memory_pressure" => "Transcription paused due to low memory.",
+                        "thermal_pressure" => "Transcription paused due to high temperature.",
+                        "battery_pressure" => "Transcription paused due to low battery.",
+                        "storage_pressure" => "Transcription paused due to low storage.",
+                        _ => "Transcription deferred. Resume in Sessions.",
+                    },
+                    -34 => "Device cannot load Whisper safely. Check Models.",
+                    -4 => "Transcription paused. Resume in Sessions.",
+                    _ => "Local speech worker unavailable. Retry in Sessions.",
+                };
+                Update();
+            }
         }
     }
 
@@ -335,6 +483,8 @@ internal sealed class RecordingViewModel : INotifyPropertyChanged, IAsyncDisposa
 
     public async ValueTask DisposeAsync()
     {
+        liveWorker?.Cancel();
+        liveWorker = null;
         StopPlayback();
         if (session is not null) await session.DisposeAsync();
         store?.Dispose();

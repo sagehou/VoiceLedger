@@ -129,6 +129,22 @@ int32_t vl_speech_partial_v1(vl_audio_buffer_v1 *result);
 void vl_speech_cancel_v1(void);
 int32_t vl_speech_resources_v1(const uint8_t *sample, uint32_t length);
 
+/* Operation 1 creates a recovery code, 2 seals, 3 opens for the expected 16-byte object ID,
+ * 4 returns the 16-byte vault ID and big-endian generation, and 5 rotates the key.
+ * The caller owns and clears input and output buffers. Buffers must not overlap.
+ * Success returns the number of bytes written. Authentication failures return -50. */
+int32_t vl_vault_request_v1(int32_t operation, const uint8_t *recovery, uint32_t recovery_length,
+    const uint8_t *object_id, uint32_t object_id_length, const uint8_t *data, uint32_t length,
+    uint8_t *output, uint32_t capacity);
+
+/* Test the HTTPS provider on a random prefix with encrypted synthetic data. This blocks. */
+int32_t vl_sync_check_provider_v1(const uint8_t *data, uint32_t length);
+
+/* Run an explicit sync or device operation. Clear all credential buffers after the call. */
+int32_t vl_sync_request_v1(const uint8_t *command, uint32_t command_length,
+    const uint8_t *provider, uint32_t provider_length, const uint8_t *recovery, uint32_t recovery_length,
+    const uint8_t *successor, uint32_t successor_length, vl_audio_buffer_v1 *result);
+
 /* Supply -1 for an unknown memory value. Memory values are measured in bytes. */
 int32_t vl_recommend_v1(int32_t compatibility, int64_t budget_bytes, int64_t peak_bytes);
 

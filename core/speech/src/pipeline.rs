@@ -15,11 +15,25 @@ const FRAME: usize = RATE / 50;
 const PREROLL: usize = 8;
 const TAIL: usize = 12;
 const WINDOW: usize = RATE * 12;
-const PARTIAL_EVERY: usize = RATE * 3;
+const FIRST_PARTIAL: usize = RATE * 3 / 2;
 
 pub struct Recognition {
     pub text: String,
     pub language: Language,
+}
+
+pub struct StreamText {
+    pub text: String,
+    pub language: Option<Language>,
+}
+
+impl StreamText {
+    pub fn confirmed(self) -> Option<Recognition> {
+        self.language.map(|language| Recognition {
+            text: self.text,
+            language,
+        })
+    }
 }
 
 pub trait Engine {
@@ -29,13 +43,28 @@ pub trait Engine {
         language: LanguagePolicy,
         cancelled: &(dyn Fn() -> bool + Sync),
     ) -> Result<Option<Recognition>>;
+
+    fn streams(&self) -> bool {
+        false
+    }
+
+    fn stream_step(
+        &mut self,
+        _samples: &[f32],
+        _finish: bool,
+        _cancelled: &(dyn Fn() -> bool + Sync),
+    ) -> Result<Option<StreamText>> {
+        Err(Error::Runtime)
+    }
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub struct Partial {
     pub id: StableId,
     pub track_id: StableId,
     pub revision: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<Language>,
     pub text: String,
 }
 
@@ -63,7 +92,7 @@ struct Window {
     pcm: Vec<f32>,
     spans: Vec<ChunkSpan>,
     quiet: usize,
-    next_partial: usize,
+    streamed: usize,
     last_partial: usize,
     revision: u32,
 }
@@ -79,6 +108,22 @@ impl Window {
         } else {
             self.spans.push(frame.span);
         }
+    }
+
+    fn show(
+        &mut self,
+        track_id: &StableId,
+        value: StreamText,
+        output: &mut dyn Output,
+    ) -> Result<()> {
+        self.revision = self.revision.saturating_add(1);
+        output.partial(Some(Partial {
+            id: self.id.clone(),
+            track_id: track_id.clone(),
+            revision: self.revision,
+            language: value.language,
+            text: value.text,
+        }))
     }
 }
 
@@ -161,7 +206,7 @@ impl Segmenter {
             };
             self.accept(frame, voiced, processing)?;
         }
-        Ok(())
+        self.preview(processing)
     }
 
     fn accept(
@@ -183,7 +228,7 @@ impl Segmenter {
                 pcm: Vec::new(),
                 spans: Vec::new(),
                 quiet: 0,
-                next_partial: PARTIAL_EVERY,
+                streamed: 0,
                 last_partial: 0,
                 revision: 0,
             };
@@ -198,33 +243,63 @@ impl Segmenter {
         if window.pcm.len() >= WINDOW || window.quiet >= TAIL {
             return self.flush(processing);
         }
-        if processing.partials && window.pcm.len() >= window.next_partial {
-            let cadence = (processing.policy)(None)?.partial_seconds() * RATE;
-            let due = window.last_partial + cadence;
-            if window.pcm.len() < due {
-                window.next_partial = due;
-                return Ok(());
+        Ok(())
+    }
+
+    fn preview(&mut self, processing: &mut Processing<'_>) -> Result<()> {
+        let Some(window) = self.window.as_mut() else {
+            return Ok(());
+        };
+        let track_id = &self.track.as_ref().ok_or(Error::Invalid)?.0;
+        if processing.engine.streams() {
+            let tier = (processing.policy)(None)?;
+            let value = stream(window, processing, false)?;
+            // Publishing a cached prefix does not rerun the encoder.
+            let due = window.revision == 0
+                || window.pcm.len() - window.last_partial >= tier.partial_seconds() * RATE;
+            if processing.partials
+                && due
+                && let Some(value) = value
+            {
+                window.last_partial = window.pcm.len();
+                window.show(track_id, value, processing.output)?;
             }
+            return Ok(());
+        }
+        if !processing.partials || window.pcm.len() < FIRST_PARTIAL {
+            return Ok(());
+        }
+        let tier = (processing.policy)(None)?;
+        let due = if window.last_partial == 0 && tier < Tier::ReducePartials {
+            FIRST_PARTIAL
+        } else {
+            window.last_partial + tier.partial_seconds() * RATE
+        };
+        if window.pcm.len() >= due {
             window.last_partial = window.pcm.len();
-            window.next_partial = window.last_partial + PARTIAL_EVERY;
             if let Some(value) = recognize(processing, &window.pcm)? {
-                window.revision = window.revision.saturating_add(1);
-                processing.output.partial(Some(Partial {
-                    id: window.id.clone(),
-                    track_id: self.track.as_ref().ok_or(Error::Invalid)?.0.clone(),
-                    revision: window.revision,
-                    text: value.text,
-                }))?;
+                window.show(
+                    track_id,
+                    StreamText {
+                        language: Some(value.language),
+                        text: value.text,
+                    },
+                    processing.output,
+                )?;
             }
         }
         Ok(())
     }
 
     pub fn flush(&mut self, processing: &mut Processing<'_>) -> Result<()> {
-        let Some(window) = self.window.take() else {
+        let Some(mut window) = self.window.take() else {
             return Ok(());
         };
-        let value = recognize(processing, &window.pcm);
+        let value = if processing.engine.streams() {
+            stream(&mut window, processing, true).map(|text| text.and_then(StreamText::confirmed))
+        } else {
+            recognize(processing, &window.pcm)
+        };
         if window.revision != 0 {
             processing.output.partial(None)?;
         }
@@ -243,6 +318,29 @@ impl Segmenter {
         }
         Ok(())
     }
+}
+
+fn stream(
+    window: &mut Window,
+    processing: &mut Processing<'_>,
+    finish: bool,
+) -> Result<Option<StreamText>> {
+    let samples = &window.pcm[window.streamed..];
+    if samples.is_empty() && !finish {
+        return Ok(None);
+    }
+    crate::check_cancel(processing.cancelled)?;
+    (processing.policy)(None)?;
+    let started = std::time::Instant::now();
+    let value = processing
+        .engine
+        .stream_step(samples, finish, processing.cancelled)?;
+    crate::check_cancel(processing.cancelled)?;
+    let rtf = (!samples.is_empty())
+        .then(|| started.elapsed().as_secs_f64() * RATE as f64 / samples.len() as f64);
+    (processing.policy)(rtf)?;
+    window.streamed = window.pcm.len();
+    Ok(value)
 }
 
 fn recognize(processing: &mut Processing<'_>, samples: &[f32]) -> Result<Option<Recognition>> {
@@ -364,11 +462,15 @@ mod tests {
             segmenter
                 .accept(voiced_frame(frame, chunk), true, &mut processing)
                 .unwrap();
+            if frame % 100 == 99 {
+                segmenter.preview(&mut processing).unwrap();
+            }
         }
         segmenter.flush(&mut processing).unwrap();
         assert_eq!(sink.updates.len(), 3);
         let first = sink.updates[0].as_ref().unwrap();
         let second = sink.updates[1].as_ref().unwrap();
+        assert_eq!(first.text, (2 * RATE).to_string());
         assert_eq!(first.id, second.id);
         assert_eq!((first.revision, second.revision), (1, 2));
         assert!(sink.updates[2].is_none());
@@ -379,6 +481,84 @@ mod tests {
         assert_eq!(result.spans[0].chunk_id, uid(2));
         assert_eq!(result.spans[1].chunk_id, uid(3));
         assert_eq!(result.range.end_ns.get(), 6_500_000_000);
+    }
+
+    #[test]
+    fn streaming_feeds_each_sample_once_and_finalizes_with_the_emitted_language() {
+        #[derive(Default)]
+        struct Stream(Vec<(usize, bool)>);
+
+        impl Engine for Stream {
+            fn recognize(
+                &mut self,
+                _: &[f32],
+                _: LanguagePolicy,
+                _: &(dyn Fn() -> bool + Sync),
+            ) -> Result<Option<Recognition>> {
+                panic!("Streaming must not re-decode the cumulative window");
+            }
+
+            fn streams(&self) -> bool {
+                true
+            }
+
+            fn stream_step(
+                &mut self,
+                samples: &[f32],
+                finish: bool,
+                _: &(dyn Fn() -> bool + Sync),
+            ) -> Result<Option<StreamText>> {
+                self.0.push((samples.len(), finish));
+                Ok(Some(StreamText {
+                    language: finish.then_some(Language::Ja),
+                    text: "こんにちは".into(),
+                }))
+            }
+        }
+
+        let mut engine = Stream::default();
+        let mut sink = Sink::default();
+        let mut segmenter = Segmenter::new();
+        segmenter.track = Some((uid(1), 0, 0));
+        let mut processing = Processing {
+            engine: &mut engine,
+            output: &mut sink,
+            language: LanguagePolicy::Auto,
+            cancelled: &|| false,
+            partials: true,
+            policy: &mut |_| Ok(Tier::Normal),
+        };
+        for index in 0..200_i64 {
+            let chunk = uid(if index < 100 { 2 } else { 3 });
+            segmenter
+                .accept(voiced_frame(index, chunk), true, &mut processing)
+                .unwrap();
+            if index % 100 == 99 {
+                segmenter.preview(&mut processing).unwrap();
+            }
+        }
+        segmenter.flush(&mut processing).unwrap();
+        segmenter
+            .accept(voiced_frame(200, uid(4)), true, &mut processing)
+            .unwrap();
+        segmenter.flush(&mut processing).unwrap();
+
+        assert_eq!(
+            engine.0,
+            [
+                (2 * RATE, false),
+                (2 * RATE, false),
+                (0, true),
+                (FRAME, true)
+            ]
+        );
+        let partial = sink.updates[0].as_ref().unwrap();
+        assert_eq!(partial.language, None);
+        assert!(sink.updates[1].is_none());
+        assert_eq!(sink.results[0].id, partial.id);
+        assert_eq!(sink.results[0].recognition.language, Language::Ja);
+        assert_eq!(sink.results[0].spans.len(), 2);
+        assert_eq!(sink.results[1].spans[0].chunk_id, uid(4));
     }
 
     #[test]
@@ -408,6 +588,9 @@ mod tests {
             segmenter
                 .accept(voiced_frame(frame, uid(2)), true, &mut processing)
                 .unwrap();
+            if frame % 100 == 99 {
+                segmenter.preview(&mut processing).unwrap();
+            }
         }
         stopped.set(true);
         assert!(matches!(

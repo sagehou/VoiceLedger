@@ -23,6 +23,8 @@ VL_SPEECH_API const char *vl_asr_version(void);
 VL_SPEECH_API void *vl_asr_open(const char *model, const char *tokens, int32_t language, int32_t threads);
 VL_SPEECH_API int32_t vl_asr_run(void *engine, const float *pcm, int32_t samples, char *text,
     int32_t capacity, int32_t *language, vl_asr_cancel cancel, void *user);
+VL_SPEECH_API int32_t vl_asr_stream_step(void *engine, const float *pcm, int32_t samples, char *text,
+    int32_t capacity, int32_t *language, vl_asr_cancel cancel, void *user, bool finish);
 VL_SPEECH_API void vl_asr_close(void *engine);
 
 #ifdef __cplusplus

@@ -1,13 +1,14 @@
 use std::cell::Cell;
 use std::fs;
-use std::io::Cursor;
+use std::io::{self, Cursor};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
-use crate::contracts::{BenchmarkStage, DeviceCapabilityProfile};
+use crate::contracts::{BenchmarkStage, DeviceCapabilityProfile, Platform};
+use crate::scheduler::ResourceSample;
 
 use super::*;
 
@@ -67,6 +68,8 @@ impl TempRoot {
             root: &self.0,
             device,
             activity,
+            resources: None,
+            progress: None,
         }
     }
 }
@@ -103,8 +106,8 @@ fn fetch_body(start: u64, bytes: &[u8]) -> Download {
 #[test]
 fn published_candidates_use_their_own_download_and_memory_metadata() {
     let catalog = Catalog::bundled().unwrap();
-    let [whisper, sensevoice, translation] = catalog.models() else {
-        panic!("Expected two transcription candidates and one translation candidate");
+    let [whisper, sensevoice, translation, gguf, q6, nemotron] = catalog.models() else {
+        panic!("Expected five transcription candidates and one translation candidate");
     };
     assert_eq!(whisper.download_bytes(), 32_152_673);
     assert_eq!(
@@ -112,8 +115,21 @@ fn published_candidates_use_their_own_download_and_memory_metadata() {
         273_000_000
     );
     assert_eq!(sensevoice.download_bytes(), 239_549_735);
-    assert!(sensevoice.peak_ram_estimate.is_none());
+    assert_eq!(
+        sensevoice.peak_ram_estimate.as_ref().unwrap().bytes,
+        1_100_000_000
+    );
     assert_eq!(sensevoice.license.id, "LicenseRef-FunASR-Model");
+    assert_eq!(gguf.download_bytes(), 252_684_608);
+    assert_eq!(gguf.runtime.id, "transcribe.cpp");
+    assert_eq!(gguf.targets.len(), 1);
+    assert_eq!(gguf.targets[0].platform, Platform::Android);
+    assert_eq!(q6.download_bytes(), 196_438_336);
+    assert_eq!(nemotron.download_bytes(), 495_831_520);
+    assert_eq!(nemotron.runtime.id, gguf.runtime.id);
+    assert_eq!(nemotron.runtime.version, gguf.runtime.version);
+    assert_eq!(nemotron.targets.len(), 1);
+    assert_eq!(nemotron.targets[0].platform, Platform::Android);
     let pair = translation.translation.unwrap();
     assert_eq!(pair.source.code(), "en");
     assert_eq!(pair.target.code(), "zh");
@@ -163,6 +179,107 @@ fn candidate_retains_hard_gates_and_the_recording_only_default() {
 }
 
 #[test]
+fn android_sensevoice_keeps_two_estimated_peaks_after_reserves() {
+    let catalog = Catalog::bundled().unwrap();
+    let model = &catalog.models()[1];
+    let runtime = RuntimeIdentity {
+        id: &model.runtime.id,
+        version: &model.runtime.version,
+    };
+    let mut profile = device();
+    profile.platform = Platform::Android;
+    profile.os_version = "35".into();
+    profile.abi = "arm64-v8a".into();
+    profile.cpu_features = vec!["neon".into()];
+    profile.low_ram_device = Some(false);
+    profile.low_memory_threshold_bytes = Some(300_000_000i64.try_into().unwrap());
+    profile.available_memory_bytes = Some(2_600_000_000i64.try_into().unwrap());
+    assert_eq!(check_candidate(model, &profile, &[runtime], false), Ok(()));
+
+    let sample = ResourceSample {
+        low_memory: Some(false),
+        available_memory_bytes: Some(2_599_999_999),
+        low_memory_threshold_bytes: Some(300_000_000),
+        ..ResourceSample::default()
+    };
+    assert_eq!(
+        check_model_memory(model, &profile, sample),
+        Err(Block::MemoryBudget)
+    );
+    profile.low_ram_device = Some(true);
+    assert_eq!(
+        check_candidate(model, &profile, &[runtime], false),
+        Err(Block::MemoryBudget)
+    );
+    profile.low_ram_device = Some(false);
+    profile.low_memory = Some(true);
+    assert_eq!(
+        check_candidate(model, &profile, &[runtime], false),
+        Err(Block::MemoryPressure)
+    );
+    let mut windows = device();
+    windows.available_memory_bytes = Some(2_600_000_000i64.try_into().unwrap());
+    assert_eq!(
+        check_candidate(model, &windows, &[runtime], false),
+        Err(Block::MemoryBudget)
+    );
+
+    let gguf = &catalog.models()[3];
+    let runtimes = [RuntimeIdentity {
+        id: &gguf.runtime.id,
+        version: &gguf.runtime.version,
+    }];
+    profile.low_memory = Some(false);
+    profile.available_memory_bytes = Some(1_700_000_000i64.try_into().unwrap());
+    assert_eq!(check_candidate(gguf, &profile, &runtimes, false), Ok(()));
+    profile.available_memory_bytes = Some(1_699_999_999i64.try_into().unwrap());
+    assert_eq!(
+        check_candidate(gguf, &profile, &runtimes, false),
+        Err(Block::MemoryBudget)
+    );
+}
+
+#[test]
+fn installer_rechecks_memory_before_probing_downloaded_weights() {
+    let root = TempRoot::new();
+    let model = model();
+    let device = device();
+    let probe = Probe {
+        loads: Cell::new(0),
+        accepts: true,
+    };
+    let resources = || ResourceSample {
+        available_memory_bytes: Some(800_000_000),
+        ..ResourceSample::default()
+    };
+    let result = install(
+        &model,
+        InstallRequest {
+            resources: Some(&resources),
+            ..root.request(&device, SAFE)
+        },
+        &probe,
+        |_, _, offset| Ok(fetch_body(offset, b"abc")),
+        || false,
+    );
+    assert!(matches!(
+        result,
+        Err(InstallError::Blocked(Block::MemoryBudget))
+    ));
+    assert_eq!(probe.loads.get(), 0);
+    let installed = install(
+        &model,
+        root.request(&device, SAFE),
+        &probe,
+        |_, _, _| panic!("verified staged download must be reused"),
+        || false,
+    )
+    .unwrap();
+    assert!(installed.directory().is_dir());
+    assert_eq!(probe.loads.get(), 1);
+}
+
+#[test]
 fn download_resumes_then_runs_probe_before_atomic_publication() {
     let root = TempRoot::new();
     let model = model();
@@ -175,25 +292,40 @@ fn download_resumes_then_runs_probe_before_atomic_publication() {
         &model,
         root.request(&device, SAFE),
         &probe,
-        |_, offset| {
-            assert_eq!(offset, 0);
-            Ok(fetch_body(0, b"a"))
+        |artifact, url, offset| {
+            if url == artifact.url {
+                assert_eq!(offset, 0);
+                Ok(fetch_body(0, b"a"))
+            } else {
+                assert!(url.starts_with("https://hf-mirror.com/"));
+                assert_eq!(offset, 1);
+                Err(io::ErrorKind::ConnectionRefused.into())
+            }
         },
         || false,
     );
     assert!(matches!(attempt, Err(InstallError::Transfer)));
     assert_eq!(probe.loads.get(), 0);
+    let mut progress = Vec::new();
     let installed = install(
         &model,
-        root.request(&device, SAFE),
+        InstallRequest {
+            progress: Some(&mut |bytes| progress.push(bytes)),
+            ..root.request(&device, SAFE)
+        },
         &probe,
-        |_, offset| {
+        |artifact, url, offset| {
             assert_eq!(offset, 1);
+            if url == artifact.url {
+                return Err(io::ErrorKind::TimedOut.into());
+            }
+            assert!(url.starts_with("https://hf-mirror.com/"));
             Ok(fetch_body(1, b"bc"))
         },
         || false,
     )
     .unwrap();
+    assert_eq!(progress, [1, 3]);
     assert_eq!(probe.loads.get(), 1);
     assert_eq!(
         fs::read(installed.directory().join(&model.artifacts[0].file)).unwrap(),
@@ -204,7 +336,7 @@ fn download_resumes_then_runs_probe_before_atomic_publication() {
         &model,
         root.request(&device, SAFE),
         &probe,
-        |_, _| panic!("unexpected download"),
+        |_, _, _| panic!("unexpected download"),
         || false,
     );
     assert!(matches!(again, Err(InstallError::InvalidArtifact)));
@@ -230,7 +362,7 @@ fn refuses_unapproved_cancelled_corrupt_and_unloadable_downloads() {
             },
         ),
         &probe,
-        |_, _| panic!("unexpected download"),
+        |_, _, _| panic!("unexpected download"),
         || false,
     );
     assert!(matches!(
@@ -241,7 +373,7 @@ fn refuses_unapproved_cancelled_corrupt_and_unloadable_downloads() {
         &model,
         root.request(&device, SAFE),
         &probe,
-        |_, _| panic!("unexpected download"),
+        |_, _, _| panic!("unexpected download"),
         || true,
     );
     assert!(matches!(cancelled, Err(InstallError::Cancelled)));
@@ -249,7 +381,7 @@ fn refuses_unapproved_cancelled_corrupt_and_unloadable_downloads() {
         &model,
         root.request(&device, SAFE),
         &probe,
-        |_, offset| {
+        |_, _, offset| {
             assert_eq!(offset, 0);
             Ok(fetch_body(0, b"bad"))
         },
@@ -261,7 +393,7 @@ fn refuses_unapproved_cancelled_corrupt_and_unloadable_downloads() {
         &model,
         root.request(&device, SAFE),
         &probe,
-        |_, offset| {
+        |_, _, offset| {
             assert_eq!(offset, 0);
             Ok(fetch_body(0, b"abc"))
         },
@@ -290,7 +422,7 @@ fn benchmarks_require_idle_explicit_approval_and_resource_headroom() {
         &model,
         root.request(&device, SAFE),
         &probe,
-        |_, _| Ok(fetch_body(0, b"abc")),
+        |_, _, _| Ok(fetch_body(0, b"abc")),
         || false,
     )
     .unwrap();
@@ -370,7 +502,7 @@ fn recommendation_requires_target_workload_safety_and_separate_language_quality(
             loads: Cell::new(0),
             accepts: true,
         },
-        |_, _| Ok(fetch_body(0, b"abc")),
+        |_, _, _| Ok(fetch_body(0, b"abc")),
         || false,
     )
     .unwrap();

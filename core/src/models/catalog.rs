@@ -4,6 +4,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::contracts::{Language, Platform, Sha256};
 
+const MODEL_ORIGIN: &str = "https://huggingface.co/";
+const MODEL_MIRROR: &str = "https://hf-mirror.com/";
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Mode {
@@ -44,6 +47,15 @@ pub struct Artifact {
     pub url: String,
     pub size_bytes: u64,
     pub sha256: Sha256,
+}
+
+impl Artifact {
+    pub(super) fn download_sources(&self) -> [String; 2] {
+        [
+            self.url.clone(),
+            self.url.replacen(MODEL_ORIGIN, MODEL_MIRROR, 1),
+        ]
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -103,7 +115,7 @@ impl Model {
             && https(&self.runtime.source_url)
             && matches!(
                 self.license.id.as_str(),
-                "MIT" | "LicenseRef-FunASR-Model" | "Apache-2.0"
+                "MIT" | "LicenseRef-FunASR-Model" | "Apache-2.0" | "OpenMDW-1.1"
             )
             && https(&self.license.url)
             && self.valid_languages()
@@ -117,7 +129,7 @@ impl Model {
             && self.artifacts.iter().all(|artifact| {
                 file_name(&artifact.file)
                     && filenames.insert(artifact.file.to_ascii_lowercase())
-                    && artifact.url.starts_with("https://huggingface.co/")
+                    && artifact.url.starts_with(MODEL_ORIGIN)
                     && https(&artifact.url)
                     && artifact
                         .url

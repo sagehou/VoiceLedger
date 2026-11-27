@@ -49,7 +49,7 @@ impl Transcripts {
         )?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let version: i64 = tx.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        if !(0..=4).contains(&version) {
+        if !(0..=5).contains(&version) {
             return Err(Error::Storage);
         }
         if version == 0 {
@@ -63,7 +63,10 @@ impl Transcripts {
         }
         if version < 4 {
             tx.execute_batch(crate::library::SCHEMA)?;
-            tx.execute_batch("PRAGMA user_version=4;")?;
+        }
+        if version < 5 {
+            tx.execute_batch(crate::sync_data::SCHEMA)?;
+            tx.execute_batch("PRAGMA user_version=5;")?;
         }
         tx.commit()?;
         Ok(Self { db })
@@ -92,13 +95,14 @@ impl Transcripts {
 
     fn save(
         &self,
-        session: &StableId,
+        session_id: &StableId,
         model: &Model,
         language: LanguagePolicy,
         job: Option<&str>,
+        translate: Option<&ModelRef>,
         value: Final,
     ) -> Result<bool> {
-        let session = String::from(session.clone());
+        let session = String::from(session_id.clone());
         let track = String::from(value.track_id.clone());
         let start = value.range.start_ns.get() as i64;
         let end = value.range.end_ns.get() as i64;
@@ -138,8 +142,8 @@ impl Transcripts {
             [&utterance], |row| Ok((row.get(0)?, row.get(1)?)),
         ).optional()?;
         let (ordinal, parents) = match prior {
-            Some((id, prior)) => (
-                prior.checked_add(1).ok_or(Error::Invalid)?,
+            Some((id, _)) => (
+                crate::sync_data::next_ordinal(&tx, &utterance)?,
                 vec![id.try_into().map_err(|_| Error::Invalid)?],
             ),
             None => (1, Vec::new()),
@@ -170,10 +174,21 @@ impl Transcripts {
             "INSERT INTO revisions(id,utterance_id,revision,machine_key,payload) VALUES (?1,?2,?3,?4,?5)",
             params![id, utterance, ordinal, machine_key, serde_json::to_string(&revision)?],
         )?;
-        tx.execute(
+        let selected = tx.execute(
             "UPDATE utterances SET selected_revision=?1 WHERE id=?2 AND selected_revision IS NULL",
             params![id, utterance],
         )?;
+        if selected != 0
+            && revision.language == Language::En
+            && let Some(model) = translate
+        {
+            Queue(&tx).enqueue(
+                self.id()?,
+                session_id,
+                voiceledger_core::scheduler::JobKind::Translation,
+                &(&revision.id, Language::Zh, model),
+            )?;
+        }
         tx.commit()?;
         Ok(true)
     }
@@ -185,6 +200,7 @@ pub(crate) struct Writer<'a> {
     pub model: &'a Model,
     pub language: LanguagePolicy,
     pub job: Option<&'a str>,
+    pub translate: Option<&'a ModelRef>,
     pub publish_partial: &'a mut dyn FnMut(Option<Partial>),
     pub saved: u64,
 }
@@ -205,6 +221,7 @@ impl Output for Writer<'_> {
             self.model,
             self.language,
             self.job,
+            self.translate,
             value,
         )?);
         Ok(())
@@ -221,11 +238,12 @@ pub struct Line {
     pub text: String,
     pub translation: Option<TranslationLine>,
     pub speaker: Option<crate::library::SpeakerLine>,
+    pub(crate) conflicts: Vec<crate::sync_data::ConflictRevision>,
 }
 
 pub fn selected(root: &Path, session: &StableId) -> Result<Vec<Line>> {
     let mut lines = Vec::new();
-    visit_selected(root, session, 40, |line| {
+    visit_selected(root, session, 40, false, |line| {
         lines.push(line);
         Ok(())
     })?;
@@ -236,6 +254,7 @@ pub(crate) fn visit_selected(
     root: &Path,
     session: &StableId,
     limit: i64,
+    latest: bool,
     mut visit: impl FnMut(Line) -> Result<()>,
 ) -> Result<()> {
     match root.join(PATH).metadata() {
@@ -246,15 +265,27 @@ pub(crate) fn visit_selected(
     let db = Connection::open_with_flags(root.join(PATH), OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     db.busy_timeout(Duration::from_millis(150))?;
     let version: i64 = db.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    // Track labels come from the recording manifest, which stays read-only here.
-    let manifest = root.join("manifest.sqlite3");
-    let audio = Connection::open_with_flags(manifest, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    audio.busy_timeout(Duration::from_millis(150))?;
+    let audio = crate::sync_data::open_audio(root)?;
     let session = String::from(session.clone());
-    let mut query = db.prepare(
+    if version >= 5 && crate::sync_data::hidden(&db, "session", &session)? {
+        return Ok(());
+    }
+    let suffix = if latest && version >= 5 {
+        " AND NOT EXISTS(SELECT 1 FROM synced_tombstones t WHERE t.scope='utterance' AND t.entity_id=u.id)
+          ORDER BY u.start_ns DESC,u.track_id DESC LIMIT ?2"
+    } else if latest {
+        " ORDER BY u.start_ns DESC,u.track_id DESC LIMIT ?2"
+    } else if version >= 5 {
+        " AND NOT EXISTS(SELECT 1 FROM synced_tombstones t WHERE t.scope='utterance' AND t.entity_id=u.id)
+          ORDER BY (CASE WHEN ?2<0 THEN 0 ELSE EXISTS(SELECT 1 FROM sync_conflicts c WHERE c.utterance_id=u.id) END) DESC,
+            u.start_ns,u.track_id LIMIT ?2"
+    } else {
+        " ORDER BY u.start_ns,u.track_id LIMIT ?2"
+    };
+    let mut query = db.prepare(&format!(
         "SELECT u.track_id, u.start_ns, r.payload FROM utterances u JOIN revisions r ON r.id=u.selected_revision
-         WHERE u.session_id=?1 ORDER BY u.start_ns,u.track_id LIMIT ?2",
-    )?;
+         WHERE u.session_id=?1{suffix}",
+    ))?;
     let rows = query.query_map(params![session, limit], |row| {
         Ok((
             row.get::<_, String>(0)?,
@@ -262,20 +293,24 @@ pub(crate) fn visit_selected(
             row.get::<_, String>(2)?,
         ))
     })?;
-    let mut labels = audio.prepare("SELECT source FROM tracks WHERE id=?1 AND session_id=?2")?;
     for row in rows {
         let (track, start_ns, payload) = row?;
-        let source = labels.query_row(params![track, session], |row| row.get(0))?;
+        let source = crate::sync_data::source(&db, audio.as_ref(), &session, &track, version)?;
         let value: UtteranceRevision = serde_json::from_str(&payload)?;
         let translation = if version >= 3 {
             translations::display(&db, &value)?
         } else {
             None
         };
-        let speaker = if version >= 4 {
+        let speaker = if version >= 4 && !latest {
             crate::library::speaker(&db, &value.utterance_id)?
         } else {
             None
+        };
+        let conflicts = if version >= 5 && limit >= 0 && !latest {
+            crate::sync_data::conflict(&db, &value.utterance_id)?
+        } else {
+            Vec::new()
         };
         visit(Line {
             source,
@@ -286,6 +321,7 @@ pub(crate) fn visit_selected(
             text: value.text,
             translation,
             speaker,
+            conflicts,
         })?;
     }
     Ok(())

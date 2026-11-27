@@ -38,7 +38,7 @@ internal class RecordingManifest(
     private val progress: (SavedAudio, Long) -> Unit,
 ) : AutoCloseable {
     private val session = CoreSession()
-    private val sessionId = UUID.randomUUID().toString()
+    val sessionId = UUID.randomUUID().toString()
     private val trackId = UUID.randomUUID().toString()
     private val transitions = JSONArray()
     private val pcm = FloatArray(2 * SAMPLE_RATE)
@@ -46,7 +46,9 @@ internal class RecordingManifest(
     private var frameCount = 0
     private var chunkId: String? = null
     private var checkpointNs = 0L
-    private var streamStartNs: Long? = null
+    private var epoch = -1
+    private var streamOpen = false
+    private var pausedFromNs: Long? = null
     private var lastPacketEndNs = 0L
     private var saved = SavedAudio()
 
@@ -61,16 +63,23 @@ internal class RecordingManifest(
     }
 
     fun beginStream(startNs: Long, routeType: Int?) {
+        val resuming = pausedFromNs != null
+        closePause(startNs)
+        epoch++
         val format = json("encoding" to "pcm_s16", "rate" to SAMPLE_RATE, "channels" to 1)
         if (routeType != null) format.put("android_route_type", routeType)
         write(
-            "begin_stream", "track_id" to trackId, "epoch" to 0, "start_ns" to startNs,
+            "begin_stream", "track_id" to trackId, "epoch" to epoch, "start_ns" to startNs,
             "rate" to SAMPLE_RATE, "channels" to 1, "sample_format" to "pcm_s16",
             "native_format" to format.toString(),
         )
-        streamStartNs = startNs
+        streamOpen = true
         lastPacketEndNs = startNs
-        transition(SessionCommand.Start, startNs, "microphone_started")
+        if (resuming) {
+            transition(SessionCommand.Resume, startNs, "user_resume")
+        } else {
+            transition(SessionCommand.Start, startNs, "microphone_started")
+        }
     }
 
     fun append(samples: ShortArray, time: PacketTime) {
@@ -78,7 +87,7 @@ internal class RecordingManifest(
         if (chunkId == null) {
             val id = UUID.randomUUID().toString()
             write(
-                "begin_chunk", "id" to id, "track_id" to trackId, "epoch" to 0,
+                "begin_chunk", "id" to id, "track_id" to trackId, "epoch" to epoch,
                 "start_ns" to time.startNs, "end_ns" to time.endNs,
             )
             chunkId = id
@@ -105,19 +114,27 @@ internal class RecordingManifest(
         }
     }
 
+    fun pause(atNs: Long): SavedAudio {
+        val endNs = maxOf(lastPacketEndNs, atNs)
+        seal()
+        endStream(endNs, CaptureEnd.Pause)
+        pausedFromNs = lastPacketEndNs
+        transition(SessionCommand.Pause, endNs, CaptureEnd.Pause.code)
+        return saved
+    }
+
     fun finish(stop: StopRequest): SavedAudio {
         val endNs = maxOf(lastPacketEndNs, stop.atNs)
         transition(SessionCommand.Stop, endNs, stop.reason.code)
         seal()
-        if (streamStartNs != null) {
+        if (streamOpen) {
             if (stop.reason != CaptureEnd.User && endNs > lastPacketEndNs) {
-                write(
-                    "interval", "track_id" to trackId, "epoch" to 0, "start_ns" to lastPacketEndNs,
-                    "end_ns" to endNs, "kind" to "gap", "cause" to stop.reason.code,
-                )
+                gap(lastPacketEndNs, endNs, stop.reason)
                 saved = saved.copy(gaps = saved.gaps + 1)
             }
-            write("end_stream", "track_id" to trackId, "epoch" to 0, "end_ns" to endNs, "reason" to stop.reason.code)
+            endStream(endNs, stop.reason)
+        } else {
+            closePause(endNs)
         }
         val command = if (stop.reason == CaptureEnd.User) SessionCommand.Finish else SessionCommand.Interrupt
         transition(command, endNs, stop.reason.code)
@@ -132,6 +149,24 @@ internal class RecordingManifest(
     }
 
     override fun close() = session.close()
+
+    private fun endStream(endNs: Long, reason: CaptureEnd) {
+        write("end_stream", "track_id" to trackId, "epoch" to epoch, "end_ns" to endNs, "reason" to reason.code)
+        streamOpen = false
+    }
+
+    private fun closePause(endNs: Long) {
+        val startNs = pausedFromNs ?: return
+        if (endNs > startNs) gap(startNs, endNs, CaptureEnd.Pause)
+        pausedFromNs = null
+    }
+
+    private fun gap(startNs: Long, endNs: Long, reason: CaptureEnd) {
+        write(
+            "interval", "track_id" to trackId, "epoch" to epoch, "start_ns" to startNs,
+            "end_ns" to endNs, "kind" to "gap", "cause" to reason.code,
+        )
+    }
 
     private fun seal() {
         val id = chunkId ?: return

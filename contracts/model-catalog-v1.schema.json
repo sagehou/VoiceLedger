@@ -73,7 +73,7 @@
       "additionalProperties": false,
       "required": ["id", "url"],
       "properties": {
-        "id": {"enum": ["MIT", "LicenseRef-FunASR-Model", "Apache-2.0"]},
+        "id": {"enum": ["MIT", "LicenseRef-FunASR-Model", "Apache-2.0", "OpenMDW-1.1"]},
         "url": {"$ref": "#/$defs/Https"}
       }
     },

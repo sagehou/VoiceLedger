@@ -5,6 +5,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import tarfile
+from urllib.error import HTTPError
 import urllib.request
 from zipfile import ZipFile
 
@@ -15,9 +16,15 @@ SHERPA_RELEASE = "https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.12.
 REPO = Path(__file__).resolve().parents[1]
 
 
-def fetch(directory, name, url, digest):
+def fetch(directory, name, url, digest, *, mirror=None):
     path = directory / name
-    with urllib.request.urlopen(url, timeout=60) as response, path.open("wb") as file:
+    try:
+        response = urllib.request.urlopen(url, timeout=60)
+    except HTTPError as error:
+        if mirror is None or error.code != 404:
+            raise
+        response = urllib.request.urlopen(mirror, timeout=60)
+    with response, path.open("wb") as file:
         shutil.copyfileobj(response, file)
     with path.open("rb") as file:
         if hashlib.file_digest(file, "sha256").hexdigest() != digest:
@@ -41,9 +48,10 @@ def android_sherpa(work, cmake_options):
         "96b1a69ab0a85a8b42437a6c7f169b55dcf480997d761d5c6d79abbc2842e69b")
     unpack(archive, work, source=True)
     source = work / f"sherpa-onnx-{SHERPA}"
-    aar = fetch(work, "onnxruntime.aar",
-        "https://repo.maven.apache.org/maven2/com/microsoft/onnxruntime/onnxruntime-android/1.23.2/onnxruntime-android-1.23.2.aar",
-        "82048d1f462218adae4ba76477089ab0ba76093d84f733540066db1a8ba6b827")
+    artifact = "com/microsoft/onnxruntime/onnxruntime-android/1.23.2/onnxruntime-android-1.23.2.aar"
+    aar = fetch(work, "onnxruntime.aar", f"https://repo.maven.apache.org/maven2/{artifact}",
+        "82048d1f462218adae4ba76477089ab0ba76093d84f733540066db1a8ba6b827",
+        mirror=f"https://maven-central.storage-download.googleapis.com/maven2/{artifact}")
     runtime = work / "onnxruntime"
     with ZipFile(aar) as archive:
         names = [name for name in archive.namelist() if name.startswith("headers/")]

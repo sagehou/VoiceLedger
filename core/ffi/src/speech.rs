@@ -56,7 +56,7 @@ fn request(data: &[u8]) -> Result<Vec<u8>, Error> {
         |value| {
             if let Ok(mut partial) = PARTIAL.lock() {
                 *partial = value
-                    .and_then(|value| voiceledger_speech::encode_partial(value).ok())
+                    .and_then(|value| voiceledger_speech::encode_update(value).ok())
                     .unwrap_or_default();
             }
         },

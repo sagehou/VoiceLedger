@@ -16,8 +16,10 @@ android {
         applicationId = "com.voiceledger.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
+        versionCode = providers.gradleProperty("voiceledgerVersionCode").orElse("1").get().toInt()
         versionName = "0.1.0"
+        testInstrumentationRunner = "com.voiceledger.app.AndroidRuntimeSmoke"
+        ndk.abiFilters += "arm64-v8a"
     }
 
     buildFeatures {
@@ -40,14 +42,17 @@ kotlin {
 
 val nativeTestLibraries = layout.projectDirectory.dir("native-test")
 val ffiFixture = rootProject.file("../contracts/fixtures/ffi-v1.tsv")
+val vaultFixture = rootProject.file("../contracts/fixtures/vault-v1.json")
 val domainFixtures = rootProject.file("../artifacts/domain-fixtures-v1")
 
 tasks.withType<Test>().configureEach {
     inputs.dir(nativeTestLibraries)
     inputs.file(ffiFixture)
+    inputs.file(vaultFixture)
     inputs.dir(domainFixtures)
     systemProperty("java.library.path", nativeTestLibraries.asFile.absolutePath)
     systemProperty("voiceledger.ffi.fixture", ffiFixture.absolutePath)
+    systemProperty("voiceledger.vault.fixture", vaultFixture.absolutePath)
     systemProperty("voiceledger.domain.fixtures", domainFixtures.absolutePath)
     testLogging.showStandardStreams = true
 }

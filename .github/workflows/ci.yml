@@ -6,6 +6,11 @@ on:
   push:
     branches-ignore: [main]
   workflow_dispatch:
+    inputs:
+      sign_android_debug:
+        description: Sign the Android debug APK and verify an in-place upgrade
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -54,6 +59,62 @@ jobs:
           sudo unshare --net --setgid="$(id -g)" --setuid="$(id -u)" -- env \
             VOICELEDGER_TEST_TRANSLATION_MODEL="$model" VOICELEDGER_TEST_TRANSLATION_ADAPTERS="$PWD/artifacts/speech" \
             "$test_binary" --exact tests::native_translation_app_flow --ignored --nocapture
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.12'
+      - name: Evaluate speaker embeddings without network access
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends espeak-ng
+          python3 -m venv "$RUNNER_TEMP/voiceledger-speaker-venv"
+          converter="$RUNNER_TEMP/voiceledger-speaker-venv/bin/python"
+          "$converter" -m pip install --only-binary=:all: --no-deps \
+            numpy==2.2.6 onnx==1.18.0 protobuf==6.31.1 typing-extensions==4.15.0
+          "$converter" ../scripts/evaluate_speakers.py "$RUNNER_TEMP/voiceledger-speaker"
+          cargo build --locked --example speaker_clusters
+          for candidate in fp32 int8; do
+            sudo unshare --net --setgid="$(id -g)" --setuid="$(id -u)" -- env \
+              LD_LIBRARY_PATH="$PWD/artifacts/speech" "$(command -v python3)" \
+              ../scripts/evaluate_speakers.py "$RUNNER_TEMP/voiceledger-speaker" --candidate "$candidate" \
+              --library artifacts/speech/libvoiceledger_speaker.so --clustering target/debug/examples/speaker_clusters \
+              --report "artifacts/speaker-evaluation-$candidate.json"
+          done
+      - name: Verify automatic Chinese, English and Japanese recognition offline
+        run: |
+          sudo apt-get install -y --no-install-recommends open-jtalk open-jtalk-mecab-naist-jdic hts-voice-nitech-jp-atr503-m001
+          samples="$RUNNER_TEMP/voiceledger-asr"
+          python3 ../scripts/check_asr_languages.py "$samples"
+          sudo unshare --net --setgid="$(id -g)" --setuid="$(id -u)" -- env \
+            GITHUB_SHA="$GITHUB_SHA" "$(command -v python3)" \
+            ../scripts/check_asr_languages.py "$samples" --library artifacts/speech/libvoiceledger_whisper.so \
+            --report artifacts/asr-automatic-languages.json
+          sudo unshare --net --setgid="$(id -g)" --setuid="$(id -u)" -- env \
+            GITHUB_SHA="$GITHUB_SHA" LD_LIBRARY_PATH="$PWD/artifacts/speech" "$(command -v python3)" \
+            ../scripts/check_asr_languages.py "$samples" --model sensevoice-small-int8 \
+            --library artifacts/speech/libvoiceledger_sensevoice.so --report artifacts/asr-sensevoice-languages.json
+      - name: Exercise live committed audio and final-only translation offline
+        run: |
+          sudo unshare --net --setgid="$(id -g)" --setuid="$(id -u)" -- "$(command -v python3)" \
+            ../scripts/check_live_speech.py "$RUNNER_TEMP/voiceledger-asr" "$RUNNER_TEMP/voiceledger-translation/模型" \
+            target/release/libvoiceledger_ffi.so artifacts/speech artifacts/live-speech.json
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: live-speech
+          path: |
+            core/artifacts/live-speech.json
+            core/artifacts/live-speech-corpus.json
+            core/artifacts/live-speech-*.f32
+          if-no-files-found: error
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        if: always()
+        with:
+          name: asr-automatic-languages
+          path: core/artifacts/asr-*-languages.json
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        if: always()
+        with:
+          name: speaker-evaluation
+          path: core/artifacts/speaker-evaluation-*.json
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: voiceledger-ffi-linux-x64
@@ -145,6 +206,8 @@ jobs:
           cargo build --workspace --release --locked --target aarch64-linux-android
           python3 ../scripts/build_speech.py --work "$RUNNER_TEMP/voiceledger-speech" \
             --output artifacts/speech --android-ndk "$ANDROID_NDK_HOME"
+          python3 ../scripts/build_sensevoice_gguf.py --work "$RUNNER_TEMP/voiceledger-sensevoice-gguf" \
+            --output artifacts/speech --android-ndk "$ANDROID_NDK_HOME"
           python3 ../scripts/build_translation.py --work "$RUNNER_TEMP/voiceledger-translation" \
             --output artifacts/speech --android-ndk "$ANDROID_NDK_HOME"
           "$ndk_tools/llvm-readelf" --file-header artifacts/speech/libvoiceledger_translation.so > artifacts/translation-android.txt
@@ -162,7 +225,7 @@ jobs:
 
   windows-client:
     runs-on: windows-latest
-    needs: [rust-windows, contracts]
+    needs: [rust-windows, contracts, rust-core]
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -185,6 +248,10 @@ jobs:
         with:
           name: domain-fixtures-v1
           path: artifacts/domain-fixtures-v1
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: live-speech
+          path: artifacts/live-speech
       - name: Restore, build and publish WPF
         run: |
           dotnet restore windows/VoiceLedger.slnx --locked-mode 2>&1 | Tee-Object artifacts/windows-restore.log
@@ -208,7 +275,7 @@ jobs:
             }
           }
           (Get-Item artifacts/windows/voiceledger_ffi.dll).Length | Set-Content artifacts/windows-native-bytes.log
-          foreach ($file in 'voiceledger_whisper.dll', 'voiceledger_sensevoice.dll', 'voiceledger_translation.dll', 'sherpa-onnx-c-api.dll', 'onnxruntime.dll') {
+          foreach ($file in 'voiceledger_whisper.dll', 'voiceledger_sensevoice.dll', 'voiceledger_translation.dll', 'voiceledger_speaker.dll', 'sherpa-onnx-c-api.dll', 'onnxruntime.dll') {
             if (-not (Test-Path "artifacts/windows/speech/$file" -PathType Leaf)) {
               throw "Publish output is missing speech/$file"
             }
@@ -239,6 +306,24 @@ jobs:
             throw "Speech worker failed the approval check (exit $($process.ExitCode)). $($stderr.GetAwaiter().GetResult())"
           }
           'Windows speech worker rejected unapproved work.' | Set-Content artifacts/windows-speech-worker.log
+      - name: Verify live text through the packaged Windows worker
+        run: |
+          $catalog = Get-Content models/catalog-v1.json -Raw | ConvertFrom-Json
+          $model = $catalog.models | Where-Object id -eq 'whisper-tiny-multilingual-q5-1'
+          $profile = Join-Path $env:RUNNER_TEMP "voiceledger-live-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          $modelDir = Join-Path $profile "models/$($model.id)-$($model.version)"
+          New-Item -ItemType Directory -Force $modelDir | Out-Null
+          foreach ($artifact in $model.artifacts) {
+            $file = Join-Path $modelDir $artifact.file
+            Invoke-WebRequest $artifact.url -OutFile $file
+            if ((Get-FileHash -Algorithm SHA256 $file).Hash -ne $artifact.sha256) {
+              throw 'Whisper weight checksum mismatch'
+            }
+          }
+          $executable = (Resolve-Path 'artifacts/windows/VoiceLedger.exe').Path
+          $sample = (Resolve-Path 'artifacts/live-speech/live-speech-english.f32').Path
+          dotnet run --project windows/VoiceLedger.CoreSmoke/VoiceLedger.CoreSmoke.csproj --configuration Release --no-build -- --live-speech $executable $profile $sample 2>&1 | Tee-Object artifacts/windows-live-speech.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         if: always()
         with:
@@ -251,7 +336,7 @@ jobs:
   android-client:
     runs-on: ubuntu-latest
     needs: [rust-core, rust-android, contracts]
-    timeout-minutes: 25
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: android
@@ -272,7 +357,7 @@ jobs:
       - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
         with:
           cmdline-tools-version: ${{ env.ANDROID_CMDLINE_TOOLS_VERSION }}
-          packages: platforms;android-36 build-tools;36.0.0
+          packages: platforms;android-36 build-tools;36.0.0 platform-tools emulator system-images;android-35;google_apis;x86_64
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: voiceledger-core-android-arm64-v8a
@@ -293,10 +378,42 @@ jobs:
         with:
           name: domain-fixtures-v1
           path: artifacts/domain-fixtures-v1
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: live-speech
+          path: android/live-speech
       - name: Build and check the Android app
         run: |
-          mkdir -p artifacts
-          ./gradlew --no-daemon --stacktrace :app:lintDebug :app:testDebugUnitTest :app:assembleDebug 2>&1 | tee artifacts/android-gradle.log
+          mkdir -p artifacts app/src/androidTest/assets
+          cp live-speech/*.f32 live-speech/live-speech-corpus.json app/src/androidTest/assets/
+          ./gradlew --no-daemon --stacktrace :app:assembleDebug 2>&1 | tee artifacts/android-upgrade-base-build.log
+          cp app/build/outputs/apk/debug/app-debug.apk "$RUNNER_TEMP/voiceledger-upgrade-base.apk"
+          ./gradlew --no-daemon --stacktrace -PvoiceledgerVersionCode="$((GITHUB_RUN_NUMBER + 1))" \
+            :app:lintDebug :app:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest 2>&1 | tee artifacts/android-gradle.log
+      - name: Exercise the signing step with a disposable debug certificate
+        run: |
+          umask 077
+          signer="$ANDROID_HOME/build-tools/36.0.0/apksigner"
+          store="$RUNNER_TEMP/voiceledger-debug-rehearsal.p12"
+          base="$RUNNER_TEMP/voiceledger-upgrade-base.apk"
+          apk=app/build/outputs/apk/debug/app-debug.apk
+          test_apk=app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+          keytool -genkeypair -alias androiddebugkey -keyalg RSA -keysize 3072 -validity 7 \
+            -dname "CN=VoiceLedger CI Debug" -keystore "$store" -storetype PKCS12 -storepass android
+          pin="$(keytool -exportcert -alias androiddebugkey -keystore "$store" -storepass android | sha256sum | cut -d ' ' -f 1)"
+          export VOICELEDGER_ANDROID_DEBUG_CERT_SHA256="$pin"
+          VOICELEDGER_ANDROID_DEBUG_PKCS12_BASE64="$(base64 "$store")" \
+            VOICELEDGER_ANDROID_DEBUG_PKCS12_PASSWORD=android \
+            python3 ../scripts/sign_android_debug.py "$signer" \
+            "$base" "$RUNNER_TEMP/rehearsal-base.apk" "$apk" "$RUNNER_TEMP/rehearsal-next.apk" \
+            "$test_apk" "$RUNNER_TEMP/rehearsal-test.apk" \
+            | tee artifacts/android-rehearsal-cert.txt
+          mv "$RUNNER_TEMP/rehearsal-base.apk" "$base"
+          mv "$RUNNER_TEMP/rehearsal-next.apk" "$apk"
+          mv "$RUNNER_TEMP/rehearsal-test.apk" "$test_apk"
+          rm -f "$store"
+      - name: Run the packaged Android ARM64 recording and live transcription
+        run: bash ../scripts/check_android_runtime.sh
       - name: Check the APK manifest
         run: |
           apk=app/build/outputs/apk/debug/app-debug.apk
@@ -304,8 +421,14 @@ jobs:
           grep -E "^package: name='com\.voiceledger\.app'" artifacts/android-apk.txt
           grep -E "^launchable-activity: name='com\.voiceledger\.app\.MainActivity'" artifacts/android-apk.txt
           apkanalyzer manifest print "$apk" > artifacts/android-manifest.xml
-          python3 - <<'PY'
+          python3 - "$apk" <<'PY'
+          import sys
           from xml.etree import ElementTree
+          from zipfile import ZipFile
+
+          with ZipFile(sys.argv[1]) as apk:
+              abi = {p.split("/")[1] for p in apk.namelist() if p.startswith("lib/") and p.endswith(".so")}
+          assert abi == {"arm64-v8a"}, abi
 
           manifest = ElementTree.parse("artifacts/android-manifest.xml")
           ns = "{http://schemas.android.com/apk/res/android}"
@@ -332,7 +455,7 @@ jobs:
           assert speech.get(ns + "process", "").endswith(":speech"), speech.attrib
           PY
           unzip -Z1 "$apk" | grep -Fx 'lib/arm64-v8a/libvoiceledger_ffi.so'
-          for library in voiceledger_whisper voiceledger_sensevoice voiceledger_translation sherpa-onnx-c-api onnxruntime; do
+          for library in voiceledger_whisper voiceledger_sensevoice voiceledger_sensevoice_gguf voiceledger_translation voiceledger_speaker sherpa-onnx-c-api onnxruntime; do
             unzip -Z1 "$apk" | grep -Fx "lib/arm64-v8a/lib${library}.so"
           done
           stat -c '%s' app/src/main/jniLibs/arm64-v8a/libvoiceledger_ffi.so > artifacts/android-native-bytes.log
@@ -345,6 +468,74 @@ jobs:
             android/app/build/reports/
             android/app/build/test-results/
             android/app/build/outputs/apk/debug/app-debug.apk
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        if: >-
+          (vars.VOICELEDGER_ANDROID_DEBUG_CERT_SHA256 != '' ||
+          (github.repository == 'sagehou/VoiceLedger' && inputs.sign_android_debug)) &&
+          ((github.repository == 'sagehou/VoiceLedger' && github.ref == 'refs/heads/main') ||
+          ((github.repository == 'sagehou/VoiceLedger' || github.repository == 'SageAutoman/VoiceLedger') &&
+          github.ref == 'refs/heads/integration/vl-017-device-candidate'))
+        with:
+          name: android-upgrade-base
+          path: ${{ runner.temp }}/voiceledger-upgrade-base.apk
+          retention-days: 1
+          if-no-files-found: error
+
+  android-debug-package:
+    if: >-
+      (vars.VOICELEDGER_ANDROID_DEBUG_CERT_SHA256 != '' ||
+      (github.repository == 'sagehou/VoiceLedger' && inputs.sign_android_debug)) &&
+      ((github.repository == 'sagehou/VoiceLedger' && github.ref == 'refs/heads/main') ||
+      ((github.repository == 'sagehou/VoiceLedger' || github.repository == 'SageAutoman/VoiceLedger') &&
+      github.ref == 'refs/heads/integration/vl-017-device-candidate'))
+    needs: android-client
+    environment: android-debug-publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+        with:
+          cmdline-tools-version: ${{ env.ANDROID_CMDLINE_TOOLS_VERSION }}
+          packages: build-tools;36.0.0 platform-tools emulator system-images;android-35;google_apis;x86_64
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: android-client
+          path: android/ci-package
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: android-upgrade-base
+          path: android/ci-package
+      - name: Sign the verified debug APK
+        working-directory: android
+        shell: bash
+        env:
+          VOICELEDGER_ANDROID_DEBUG_PKCS12_BASE64: ${{ secrets.VOICELEDGER_ANDROID_DEBUG_PKCS12_BASE64 }}
+          VOICELEDGER_ANDROID_DEBUG_PKCS12_PASSWORD: ${{ secrets.VOICELEDGER_ANDROID_DEBUG_PKCS12_PASSWORD }}
+          VOICELEDGER_ANDROID_DEBUG_CERT_SHA256: ${{ vars.VOICELEDGER_ANDROID_DEBUG_CERT_SHA256 || secrets.VOICELEDGER_ANDROID_DEBUG_CERT_SHA256 }}
+        run: |
+          mkdir -p artifacts
+          python3 ../scripts/sign_android_debug.py "$ANDROID_HOME/build-tools/36.0.0/apksigner" \
+            ci-package/voiceledger-upgrade-base.apk "$RUNNER_TEMP/voiceledger-signed-base.apk" \
+            ci-package/app/build/outputs/apk/debug/app-debug.apk artifacts/app-debug.apk \
+            | tee artifacts/android-debug-cert.txt
+      - name: Verify an upgrade with the fixed debug certificate
+        working-directory: android
+        run: bash ../scripts/check_android_runtime.sh artifacts/app-debug.apk "$RUNNER_TEMP/voiceledger-signed-base.apk"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: android-debug-upgradeable
+          path: |
+            android/artifacts/app-debug.apk
+            android/artifacts/android-debug-cert.txt
+            android/artifacts/android-upgrade.log
+          if-no-files-found: error
 
   contracts:
     runs-on: ubuntu-latest
@@ -414,11 +605,11 @@ jobs:
   gate:
     name: CI gate
     if: always()
-    needs: [rust-core, rust-windows, rust-android, windows-client, android-client, contracts, security-static]
+    needs: [rust-core, rust-windows, rust-android, windows-client, android-client, android-debug-package, contracts, security-static]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Require all validation jobs to pass
         env:
           CI_RESULTS: ${{ toJSON(needs) }}
-        run: jq -e 'all(.[]; .result == "success")' <<< "$CI_RESULTS"
+        run: jq -e 'to_entries | all(.[]; .value.result == "success" or (.key == "android-debug-package" and .value.result == "skipped"))' <<< "$CI_RESULTS"

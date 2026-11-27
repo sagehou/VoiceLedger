@@ -2,6 +2,12 @@ using System.Globalization;
 using System.Security.Cryptography;
 using VoiceLedger.Core;
 
+if (args.Length == 4 && args[0] == "--live-speech")
+{
+    await LiveSpeechSmoke.RunAsync(args[1], args[2], args[3]);
+    return;
+}
+
 if (args.Length != 2)
 {
     throw new ArgumentException("Supply the ABI fixture and the generated domain fixture directory.");
@@ -57,6 +63,7 @@ Console.WriteLine($"P/Invoke ABI {NativeCore.AbiVersion} passed {cases} fixture 
 Console.WriteLine($"Fixture SHA-256 {fixtureHash}");
 ValidateDomainFixtures(args[1]);
 DeviceProfileSmoke.Run();
+VaultSmoke.Run(Path.Combine(Path.GetDirectoryName(fixture)!, "vault-v1.json"));
 await RecordingSmoke.RunAsync();
 
 static void ValidateDomainFixtures(string directory)

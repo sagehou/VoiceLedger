@@ -282,6 +282,59 @@ impl CommittedReader {
         )?)
     }
 
+    pub fn session_state(&self, session: &StableId) -> Result<Option<i32>> {
+        Ok(self
+            .db
+            .query_row(
+                "SELECT state FROM sessions WHERE id=?1",
+                [String::from(session.clone())],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
+    pub fn session_tracks(&self, session: &StableId) -> Result<Vec<StableId>> {
+        let mut query = self
+            .db
+            .prepare("SELECT id FROM tracks WHERE session_id=?1 ORDER BY id")?;
+        let rows = query.query_map([String::from(session.clone())], |row| row.get(0))?;
+        rows.map(|row| stable(row?)).collect()
+    }
+
+    pub fn live_backlog(&self, track: &StableId, from_ns: i64) -> Result<u32> {
+        Ok(self.db.query_row(
+            "SELECT count(*) FROM (SELECT 1 FROM chunks WHERE track_id=?1 AND state='committed'
+                AND end_ns>?2 LIMIT 3)",
+            params![String::from(track.clone()), from_ns],
+            |row| row.get(0),
+        )?)
+    }
+
+    pub fn live_chunk(
+        &self,
+        session: &StableId,
+        track: &StableId,
+        from_ns: i64,
+    ) -> Result<Option<CommittedChunk>> {
+        let row = self
+            .db
+            .query_row(
+                &format!(
+                    "{} WHERE t.session_id=?1 AND c.track_id=?2
+                AND c.state='committed' AND c.end_ns>?3 ORDER BY c.start_ns LIMIT 1",
+                    Chunk::SELECT
+                ),
+                params![
+                    String::from(session.clone()),
+                    String::from(track.clone()),
+                    from_ns
+                ],
+                Chunk::read,
+            )
+            .optional()?;
+        row.map(|chunk| self.decode_chunk(chunk)).transpose()
+    }
+
     pub fn inputs(&self, session: &StableId) -> Result<Vec<TrackInput>> {
         let mut query = self.db.prepare(
             "WITH indexed AS (
@@ -394,7 +447,7 @@ pub(super) fn history(db: &Connection, session: Option<&str>) -> Result<Vec<Hist
     let mut statement = db.prepare(
         "SELECT t.id,s.id,t.source,s.created_at_ms,s.interrupted_tail,
           COALESCE(MIN(c.start_ns),0),COALESCE(MAX(c.end_ns),0),COUNT(c.id),
-          (SELECT COUNT(*) FROM audio_timeline a WHERE a.track_id=t.id AND a.kind='gap')
+          (SELECT COUNT(*) FROM audio_timeline a WHERE a.track_id=t.id AND a.kind='gap' AND a.cause IS NOT 'paused')
          FROM tracks t JOIN sessions s ON s.id=t.session_id
          LEFT JOIN chunks c ON c.track_id=t.id AND c.state='committed'
          WHERE s.state IN (5,6) AND (?1 IS NULL OR s.id=?1)

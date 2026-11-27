@@ -50,8 +50,14 @@ public partial class MainWindow : Window
     private void StopPlayback(object sender, RoutedEventArgs e) => viewModel.StopPlayback();
     private void OpenSessions(object sender, RoutedEventArgs e) =>
         new ModelsWindow(() => !viewModel.Active && !viewModel.Busy, sessions: true) { Owner = this }.ShowDialog();
-    private void OpenModels(object sender, RoutedEventArgs e) =>
+    private async void OpenModels(object sender, RoutedEventArgs e)
+    {
         new ModelsWindow(() => !viewModel.Active && !viewModel.Busy) { Owner = this }.ShowDialog();
+        await viewModel.RefreshLiveModelAsync();
+    }
+
+    private void OpenSyncPrivacy(object sender, RoutedEventArgs e) =>
+        new SyncPrivacyWindow { Owner = this }.ShowDialog();
 
     private async void ReconnectEndpoint(object sender, RoutedEventArgs e)
     {

@@ -3,7 +3,7 @@ package com.voiceledger.app.recording
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
 
-internal enum class RecordingPhase { Recovering, Idle, Preparing, Recording, Stopping }
+internal enum class RecordingPhase { Recovering, Idle, Preparing, Recording, Pausing, Paused, Stopping }
 
 internal data class SavedAudio(
     val chunks: Int = 0,

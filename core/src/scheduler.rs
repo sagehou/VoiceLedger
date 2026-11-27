@@ -157,6 +157,7 @@ impl Reason {
 pub struct Observation {
     pub resources: ResourceSample,
     pub recording_active: bool,
+    pub live_transcription: bool,
     pub rtf: Option<f64>,
     pub pending_jobs: u32,
 }
@@ -200,7 +201,7 @@ fn desired(sample: Observation) -> Decision {
     let slow = sample.rtf.is_some_and(|rtf| rtf.is_finite() && rtf >= 0.7);
     let (tier, reason) = if let Some(emergency) = resources.emergency() {
         (Unload, emergency)
-    } else if sample.recording_active {
+    } else if sample.recording_active && !sample.live_transcription {
         (DeferAsr, Recording)
     } else if resources.heat == Some(Heat::Moderate) {
         (DeferAsr, Thermal)
@@ -265,6 +266,25 @@ mod tests {
         );
         assert_eq!(recording.reason, Some(Reason::Recording));
         assert!(!recording.tier.admits(JobKind::Asr));
+    }
+
+    #[test]
+    fn live_asr_admits_recording_with_headroom_and_defers_optional_work_first() {
+        let mut governor = Governor::default();
+        let mut sample = Observation {
+            recording_active: true,
+            live_transcription: true,
+            ..Observation::default()
+        };
+        assert_eq!(governor.observe(sample, 0).tier, Tier::Normal);
+        sample.resources.power_saver = Some(true);
+        let power = governor.observe(sample, 1);
+        assert!(power.tier.admits(JobKind::Asr));
+        assert!(!power.tier.admits(JobKind::Translation));
+        sample.pending_jobs = 3;
+        assert_eq!(governor.observe(sample, 2).tier, Tier::ReducePartials);
+        sample.resources.heat = Some(Heat::Severe);
+        assert_eq!(governor.observe(sample, 3).tier, Tier::Unload);
     }
 
     #[test]

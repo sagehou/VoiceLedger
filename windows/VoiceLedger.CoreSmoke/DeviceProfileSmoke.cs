@@ -28,13 +28,18 @@ internal static class DeviceProfileSmoke
                 "new observation identity");
             using var preview = JsonDocument.Parse(NativeCore.ModelPreview(directory));
             Require(preview.RootElement.GetProperty("mode").GetString() == "recording_only", "catalog fallback");
-            var models = preview.RootElement.GetProperty("candidates");
-            Require(models.GetArrayLength() == 3, "bundled candidates");
-            Require(models[0].GetProperty("download_bytes").GetInt64() == 32152673, "Whisper download size");
-            Require(models[2].GetProperty("model").GetProperty("translation").GetProperty("target").GetString() == "zh",
+            var models = preview.RootElement.GetProperty("candidates").EnumerateArray()
+                .ToDictionary(entry => entry.GetProperty("model").GetProperty("id").GetString()!);
+            Require(models["whisper-tiny-multilingual-q5-1"].GetProperty("download_bytes").GetInt64() == 32152673,
+                "Whisper download size");
+            Require(models["opus-mt-en-zh-int8"].GetProperty("model").GetProperty("translation")
+                .GetProperty("target").GetString() == "zh",
                 "English to Chinese model");
-            Require(models[1].GetProperty("model").GetProperty("peak_ram_estimate").ValueKind == JsonValueKind.Null,
-                "unknown SenseVoice peak RAM");
+            Require(models["sensevoice-small-int8"].GetProperty("model").GetProperty("peak_ram_estimate")
+                .GetProperty("bytes").GetInt64() == 1_100_000_000,
+                "SenseVoice peak RAM estimate");
+            Require(models["nemotron-3-5-asr-streaming-0-6b-q4-k-m"].GetProperty("blocked_by").GetString() == "abi",
+                "Nemotron Android-only target");
             NativeCore.UpdateSpeechResources(DeviceProfiler.SpeechResources(directory));
             Console.WriteLine("Windows device profiler passed native queries and local profile refresh on the hosted runner.");
             Console.WriteLine("Windows P/Invoke passed the bundled model preview.");

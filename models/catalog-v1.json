@@ -68,7 +68,10 @@
           "sha256": "f449eb28dc567533d7fa59be34e2abca8784f771850c78a47fb731a31429a1dc"
         }
       ],
-      "peak_ram_estimate": null
+      "peak_ram_estimate": {
+        "bytes": 1100000000,
+        "source_url": "https://github.com/sagehou/VoiceLedger/actions/runs/45734214405"
+      }
     },
     {
       "id": "opus-mt-en-zh-int8",
@@ -146,6 +149,102 @@
       "peak_ram_estimate": {
         "bytes": 402653184,
         "source_url": "https://github.com/sagehou/VoiceLedger/actions/runs/45363849951"
+      }
+    },
+    {
+      "id": "sensevoice-small-gguf-q8-0",
+      "name": "SenseVoice Small GGUF",
+      "version": "ff8f085a8fa2e5ccae0e849ef19ebc6dc18e608b",
+      "mode": "balanced",
+      "quantization": "Q8_0",
+      "languages": ["zh", "en", "ja", "ko", "yue"],
+      "runtime": {
+        "id": "transcribe.cpp",
+        "version": "0.4.2",
+        "source_url": "https://github.com/handy-computer/transcribe.cpp/tree/275cd50d2c4104c204009a197ac091b9687668e5"
+      },
+      "license": {
+        "id": "LicenseRef-FunASR-Model",
+        "url": "https://huggingface.co/handy-computer/SenseVoiceSmall-gguf/blob/ff8f085a8fa2e5ccae0e849ef19ebc6dc18e608b/LICENSE"
+      },
+      "targets": [
+        {"platform": "android", "abi": "arm64-v8a", "min_os": 26, "cpu_features": ["neon"]}
+      ],
+      "artifacts": [
+        {
+          "file": "SenseVoiceSmall-Q8_0.gguf",
+          "url": "https://huggingface.co/handy-computer/SenseVoiceSmall-gguf/resolve/ff8f085a8fa2e5ccae0e849ef19ebc6dc18e608b/SenseVoiceSmall-Q8_0.gguf",
+          "size_bytes": 252684608,
+          "sha256": "6c759ee4c9748c9b3f7a5a60ca74f0f7e685fb9d45d1378fce7cfd62f59adf29"
+        }
+      ],
+      "peak_ram_estimate": {
+        "bytes": 650000000,
+        "source_url": "https://github.com/sagehou/VoiceLedger/actions/runs/45740542409"
+      }
+    },
+    {
+      "id": "sensevoice-small-gguf-q6-k",
+      "name": "SenseVoice Small GGUF Q6_K",
+      "version": "ff8f085a8fa2e5ccae0e849ef19ebc6dc18e608b",
+      "mode": "balanced",
+      "quantization": "Q6_K",
+      "languages": ["zh", "en", "ja", "ko", "yue"],
+      "runtime": {
+        "id": "transcribe.cpp",
+        "version": "0.4.2",
+        "source_url": "https://github.com/handy-computer/transcribe.cpp/tree/275cd50d2c4104c204009a197ac091b9687668e5"
+      },
+      "license": {
+        "id": "LicenseRef-FunASR-Model",
+        "url": "https://huggingface.co/handy-computer/SenseVoiceSmall-gguf/blob/ff8f085a8fa2e5ccae0e849ef19ebc6dc18e608b/LICENSE"
+      },
+      "targets": [
+        {"platform": "android", "abi": "arm64-v8a", "min_os": 26, "cpu_features": ["neon"]}
+      ],
+      "artifacts": [
+        {
+          "file": "SenseVoiceSmall-Q6_K.gguf",
+          "url": "https://huggingface.co/handy-computer/SenseVoiceSmall-gguf/resolve/ff8f085a8fa2e5ccae0e849ef19ebc6dc18e608b/SenseVoiceSmall-Q6_K.gguf",
+          "size_bytes": 196438336,
+          "sha256": "5724d2ff6329f4355a29cee6a2432ecd1f60547a0a4ef7726cfceda7dafb394f"
+        }
+      ],
+      "peak_ram_estimate": {
+        "bytes": 650000000,
+        "source_url": "https://github.com/sagehou/VoiceLedger/actions/runs/45740542409"
+      }
+    },
+    {
+      "id": "nemotron-3-5-asr-streaming-0-6b-q4-k-m",
+      "name": "Nemotron 3.5 ASR Streaming",
+      "version": "53ce288f69326b415aeef030cfcb02a08a8096dd",
+      "mode": "enhanced",
+      "quantization": "Q4_K_M",
+      "languages": ["zh", "en", "ja"],
+      "runtime": {
+        "id": "transcribe.cpp",
+        "version": "0.4.2",
+        "source_url": "https://github.com/handy-computer/transcribe.cpp/tree/275cd50d2c4104c204009a197ac091b9687668e5"
+      },
+      "license": {
+        "id": "OpenMDW-1.1",
+        "url": "https://huggingface.co/handy-computer/nemotron-3.5-asr-streaming-0.6b-gguf/blob/53ce288f69326b415aeef030cfcb02a08a8096dd/LICENSE"
+      },
+      "targets": [
+        {"platform": "android", "abi": "arm64-v8a", "min_os": 26, "cpu_features": ["neon"]}
+      ],
+      "artifacts": [
+        {
+          "file": "nemotron-3.5-asr-streaming-0.6b-Q4_K_M.gguf",
+          "url": "https://huggingface.co/handy-computer/nemotron-3.5-asr-streaming-0.6b-gguf/resolve/53ce288f69326b415aeef030cfcb02a08a8096dd/nemotron-3.5-asr-streaming-0.6b-Q4_K_M.gguf",
+          "size_bytes": 495831520,
+          "sha256": "41c99fa5fb6f3d35f68e79adc3e755eca2232a8d921178bd647b71194792b8fd"
+        }
+      ],
+      "peak_ram_estimate": {
+        "bytes": 1200000000,
+        "source_url": "https://github.com/handy-computer/transcribe.cpp/blob/275cd50d2c4104c204009a197ac091b9687668e5/docs/models/nemotron-3.5-asr-streaming-0.6b.md#input-limits"
       }
     }
   ]

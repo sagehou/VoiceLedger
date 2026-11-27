@@ -1,6 +1,7 @@
 use serde::Serialize;
 
 use crate::contracts::{Count, DeviceCapabilityProfile, Platform};
+use crate::scheduler::ResourceSample;
 use crate::{Compatibility, Recommendation, RecommendationInput, recommend};
 
 use super::{Mode, Model};
@@ -175,7 +176,70 @@ pub(super) fn preflight(
     {
         return Err(Block::RuntimeUnavailable);
     }
-    let budget = memory_budget(device).ok_or(Block::MemoryUnknown)?;
+    check_memory_with_peak(
+        model,
+        device,
+        ResourceSample {
+            low_memory: device.low_memory,
+            available_memory_bytes: device.available_memory_bytes.map(Count::get),
+            low_memory_threshold_bytes: device.low_memory_threshold_bytes.map(Count::get),
+            ..ResourceSample::default()
+        },
+        peak,
+    )
+}
+
+pub fn check_model_memory(
+    model: &Model,
+    device: &DeviceCapabilityProfile,
+    sample: ResourceSample,
+) -> Result<(), Block> {
+    check_memory_with_peak(model, device, sample, estimate(model))
+}
+
+fn check_memory_with_peak(
+    model: &Model,
+    device: &DeviceCapabilityProfile,
+    sample: ResourceSample,
+    peak: Option<u64>,
+) -> Result<(), Block> {
+    if sample.low_memory == Some(true) {
+        return Err(Block::MemoryPressure);
+    }
+    let available = sample.available_memory_bytes.ok_or(Block::MemoryUnknown)?;
+    let reserve = sample.low_memory_threshold_bytes.unwrap_or(0);
+    let sensevoice = matches!(
+        (
+            model.id.as_str(),
+            model.version.as_str(),
+            model.runtime.id.as_str(),
+            model.runtime.version.as_str(),
+        ),
+        (
+            "sensevoice-small-int8",
+            "2365baeacb507f821a0c8120fcee3d484dba7a07",
+            "sherpa-onnx",
+            "1.12.20",
+        ) | (
+            "sensevoice-small-gguf-q8-0" | "sensevoice-small-gguf-q6-k",
+            "ff8f085a8fa2e5ccae0e849ef19ebc6dc18e608b",
+            "transcribe.cpp",
+            "0.4.2",
+        )
+    );
+    let budget = if device.platform == Platform::Android
+        && device.abi == "arm64-v8a"
+        && device.low_ram_device == Some(false)
+        && sample.low_memory == Some(false)
+        && reserve > 0
+        && sensevoice
+    {
+        // Leave another full estimated peak after the app and Android reserves.
+        memory_headroom(device, available, reserve).map(|headroom| headroom / 2)
+    } else {
+        current_memory_budget(device, available, reserve)
+    }
+    .ok_or(Block::MemoryUnknown)?;
     let peak = peak.ok_or(Block::MemoryUnknown)?;
     if recommend(RecommendationInput {
         compatibility: Compatibility::Compatible,
@@ -188,22 +252,21 @@ pub(super) fn preflight(
     Ok(())
 }
 
-fn memory_budget(device: &DeviceCapabilityProfile) -> Option<u64> {
-    current_memory_budget(
-        device,
-        device.available_memory_bytes?.get(),
-        device.low_memory_threshold_bytes.map_or(0, Count::get),
-    )
-}
-
 pub fn current_memory_budget(
     device: &DeviceCapabilityProfile,
     available: u64,
     os_reserve: u64,
 ) -> Option<u64> {
+    memory_headroom(device, available, os_reserve).map(|headroom| headroom / 10 * 3)
+}
+
+fn memory_headroom(
+    device: &DeviceCapabilityProfile,
+    available: u64,
+    os_reserve: u64,
+) -> Option<u64> {
     let capture = device.process_memory_bytes?.get();
-    let after_reserves = available.saturating_sub(capture).saturating_sub(os_reserve);
-    Some(after_reserves / 10 * 3)
+    Some(available.saturating_sub(capture).saturating_sub(os_reserve))
 }
 
 pub(super) fn check_pressure(device: &DeviceCapabilityProfile) -> Result<(), Block> {

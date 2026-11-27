@@ -16,6 +16,6 @@ class ModelPreviewTest {
         assertTrue(preview.contains("\"id\":\"sensevoice-small-int8\""))
         assertTrue(preview.contains("\"blocked_by\":\"device_profile\""))
         assertTrue(preview.contains("\"download_bytes\":32152673"))
-        assertTrue(preview.contains("\"peak_ram_estimate\":null"))
+        assertTrue(preview.contains("\"peak_ram_estimate\":{\"bytes\":1100000000"))
     }
 }
