@@ -3,10 +3,14 @@
     <string name="recording_channel">Microphone recording</string>
     <string name="recording_notification">VoiceLedger is recording</string>
     <string name="start_recording">Start recording</string>
+    <string name="pause_recording">Pause recording</string>
+    <string name="resume_recording">Resume recording</string>
     <string name="stop_recording">Stop recording</string>
     <string name="recovering_recordings">Recovering recordings…</string>
     <string name="preparing_recording">Preparing microphone and storage…</string>
     <string name="recording_in_progress">Recording microphone</string>
+    <string name="pausing_recording">Pausing recording…</string>
+    <string name="recording_paused">Recording paused</string>
     <string name="saving_recording">Saving recording…</string>
     <string name="saved_audio">Saved segments: %1$d · Last saved position: %2$s</string>
     <string name="no_saved_audio">No audio saved.</string>

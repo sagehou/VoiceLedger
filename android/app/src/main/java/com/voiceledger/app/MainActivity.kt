@@ -92,11 +92,20 @@ class MainActivity : ComponentActivity() {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     Box(Modifier.safeDrawingPadding().padding(24.dp), contentAlignment = Alignment.Center) {
                         RecordingScreen(
-                            status, liveSpeech, liveModels, ::requestStart,
-                            { RecordingService.stop(this@MainActivity) },
-                            { startActivity(Intent(this@MainActivity, ModelsActivity::class.java)) },
-                            { startActivity(Intent(this@MainActivity, ModelsActivity::class.java).putExtra("sessions", true)) },
-                            { startActivity(Intent(this@MainActivity, SyncPrivacyActivity::class.java)) },
+                            status, liveSpeech, liveModels,
+                            start = ::requestStart,
+                            stop = { RecordingService.stop(this@MainActivity) },
+                            pause = { RecordingService.pause(this@MainActivity) },
+                            resume = {
+                                if (lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
+                                    RecordingService.resume(this@MainActivity)
+                                }
+                            },
+                            openModels = { startActivity(Intent(this@MainActivity, ModelsActivity::class.java)) },
+                            openSessions = {
+                                startActivity(Intent(this@MainActivity, ModelsActivity::class.java).putExtra("sessions", true))
+                            },
+                            openSyncPrivacy = { startActivity(Intent(this@MainActivity, SyncPrivacyActivity::class.java)) },
                         )
                     }
                 }
@@ -174,6 +183,8 @@ private fun RecordingScreen(
     liveModels: Map<LiveAsrModel, String>,
     start: (LiveSpeechOptions?) -> Unit,
     stop: () -> Unit,
+    pause: () -> Unit,
+    resume: () -> Unit,
     openModels: () -> Unit,
     openSessions: () -> Unit,
     openSyncPrivacy: () -> Unit,
@@ -183,7 +194,8 @@ private fun RecordingScreen(
     var translate by rememberSaveable { mutableStateOf(false) }
     var model by rememberSaveable { mutableStateOf(LiveAsrModel.Whisper) }
     val idle = status.phase == RecordingPhase.Idle
-    val recording = status.phase == RecordingPhase.Preparing || status.phase == RecordingPhase.Recording
+    val recording = status.phase == RecordingPhase.Recording
+    val paused = status.phase == RecordingPhase.Paused
     Column(
         modifier = Modifier.verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -194,11 +206,13 @@ private fun RecordingScreen(
             RecordingPhase.Recovering -> R.string.recovering_recordings
             RecordingPhase.Preparing -> R.string.preparing_recording
             RecordingPhase.Recording -> R.string.recording_in_progress
+            RecordingPhase.Pausing -> R.string.pausing_recording
+            RecordingPhase.Paused -> R.string.recording_paused
             RecordingPhase.Stopping -> R.string.saving_recording
             RecordingPhase.Idle -> null
         }
         phase?.let { Text(stringResource(it)) }
-        if (status.phase == RecordingPhase.Recording) {
+        if (recording || paused) {
             Text(DateUtils.formatElapsedTime(status.elapsedNs / SECOND_NS))
         }
         status.saved?.let {
@@ -220,7 +234,7 @@ private fun RecordingScreen(
         }
         if (status.thermal) Text(stringResource(R.string.thermal_pressure))
         if (status.lowMemory) Text(stringResource(R.string.memory_pressure))
-        status.failure?.let { Text(stringResource(it.message()), color = MaterialTheme.colorScheme.error) }
+        status.failure?.message()?.let { Text(stringResource(it), color = MaterialTheme.colorScheme.error) }
         if (idle) {
             RecordingOption(R.string.live_transcription, transcribe) { transcribe = it }
             if (transcribe) {
@@ -235,13 +249,18 @@ private fun RecordingScreen(
                 modelStatus?.let { Text(stringResource(it)) }
             }
         }
-        Button(
-            onClick = if (recording) stop else {
-                { start(if (transcribe) LiveSpeechOptions(language, translate, model) else null) }
-            },
-            enabled = recording || idle,
-        ) {
-            Text(stringResource(if (recording) R.string.stop_recording else R.string.start_recording))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (recording) Button(onClick = pause) { Text(stringResource(R.string.pause_recording)) }
+            if (paused) Button(onClick = resume) { Text(stringResource(R.string.resume_recording)) }
+            if (idle) {
+                Button(onClick = { start(if (transcribe) LiveSpeechOptions(language, translate, model) else null) }) {
+                    Text(stringResource(R.string.start_recording))
+                }
+            } else if (status.phase != RecordingPhase.Recovering) {
+                Button(onClick = stop, enabled = status.phase != RecordingPhase.Stopping) {
+                    Text(stringResource(R.string.stop_recording))
+                }
+            }
         }
         LiveTranscript(speech)
         Button(onClick = openSessions) { Text(stringResource(R.string.sessions)) }
@@ -335,7 +354,8 @@ private fun LiveTranscript(status: LiveSpeechStatus) {
     }
 }
 
-private fun CaptureEnd.message(): Int = when (this) {
+private fun CaptureEnd.message(): Int? = when (this) {
+    CaptureEnd.Pause -> null
     CaptureEnd.User, CaptureEnd.Service -> R.string.service_interrupted
     CaptureEnd.Permission -> R.string.microphone_permission_required
     CaptureEnd.Notification -> R.string.recording_notifications_required

@@ -58,9 +58,6 @@ internal class MicrophoneCapture(
             }
             val route = recorder.routedDevice
             manifest.beginStream(startNs, route?.type)
-            RecordingStatusStore.update {
-                if (control.stop == null) it.copy(phase = RecordingPhase.Recording, saved = null) else it
-            }
             onStarted()
             watchInput(recorder, route?.id) { captureAndDrain(recorder, startNs, manifest) }
         } finally {
@@ -156,7 +153,7 @@ internal class MicrophoneCapture(
                     }
                     val frames = recorder.read(samples, 0, samples.size, AudioRecord.READ_BLOCKING)
                     val stop = control.stop
-                    if (stop != null && stop.reason != CaptureEnd.User) break
+                    if (stop != null && !stop.reason.userRequested) break
                     val observed = control.elapsedNs()
                     if (frames <= 0) {
                         control.request(CaptureEnd.Input)

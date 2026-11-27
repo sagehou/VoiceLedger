@@ -29,7 +29,7 @@ import kotlin.concurrent.thread
 
 class RecordingService : Service() {
     private val main = Handler(Looper.getMainLooper())
-    private var active: RecordingControl? = null
+    private var active: RecordingRun? = null
     private var destroyed = false
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -44,17 +44,7 @@ class RecordingService : Service() {
                 }
                 startRecording(options)
             }
-            STOP -> {
-                val recording = active
-                if (recording == null) {
-                    stopSelf(startId)
-                } else if (!intent.hasExtra(RECORDING_ORIGIN) ||
-                    intent.getLongExtra(RECORDING_ORIGIN, -1) == recording.origin
-                ) {
-                    recording.request(CaptureEnd.User)
-                    RecordingStatusStore.update { it.copy(phase = RecordingPhase.Stopping) }
-                }
-            }
+            STOP, PAUSE, RESUME -> changeRecording(intent, startId)
             else -> if (active == null) stopSelf(startId)
         }
         return START_NOT_STICKY
@@ -63,10 +53,30 @@ class RecordingService : Service() {
     override fun onDestroy() {
         destroyed = true
         active?.let {
-            it.request(CaptureEnd.Service)
+            it.requestStop(CaptureEnd.Service)
             LiveSpeech.interrupt()
         }
         super.onDestroy()
+    }
+
+    private fun changeRecording(intent: Intent, startId: Int) {
+        val recording = active
+        if (recording == null) {
+            stopSelf(startId)
+            return
+        }
+        if (intent.hasExtra(RECORDING_ORIGIN) && intent.getLongExtra(RECORDING_ORIGIN, -1) != recording.origin) return
+        val phase = RecordingStatusStore.state.value.phase
+        val next = when (intent.action) {
+            STOP -> {
+                recording.requestStop(CaptureEnd.User)
+                RecordingPhase.Stopping
+            }
+            PAUSE -> if (phase == RecordingPhase.Recording && recording.pause()) RecordingPhase.Pausing else return
+            RESUME -> if (phase == RecordingPhase.Paused && recording.resume()) RecordingPhase.Preparing else return
+            else -> return
+        }
+        RecordingStatusStore.update { it.copy(phase = next) }
     }
 
     private fun startRecording(speech: LiveSpeechOptions?) {
@@ -74,14 +84,14 @@ class RecordingService : Service() {
             stopSelf()
             return
         }
-        val control = RecordingControl(SystemClock::elapsedRealtimeNanos)
+        val recording = RecordingRun(SystemClock::elapsedRealtimeNanos)
         val failure = try {
             when {
                 checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED ->
                     CaptureEnd.Permission
                 !notificationsEnabled(this) -> CaptureEnd.Notification
                 else -> {
-                    val notification = buildNotification(control.origin)
+                    val notification = buildNotification(recording.origin)
                     if (Build.VERSION.SDK_INT >= 30) {
                         startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
                     } else {
@@ -101,19 +111,22 @@ class RecordingService : Service() {
             return
         }
         LiveSpeech.reset()
-        active = control
-        thread(name = "VoiceLedger recording writer") { record(control, speech) }
+        active = recording
+        thread(name = "VoiceLedger recording writer") { record(recording, speech) }
     }
 
-    private fun record(control: RecordingControl, speech: LiveSpeechOptions?) {
+    private fun record(recording: RecordingRun, speech: LiveSpeechOptions?) {
         val directory = libraryDirectory(applicationContext)
         var saved = RecordingStatusStore.state.value.saved
         var recovery = RecordingStatusStore.state.value.recovery
         var sessionCreated = false
         var failure: CaptureEnd? = null
+        var control = recording.firstCapture
+        var end: StopRequest? = null
         try {
             if (filesDir.usableSpace < STORAGE_RESERVE_BYTES) control.request(CaptureEnd.LowStorage)
             if (control.stop == null) {
+                RecordingStatusStore.update { it.copy(saved = null) }
                 AudioLibrary(directory).use { library ->
                     RecordingManifest(library) { committed, elapsed ->
                         saved = committed
@@ -122,16 +135,46 @@ class RecordingService : Service() {
                         sessionCreated = true
                         saved = SavedAudio()
                         try {
-                            manifest.prepare(control.origin)
-                            MicrophoneCapture(applicationContext, control).run(manifest) {
-                                if (speech != null) main.post {
-                                    if (!destroyed && active === control) {
-                                        LiveSpeech.start(applicationContext, manifest.sessionId, speech)
+                            manifest.prepare(recording.origin)
+                            var speechStarted = false
+                            while (true) {
+                                val capture = control
+                                val startSpeech = !speechStarted
+                                MicrophoneCapture(applicationContext, capture).run(manifest) {
+                                    speechStarted = true
+                                    main.post {
+                                        if (destroyed || active !== recording) return@post
+                                        if (startSpeech && speech != null && (capture.stop?.reason?.userRequested != false)) {
+                                            LiveSpeech.start(applicationContext, manifest.sessionId, speech)
+                                        }
+                                        if (capture.stop != null) return@post
+                                        RecordingStatusStore.update { it.copy(phase = RecordingPhase.Recording) }
+                                        getSystemService(NotificationManager::class.java)
+                                            ?.notify(NOTIFICATION_ID, buildNotification(recording.origin))
                                     }
                                 }
+                                val stopped = requireNotNull(capture.stop)
+                                if (stopped.reason != CaptureEnd.Pause) {
+                                    end = stopped
+                                    break
+                                }
+                                saved = manifest.pause(stopped.atNs)
+                                main.post {
+                                    if (!destroyed && active === recording && recording.stop == null) {
+                                        RecordingStatusStore.update { it.copy(phase = RecordingPhase.Paused) }
+                                        getSystemService(NotificationManager::class.java)
+                                            ?.notify(NOTIFICATION_ID, buildNotification(recording.origin, paused = true))
+                                    }
+                                }
+                                val resumed = recording.awaitResume()
+                                if (resumed == null) {
+                                    end = requireNotNull(recording.stop)
+                                    break
+                                }
+                                control = resumed
                             }
                             RecordingStatusStore.update { it.copy(phase = RecordingPhase.Stopping) }
-                            saved = manifest.finish(requireNotNull(control.stop))
+                            saved = manifest.finish(requireNotNull(end))
                         } catch (failure: Exception) {
                             try {
                                 manifest.checkpointUnwrittenTail(control.capturedThroughNs)
@@ -143,7 +186,7 @@ class RecordingService : Service() {
                     }
                 }
             }
-            failure = control.stop?.reason?.takeUnless { it == CaptureEnd.User }
+            failure = (end ?: control.stop)?.reason?.takeUnless { it.userRequested }
         } catch (_: LinkageError) {
             failure = CaptureEnd.Storage
         } catch (_: Exception) {
@@ -179,7 +222,7 @@ class RecordingService : Service() {
         }
     }
 
-    private fun buildNotification(origin: Long): Notification {
+    private fun buildNotification(origin: Long, paused: Boolean = false): Notification {
         val open = PendingIntent.getActivity(
             this, 0, Intent(this, MainActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),
@@ -192,7 +235,7 @@ class RecordingService : Service() {
         )
         return Notification.Builder(this, CHANNEL)
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
-            .setContentTitle(getString(R.string.recording_notification))
+            .setContentTitle(getString(if (paused) R.string.recording_paused else R.string.recording_notification))
             .setContentIntent(open)
             .setOngoing(true)
             .setDeleteIntent(stop)
@@ -213,6 +256,8 @@ class RecordingService : Service() {
     companion object {
         private const val START = "com.voiceledger.app.recording.START"
         private const val STOP = "com.voiceledger.app.recording.STOP"
+        private const val PAUSE = "com.voiceledger.app.recording.PAUSE"
+        private const val RESUME = "com.voiceledger.app.recording.RESUME"
         private const val RECORDING_ORIGIN = "recording_origin"
         private const val LIVE_LANGUAGE = "live_language"
         private const val LIVE_TRANSLATE = "live_translate"
@@ -273,7 +318,25 @@ class RecordingService : Service() {
         }
 
         internal fun stop(context: Context) {
-            context.startService(Intent(context, RecordingService::class.java).setAction(STOP))
+            sendAction(context, STOP)
+        }
+
+        internal fun pause(context: Context) {
+            sendAction(context, PAUSE)
+        }
+
+        internal fun resume(context: Context) {
+            sendAction(context, RESUME)
+        }
+
+        private fun sendAction(context: Context, action: String) {
+            try {
+                context.startService(Intent(context, RecordingService::class.java).setAction(action))
+            } catch (_: IllegalStateException) {
+                RecordingStatusStore.update { it.copy(failure = CaptureEnd.Service) }
+            } catch (_: SecurityException) {
+                RecordingStatusStore.update { it.copy(failure = CaptureEnd.Permission) }
+            }
         }
     }
 }

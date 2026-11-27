@@ -68,7 +68,7 @@ instrument() {
 }
 
 instrument | tee artifacts/android-runtime.log
-for stage in recording device_profile sensevoice_memory model_download; do
+for stage in recording recording_pause_resume device_profile sensevoice_memory model_download; do
     grep -Fx "INSTRUMENTATION_RESULT: $stage=passed" artifacts/android-runtime.log
 done
 grep -Fx 'INSTRUMENTATION_CODE: -1' artifacts/android-runtime.log
