@@ -250,7 +250,7 @@ fn external_transcription_sends_one_saved_track_and_keeps_manual_text_selected()
                     authorized = value.trim() == "Bearer fixture";
                 }
             }
-            assert!(authorized && length > 44 && length <= 16_384);
+            assert!(authorized && (45..=16_384).contains(&length));
             let mut body = vec![0; length];
             reader.read_exact(&mut body).unwrap();
             let model_field = format!("name=\"model\"\r\n\r\n{model}\r\n");
