@@ -71,7 +71,7 @@ pub fn install<'a>(
     model: &'a Model,
     request: InstallRequest<'_>,
     runtime: &impl RuntimeProbe,
-    mut fetch: impl FnMut(&Artifact, u64) -> io::Result<Download>,
+    mut fetch: impl FnMut(&Artifact, &str, u64) -> io::Result<Download>,
     cancelled: impl Fn() -> bool,
 ) -> Result<InstalledModel<'a>, InstallError> {
     request.activity.check().map_err(InstallError::Blocked)?;
@@ -117,18 +117,16 @@ pub fn install<'a>(
     for artifact in &model.artifacts {
         check_cancel(&cancelled)?;
         let path = source.join(&artifact.file);
-        if !published {
-            transfer(&path, artifact, &mut fetch, &cancelled, &mut |bytes| {
+        if published {
+            if !verify(&path, artifact, &cancelled)? {
+                return Err(InstallError::InvalidArtifact);
+            }
+        } else {
+            download_artifact(&path, artifact, &mut fetch, &cancelled, &mut |bytes| {
                 if let Some(publish) = progress.as_mut() {
                     publish(completed + bytes);
                 }
             })?;
-        }
-        if !verify(&path, artifact, &cancelled)? {
-            if !published && path.try_exists()? {
-                fs::remove_file(path)?;
-            }
-            return Err(InstallError::InvalidArtifact);
         }
         completed += artifact.size_bytes;
     }
@@ -178,19 +176,59 @@ fn partial_bytes(path: &Path, artifact: &Artifact) -> io::Result<u64> {
     }
 }
 
+fn download_artifact(
+    path: &Path,
+    artifact: &Artifact,
+    fetch: &mut impl FnMut(&Artifact, &str, u64) -> io::Result<Download>,
+    cancelled: &impl Fn() -> bool,
+    progress: &mut impl FnMut(u64),
+) -> Result<(), InstallError> {
+    progress(partial_bytes(path, artifact)?);
+    let mut failure = InstallError::Transfer;
+    for url in artifact.download_sources() {
+        check_cancel(cancelled)?;
+        let outcome = transfer(
+            path,
+            artifact,
+            |offset| fetch(artifact, &url, offset),
+            cancelled,
+            progress,
+        );
+        check_cancel(cancelled)?;
+        match outcome {
+            Ok(()) => {
+                if verify(path, artifact, cancelled)? {
+                    return Ok(());
+                }
+                fs::remove_file(path)?;
+                progress(0);
+                failure = InstallError::InvalidArtifact;
+            }
+            Err(InstallError::Transfer) => {}
+            Err(InstallError::InvalidArtifact) => {
+                progress(0);
+                failure = InstallError::InvalidArtifact;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(failure)
+}
+
 fn transfer(
     path: &Path,
     artifact: &Artifact,
-    fetch: &mut impl FnMut(&Artifact, u64) -> io::Result<Download>,
+    fetch: impl FnOnce(u64) -> io::Result<Download>,
     cancelled: &impl Fn() -> bool,
     progress: &mut impl FnMut(u64),
 ) -> Result<(), InstallError> {
     let offset = partial_bytes(path, artifact)?;
-    progress(offset);
     if offset == artifact.size_bytes {
         return Ok(());
     }
-    let mut response = fetch(artifact, offset).map_err(|_| InstallError::Transfer)?;
+    let response = fetch(offset);
+    check_cancel(cancelled)?;
+    let mut response = response.map_err(|_| InstallError::Transfer)?;
     if response.start != offset && response.start != 0 {
         return Err(InstallError::Transfer);
     }
