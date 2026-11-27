@@ -72,6 +72,9 @@ class AndroidRuntimeSmoke : Instrumentation() {
             }
             verifyRecording()
             result.putString(stage, "passed")
+            stage = "recording_pause_resume"
+            verifyPauseAndResume()
+            result.putString(stage, "passed")
             stage = "device_profile"
             DeviceProfiler.capture(app)
             val profile = JSONObject(File(app.noBackupFilesDir, "device-profile-v1.json").readText())
@@ -117,6 +120,55 @@ class AndroidRuntimeSmoke : Instrumentation() {
                 }
             }
             check(recoverLibrary(root).first?.chunks == 1) { "Committed audio missing after reopen." }
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    private fun verifyPauseAndResume() {
+        val root = File(targetContext.cacheDir, "recording-pause-${UUID.randomUUID()}")
+        try {
+            val samples = ShortArray(PACKET_FRAMES) { (it % 40 * 100).toShort() }
+            val resumedAt = SECOND_NS
+            val stoppedAt = 2 * SECOND_NS
+            val sessionId = AudioLibrary(root).use { library ->
+                RecordingManifest(library) { _, _ -> }.use { manifest ->
+                    manifest.prepare(0)
+                    manifest.beginStream(0, null)
+                    val first = CaptureTimeline(0).next(PACKET_FRAMES, 20_000_000, null)
+                    manifest.append(samples, first)
+                    check(manifest.pause(first.endNs).chunks == 1)
+                    manifest.beginStream(resumedAt, null)
+                    val second = CaptureTimeline(resumedAt)
+                        .next(PACKET_FRAMES, resumedAt + 20_000_000, null)
+                    manifest.append(samples, second)
+                    check(manifest.pause(second.endNs).chunks == 2)
+                    check(manifest.finish(StopRequest(CaptureEnd.User, stoppedAt)).gaps == 0)
+                    manifest.sessionId
+                }
+            }
+            AudioLibrary(root).use { library ->
+                fun read(command: String): ByteArray = requireNotNull(library.request(command))
+                val history = JSONArray(read("""{"op":"history"}""").decodeToString())
+                check(history.length() == 1)
+                val track = history.getJSONObject(0)
+                check(track.getString("session_id") == sessionId)
+                check(track.getInt("committed_chunks") == 2)
+                check(track.getInt("loss_intervals") == 0 && !track.getBoolean("interrupted_tail"))
+                val trackId = track.getString("id")
+                val timeline = JSONArray(read("""{"op":"timeline","track_id":"$trackId"}""").decodeToString())
+                check(timeline.length() == 4)
+                val firstPause = timeline.getJSONObject(1)
+                check(firstPause.getString("cause") == "paused")
+                check(firstPause.getLong("start_ns") == 20_000_000L)
+                check(firstPause.getLong("end_ns") == resumedAt)
+                val resumed = timeline.getJSONObject(2)
+                check(resumed.getString("kind") == "audio" && resumed.getInt("source_epoch") == 1)
+                val lastPause = timeline.getJSONObject(3)
+                check(lastPause.getString("cause") == "paused" && lastPause.getLong("end_ns") == stoppedAt)
+                val playback = read("""{"op":"seek","track_id":"$trackId","position_ns":$resumedAt}""")
+                check(playback.size > Int.SIZE_BYTES + Long.SIZE_BYTES)
+            }
         } finally {
             root.deleteRecursively()
         }

@@ -447,7 +447,7 @@ pub(super) fn history(db: &Connection, session: Option<&str>) -> Result<Vec<Hist
     let mut statement = db.prepare(
         "SELECT t.id,s.id,t.source,s.created_at_ms,s.interrupted_tail,
           COALESCE(MIN(c.start_ns),0),COALESCE(MAX(c.end_ns),0),COUNT(c.id),
-          (SELECT COUNT(*) FROM audio_timeline a WHERE a.track_id=t.id AND a.kind='gap')
+          (SELECT COUNT(*) FROM audio_timeline a WHERE a.track_id=t.id AND a.kind='gap' AND a.cause IS NOT 'paused')
          FROM tracks t JOIN sessions s ON s.id=t.session_id
          LEFT JOIN chunks c ON c.track_id=t.id AND c.state='committed'
          WHERE s.state IN (5,6) AND (?1 IS NULL OR s.id=?1)

@@ -1,6 +1,8 @@
 package com.voiceledger.app.recording
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -43,5 +45,43 @@ class CaptureTimingTest {
         interrupted.request(CaptureEnd.Contention)
         interrupted.request(CaptureEnd.User)
         assertEquals(CaptureEnd.Contention, interrupted.stop?.reason)
+    }
+
+    @Test
+    fun stopWhilePausedWinsOverAQueuedResume() {
+        var time = 100L
+        val run = RecordingRun { time }
+        time = 200
+        assertTrue(run.pause())
+        assertFalse(run.pause())
+        assertTrue(run.resume())
+        assertFalse(run.resume())
+        time = 400
+        run.requestStop(CaptureEnd.User)
+        run.requestStop(CaptureEnd.Service)
+        assertNull(run.awaitResume())
+        assertEquals(StopRequest(CaptureEnd.Pause, 100), run.firstCapture.stop)
+        assertEquals(StopRequest(CaptureEnd.User, 300), run.stop)
+        assertFalse(run.resume())
+    }
+
+    @Test
+    fun resumedCaptureUsesTheOriginalClockAndAnIndependentStopBoundary() {
+        var time = 100L
+        val run = RecordingRun { time }
+        time = 200
+        assertTrue(run.pause())
+        time = 900
+        assertTrue(run.resume())
+        val capture = requireNotNull(run.awaitResume())
+        assertEquals(run.origin, capture.origin)
+        assertEquals(800L, capture.elapsedNs())
+        assertNull(capture.stop)
+        assertTrue(run.pause())
+        assertTrue(run.resume())
+        val next = requireNotNull(run.awaitResume())
+        time = 1100
+        run.requestStop(CaptureEnd.User)
+        assertEquals(StopRequest(CaptureEnd.User, 1000), next.stop)
     }
 }

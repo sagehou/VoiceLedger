@@ -1,5 +1,6 @@
 package com.voiceledger.app.recording
 
+import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.atomic.AtomicReference
 
 internal const val SAMPLE_RATE = 48_000
@@ -41,6 +42,7 @@ internal class CaptureTimeline(private val streamStartNs: Long) {
 
 internal enum class CaptureEnd(val code: String) {
     User("user_stop"),
+    Pause("paused"),
     Permission("permission_revoked"),
     Notification("notification_unavailable"),
     Route("route_changed"),
@@ -49,7 +51,9 @@ internal enum class CaptureEnd(val code: String) {
     Backpressure("capture_queue_full"),
     LowStorage("low_storage"),
     Storage("storage_error"),
-    Service("service_ended"),
+    Service("service_ended");
+
+    val userRequested: Boolean get() = this == User || this == Pause
 }
 
 internal data class StopRequest(val reason: CaptureEnd, val atNs: Long)
@@ -66,7 +70,40 @@ internal class RecordingControl(private val clock: () -> Long, val origin: Long 
         capturedThroughNs = time.endNs
     }
 
-    fun request(reason: CaptureEnd) {
-        requested.compareAndSet(null, StopRequest(reason, elapsedNs()))
+    fun request(reason: CaptureEnd): Boolean = request(StopRequest(reason, elapsedNs()))
+
+    fun request(stop: StopRequest): Boolean = requested.compareAndSet(null, stop)
+}
+
+internal class RecordingRun(private val clock: () -> Long) {
+    val firstCapture = RecordingControl(clock)
+    val origin: Long get() = firstCapture.origin
+    private var capture = firstCapture
+    private val wake = ArrayBlockingQueue<Unit>(1)
+
+    @Volatile var stop: StopRequest? = null
+        private set
+
+    @Synchronized
+    fun pause(): Boolean = stop == null && capture.request(CaptureEnd.Pause)
+
+    @Synchronized
+    fun resume(): Boolean =
+        stop == null && capture.stop?.reason == CaptureEnd.Pause && wake.offer(Unit)
+
+    @Synchronized
+    fun requestStop(reason: CaptureEnd) {
+        if (stop != null) return
+        val request = StopRequest(reason, capture.elapsedNs())
+        stop = request
+        capture.request(request)
+        wake.offer(Unit)
+    }
+
+    fun awaitResume(): RecordingControl? {
+        wake.take()
+        return synchronized(this) {
+            if (stop == null) RecordingControl(clock, origin).also { capture = it } else null
+        }
     }
 }
