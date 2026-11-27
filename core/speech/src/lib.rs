@@ -570,10 +570,12 @@ impl Request {
                 return processed(result?);
             }
             Action::Install { .. } => {
-                let agent = transfer::agent();
-                let fetch = |artifact: &voiceledger_core::models::Artifact, offset| {
-                    transfer::fetch(&agent, artifact, offset)
+                let stop_loading = || {
+                    stop_loading()
+                        || (model.translation.is_some()
+                            && !model_memory_ok(model, &device, observe()))
                 };
+                let fetch = transfer::fetcher(&stop_loading);
                 let mut progress =
                     |downloaded_bytes| publish(Some(Update::Download { downloaded_bytes }));
                 let request = InstallRequest {
@@ -582,9 +584,7 @@ impl Request {
                 };
                 let result = if model.translation.is_some() {
                     let adapter = TranslationAdapter::load(model, &self.adapters)?;
-                    voiceledger_core::models::install(model, request, &adapter, fetch, || {
-                        stop_loading() || !model_memory_ok(model, &device, observe())
-                    })
+                    voiceledger_core::models::install(model, request, &adapter, fetch, stop_loading)
                 } else {
                     let adapter = Adapter::load(model, &self.adapters, threads)?;
                     voiceledger_core::models::install(model, request, &adapter, fetch, stop_loading)
@@ -802,7 +802,7 @@ fn translate_saved(task: TranslateSaved<'_>) -> Result<u64> {
                             ..request
                         },
                         &adapter,
-                        |_, _| {
+                        |_, _, _| {
                             Err(io::Error::new(
                                 io::ErrorKind::NotFound,
                                 "Model not installed.",

@@ -1,6 +1,6 @@
 use std::cell::Cell;
 use std::fs;
-use std::io::Cursor;
+use std::io::{self, Cursor};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -259,7 +259,7 @@ fn installer_rechecks_memory_before_probing_downloaded_weights() {
             ..root.request(&device, SAFE)
         },
         &probe,
-        |_, offset| Ok(fetch_body(offset, b"abc")),
+        |_, _, offset| Ok(fetch_body(offset, b"abc")),
         || false,
     );
     assert!(matches!(
@@ -271,7 +271,7 @@ fn installer_rechecks_memory_before_probing_downloaded_weights() {
         &model,
         root.request(&device, SAFE),
         &probe,
-        |_, _| panic!("verified staged download must be reused"),
+        |_, _, _| panic!("verified staged download must be reused"),
         || false,
     )
     .unwrap();
@@ -292,9 +292,15 @@ fn download_resumes_then_runs_probe_before_atomic_publication() {
         &model,
         root.request(&device, SAFE),
         &probe,
-        |_, offset| {
-            assert_eq!(offset, 0);
-            Ok(fetch_body(0, b"a"))
+        |artifact, url, offset| {
+            if url == artifact.url {
+                assert_eq!(offset, 0);
+                Ok(fetch_body(0, b"a"))
+            } else {
+                assert!(url.starts_with("https://hf-mirror.com/"));
+                assert_eq!(offset, 1);
+                Err(io::ErrorKind::ConnectionRefused.into())
+            }
         },
         || false,
     );
@@ -308,8 +314,12 @@ fn download_resumes_then_runs_probe_before_atomic_publication() {
             ..root.request(&device, SAFE)
         },
         &probe,
-        |_, offset| {
+        |artifact, url, offset| {
             assert_eq!(offset, 1);
+            if url == artifact.url {
+                return Err(io::ErrorKind::TimedOut.into());
+            }
+            assert!(url.starts_with("https://hf-mirror.com/"));
             Ok(fetch_body(1, b"bc"))
         },
         || false,
@@ -326,7 +336,7 @@ fn download_resumes_then_runs_probe_before_atomic_publication() {
         &model,
         root.request(&device, SAFE),
         &probe,
-        |_, _| panic!("unexpected download"),
+        |_, _, _| panic!("unexpected download"),
         || false,
     );
     assert!(matches!(again, Err(InstallError::InvalidArtifact)));
@@ -352,7 +362,7 @@ fn refuses_unapproved_cancelled_corrupt_and_unloadable_downloads() {
             },
         ),
         &probe,
-        |_, _| panic!("unexpected download"),
+        |_, _, _| panic!("unexpected download"),
         || false,
     );
     assert!(matches!(
@@ -363,7 +373,7 @@ fn refuses_unapproved_cancelled_corrupt_and_unloadable_downloads() {
         &model,
         root.request(&device, SAFE),
         &probe,
-        |_, _| panic!("unexpected download"),
+        |_, _, _| panic!("unexpected download"),
         || true,
     );
     assert!(matches!(cancelled, Err(InstallError::Cancelled)));
@@ -371,7 +381,7 @@ fn refuses_unapproved_cancelled_corrupt_and_unloadable_downloads() {
         &model,
         root.request(&device, SAFE),
         &probe,
-        |_, offset| {
+        |_, _, offset| {
             assert_eq!(offset, 0);
             Ok(fetch_body(0, b"bad"))
         },
@@ -383,7 +393,7 @@ fn refuses_unapproved_cancelled_corrupt_and_unloadable_downloads() {
         &model,
         root.request(&device, SAFE),
         &probe,
-        |_, offset| {
+        |_, _, offset| {
             assert_eq!(offset, 0);
             Ok(fetch_body(0, b"abc"))
         },
@@ -412,7 +422,7 @@ fn benchmarks_require_idle_explicit_approval_and_resource_headroom() {
         &model,
         root.request(&device, SAFE),
         &probe,
-        |_, _| Ok(fetch_body(0, b"abc")),
+        |_, _, _| Ok(fetch_body(0, b"abc")),
         || false,
     )
     .unwrap();
@@ -492,7 +502,7 @@ fn recommendation_requires_target_workload_safety_and_separate_language_quality(
             loads: Cell::new(0),
             accepts: true,
         },
-        |_, _| Ok(fetch_body(0, b"abc")),
+        |_, _, _| Ok(fetch_body(0, b"abc")),
         || false,
     )
     .unwrap();
