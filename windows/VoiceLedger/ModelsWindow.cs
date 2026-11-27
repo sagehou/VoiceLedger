@@ -175,8 +175,26 @@ internal sealed class ModelsWindow : Window
                     if (lines.GetArrayLength() > 0) AddExport(sessionId);
                     if (!textOnly)
                     {
-                        sessionAudio = new SessionAudioPanel(sessionId, speech.RootElement.GetProperty("tracks"), canWork);
+                        JsonElement tracks = speech.RootElement.GetProperty("tracks").Clone();
+                        sessionAudio = new SessionAudioPanel(sessionId, tracks, canWork);
                         content.Children.Add(sessionAudio);
+                        if (tracks.EnumerateArray().Any(track => track.GetProperty("committed_chunks").GetInt64() > 0))
+                        {
+                            JsonElement providers = speech.RootElement.GetProperty("external_transcription_providers").Clone();
+                            var external = new Button
+                            {
+                                Content = "Transcribe with external service…", HorizontalAlignment = HorizontalAlignment.Left,
+                                IsEnabled = canWork(),
+                            };
+                            external.Click += async (_, _) =>
+                            {
+                                if (closed || working || !canWork()) return;
+                                var dialog = new ExternalTranscriptionWindow(this, sessionId, tracks, providers, language.SelectedIndex);
+                                if (dialog.ShowDialog() == true && dialog.Request is { } action)
+                                    await RunAsync(action, "transcribe_external");
+                            };
+                            content.Children.Add(external);
+                        }
                     }
                 }
             }
@@ -261,6 +279,15 @@ internal sealed class ModelsWindow : Window
                             op = "save_utterance", session_id = sessionId, utterance_id = utterance,
                             expected_revision_id = revision, text,
                         });
+                        if (sessions && line.TryGetProperty("external_draft", out JsonElement externalDraft)
+                            && externalDraft.GetString() is { } draft)
+                        {
+                            ShowTextEditor("Review external draft", draft, "Transcript saved.", text => new
+                            {
+                                op = "save_utterance", session_id = sessionId, utterance_id = utterance,
+                                expected_revision_id = revision, text,
+                            });
+                        }
                     }
                     ShowTranslation(sessionId, line);
                     if (sessions)
@@ -444,6 +471,7 @@ internal sealed class ModelsWindow : Window
         {
             "install" => "Downloading and verifying model…",
             "translate" => "Translating saved text…",
+            "transcribe_external" => "Transcribing with external service…",
             _ => "Transcribing saved audio…",
         });
         partial.Text = "";
@@ -454,7 +482,8 @@ internal sealed class ModelsWindow : Window
         int result = -31;
         try
         {
-            bool refreshed = await Task.Run(() => DeviceProfiler.Capture(SpeechWorker.ProfileDirectory));
+            bool refreshed = operation == "transcribe_external"
+                || await Task.Run(() => DeviceProfiler.Capture(SpeechWorker.ProfileDirectory));
             if (closed || cancelled || !canWork()) return;
             if (!refreshed)
             {
@@ -482,7 +511,7 @@ internal sealed class ModelsWindow : Window
             partial.Text = "";
             if (!closed)
             {
-                await LoadAsync(cancelled ? "Local task cancelled." : ResultText(result, operation));
+                await LoadAsync(cancelled ? "Speech task cancelled." : ResultText(result, operation));
             }
         }
     }
@@ -497,16 +526,24 @@ internal sealed class ModelsWindow : Window
     {
         0 when operation == "install" => "Model verified.",
         0 when operation == "translate" => "Translation complete.",
+        0 when operation == "transcribe_external" => "External transcription complete.",
         0 => "Saved audio processed.",
         -32 => "No committed audio is available in this session.",
         -33 => "Download the model first.",
         -34 => "Speech task paused by recording or device limits.",
         -35 => "Download interrupted. Retry to resume.",
         -36 => "Model checksum failed.",
-        -37 => "Another local speech task is running.",
+        -37 => "Another speech task is running.",
+        -38 when operation == "transcribe_external" => "External transcription paused. Send again to resume from saved progress.",
         -38 => "Local task paused. Resume from saved progress.",
         -39 => "The source or translation changed. Reopen the editor with the current revision.",
         -40 => "Some lines exceeded the translation length limit. Completed translations were saved.",
+        -41 => "Check the external service address, model and API key.",
+        -42 => "The external service rejected the API key or permissions.",
+        -43 => "The external service reached its rate limit. Try again later.",
+        -44 => "Could not connect to the external service.",
+        -45 => "The external service could not transcribe the audio.",
+        _ when operation == "transcribe_external" => "External transcription stopped.",
         _ => "Local speech task stopped.",
     };
 

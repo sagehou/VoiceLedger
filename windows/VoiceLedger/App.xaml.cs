@@ -11,6 +11,11 @@ public partial class App : Application
 {
     protected override void OnStartup(StartupEventArgs e)
     {
+        if (e.Args.Length == 2 && e.Args[0] == "--speech-worker-stdin")
+        {
+            Shutdown(SpeechWorker.RunFromInput(e.Args[1]));
+            return;
+        }
         if (e.Args.Length is 2 or 3 && e.Args[0] == "--speech-worker")
         {
             Shutdown(SpeechWorker.Run(e.Args[1], e.Args.Length == 3 ? e.Args[2] : null));

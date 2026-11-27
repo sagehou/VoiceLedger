@@ -59,6 +59,7 @@ class ModelsActivity : ComponentActivity() {
     private var preparing: Job? = null
     private var playback: Job? = null
     private var working by mutableStateOf(false)
+    private var externalRequest by mutableStateOf(false)
     private var downloadModelId by mutableStateOf<String?>(null)
     private var downloadedBytes by mutableStateOf<Long?>(null)
     private var partial by mutableStateOf<String?>(null)
@@ -78,6 +79,7 @@ class ModelsActivity : ComponentActivity() {
             var edit by remember { mutableStateOf<JSONObject?>(null) }
             var editKind by remember { mutableStateOf(RevisionEditor.Transcript) }
             var rename by remember(selectedSession) { mutableStateOf(false) }
+            var externalDialog by remember(selectedSession) { mutableStateOf(false) }
             var trackFilter by remember(selectedSession) { mutableStateOf<String?>(null) }
             var search by remember { mutableStateOf("") }
             var requestedSearch by remember { mutableStateOf("") }
@@ -173,11 +175,11 @@ class ModelsActivity : ComponentActivity() {
                             }
                         }
                         val status = if (downloadModelId == null) {
-                            result?.let(::resultText) ?: inspection?.optJSONObject("job")?.let(::jobStatus)
+                            result?.let { resultText(it, externalRequest) } ?: inspection?.optJSONObject("job")?.let(::jobStatus)
                         } else null
                         status?.let { Text(stringResource(it)) }
                         if (working && downloadModelId == null) {
-                            Text(stringResource(R.string.speech_working))
+                            Text(stringResource(if (externalRequest) R.string.external_working else R.string.speech_working))
                             partial?.let { Text(it) }
                             Button(onClick = { finishRequest(-4) }) { Text(stringResource(R.string.cancel_speech)) }
                         }
@@ -188,6 +190,7 @@ class ModelsActivity : ComponentActivity() {
                             val session = inspection?.optJSONObject("session")
                             val sessionId = session?.getString("id")
                             val textOnly = inspection?.optBoolean("text_only") == true
+                            val idle = recording.phase == RecordingPhase.Idle
                             if (session != null) {
                                 val date = Date(session.getLong("created_at_ms"))
                                 Text(DateFormat.getDateTimeInstance().format(date))
@@ -208,7 +211,8 @@ class ModelsActivity : ComponentActivity() {
                                             }
                                         }
                                     }
-                                    SessionAudio(inspection?.optJSONArray("tracks"), trackFilter,
+                                    val tracks = inspection?.optJSONArray("tracks")
+                                    SessionAudio(tracks, trackFilter,
                                         onTrack = { trackFilter = it },
                                         onStop = { playback?.cancel() },
                                         onPlay = { track, at, finished ->
@@ -238,11 +242,30 @@ class ModelsActivity : ComponentActivity() {
                                                     .put("session_id", sessionId).put("track_id", track))).decodeToString())
                                             }
                                         })
+                                    val savedTracks = (0 until (tracks?.length() ?: 0)).mapNotNull { index ->
+                                        tracks?.optJSONObject(index)?.takeIf { it.optLong("committed_chunks") > 0 }
+                                    }
+                                    val providers = inspection?.optJSONArray("external_transcription_providers")
+                                    if (savedTracks.isNotEmpty() && providers != null && providers.length() > 0) {
+                                        val enabled = loadedRevision == reload && idle && !working
+                                        Button(enabled = enabled, onClick = { externalDialog = true }) {
+                                            Text(stringResource(R.string.external_open))
+                                        }
+                                        if (externalDialog) {
+                                            ExternalTranscriptionDialog(
+                                                sessionId, savedTracks, providers, language, enabled,
+                                                onDismiss = { externalDialog = false },
+                                                onSend = {
+                                                    externalDialog = false
+                                                    startRequest(it)
+                                                },
+                                            )
+                                        }
+                                    }
                                 }
                                 if (!textOnly) LanguagePicker(language, !working) { language = it }
                             }
                             val choices = inspection?.getJSONArray("models")
-                            val idle = recording.phase == RecordingPhase.Idle
                             val hasEnglish = inspection?.optBoolean("has_translation_source") == true
                             for (index in 0 until candidates.length()) {
                                 val details = candidates.getJSONObject(index)
@@ -309,6 +332,12 @@ class ModelsActivity : ComponentActivity() {
                                     }) {
                                         Text(stringResource(if (needsReview) R.string.sync_resolve_conflict else R.string.edit_transcript))
                                     }
+                                    if (sessions && !needsReview && !line.isNull("external_draft")) {
+                                        Button(enabled = idle && !working, onClick = {
+                                            editKind = RevisionEditor.ExternalDraft
+                                            edit = line
+                                        }) { Text(stringResource(R.string.external_review_draft)) }
+                                    }
                                 }
                                 val revision = line.optJSONObject("translation")
                                 if (revision != null) {
@@ -337,6 +366,7 @@ class ModelsActivity : ComponentActivity() {
                                     val speaker = line.optJSONObject("speaker")
                                     val initial = when (editKind) {
                                         RevisionEditor.Transcript, RevisionEditor.Conflict -> line.getString("text")
+                                        RevisionEditor.ExternalDraft -> line.getString("external_draft")
                                         RevisionEditor.Translation -> line.optJSONObject("translation")?.getString("text").orEmpty()
                                         RevisionEditor.Speaker -> speaker?.takeUnless { it.isNull("name") }?.getString("name").orEmpty()
                                     }
@@ -349,7 +379,8 @@ class ModelsActivity : ComponentActivity() {
                                             .put("text", text)
                                         val revision = line.getString("revision_id")
                                         when (editKind) {
-                                            RevisionEditor.Transcript -> action.put("op", "save_utterance").put("expected_revision_id", revision)
+                                            RevisionEditor.Transcript, RevisionEditor.ExternalDraft ->
+                                                action.put("op", "save_utterance").put("expected_revision_id", revision)
                                             RevisionEditor.Conflict -> {
                                                 val conflicts = line.getJSONArray("conflicts")
                                                 val heads = JSONArray()
@@ -367,6 +398,7 @@ class ModelsActivity : ComponentActivity() {
                                                 edit = null
                                                 downloadModelId = null
                                                 result = code
+                                                externalRequest = false
                                                 reload++
                                             }
                                         }
@@ -388,13 +420,18 @@ class ModelsActivity : ComponentActivity() {
 
     private fun startRequest(action: JSONObject) {
         if (working || RecordingStatusStore.state.value.phase != RecordingPhase.Idle) return
-        downloadModelId = if (action.getString("op") == "install") action.getString("model_id") else null
+        val operation = action.getString("op")
+        val external = operation == "transcribe_external"
+        externalRequest = external
+        downloadModelId = if (operation == "install") action.getString("model_id") else null
         downloadedBytes = null
         working = true
         result = null
         partial = null
         preparing = lifecycleScope.launch {
-            val refreshed = withContext(Dispatchers.IO) { runCatching { DeviceProfiler.capture(applicationContext) }.isSuccess }
+            val refreshed = external || withContext(Dispatchers.IO) {
+                runCatching { DeviceProfiler.capture(applicationContext) }.isSuccess
+            }
             if (!working) return@launch
             if (!refreshed || RecordingStatusStore.state.value.phase != RecordingPhase.Idle) {
                 finishRequest(-34)
@@ -529,6 +566,7 @@ internal fun detectedLanguage(code: String): Int = when (code) {
 
 private enum class RevisionEditor(val label: Int, val field: Int) {
     Transcript(R.string.edit_transcript, R.string.transcript),
+    ExternalDraft(R.string.external_review_draft, R.string.transcript),
     Conflict(R.string.sync_resolve_conflict, R.string.transcript),
     Translation(R.string.edit_translation, R.string.chinese_translation),
     Speaker(R.string.session_edit_speaker, R.string.session_speaker_name),
@@ -670,8 +708,8 @@ internal fun LanguagePicker(policy: String, enabled: Boolean, selected: (String)
     }
 }
 
-private fun resultText(code: Int): Int = when (code) {
-    0 -> R.string.speech_complete
+private fun resultText(code: Int, external: Boolean = false): Int = when (code) {
+    0 -> if (external) R.string.external_complete else R.string.speech_complete
     -4 -> R.string.speech_cancelled
     -32 -> R.string.speech_no_audio
     -33 -> R.string.speech_not_installed
@@ -679,10 +717,15 @@ private fun resultText(code: Int): Int = when (code) {
     -35 -> R.string.speech_transfer
     -36 -> R.string.speech_integrity
     -37 -> R.string.speech_busy
-    -38 -> R.string.speech_deferred
+    -38 -> if (external) R.string.external_deferred else R.string.speech_deferred
     -39 -> R.string.translation_conflict
     -40 -> R.string.translation_limit
-    else -> R.string.speech_failed
+    -41 -> R.string.external_configuration
+    -42 -> R.string.external_authentication
+    -43 -> R.string.external_rate_limit
+    -44 -> R.string.external_connection
+    -45 -> R.string.external_response
+    else -> if (external) R.string.external_failed else R.string.speech_failed
 }
 
 private fun jobStatus(job: JSONObject): Int? = when (job.optString("state")) {

@@ -22,15 +22,15 @@ internal static class SpeechWorker
         action,
     });
 
-    private static ProcessStartInfo StartInfo(string request, string pipe, string executable)
+    private static ProcessStartInfo StartInfo(string pipe, string executable)
     {
         var info = new ProcessStartInfo(executable)
         {
             UseShellExecute = false, CreateNoWindow = true,
+            RedirectStandardInput = true, StandardInputEncoding = new UTF8Encoding(false),
             RedirectStandardOutput = true, RedirectStandardError = true,
         };
-        info.ArgumentList.Add("--speech-worker");
-        info.ArgumentList.Add(request);
+        info.ArgumentList.Add("--speech-worker-stdin");
         info.ArgumentList.Add(pipe);
         return info;
     }
@@ -55,7 +55,7 @@ internal static class SpeechWorker
             using var pipe = new NamedPipeServerStream(name, PipeDirection.In, 1, PipeTransmissionMode.Byte,
                 PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
             using var receiving = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
-            using var process = new Process { StartInfo = StartInfo(request, name, executable ?? Path.Combine(AppContext.BaseDirectory, "VoiceLedger.exe")) };
+            using var process = new Process { StartInfo = StartInfo(name, executable ?? Path.Combine(AppContext.BaseDirectory, "VoiceLedger.exe")) };
             if (!process.Start()) return -31;
             Task receive = Task.CompletedTask;
             try
@@ -66,6 +66,8 @@ internal static class SpeechWorker
                 process.BeginOutputReadLine();
                 process.BeginErrorReadLine();
                 receive = ReceiveAsync(pipe, update, receiving.Token);
+                await process.StandardInput.WriteAsync(request.AsMemory(), cancellation);
+                process.StandardInput.Close();
                 await process.WaitForExitAsync(cancellation);
                 return process.ExitCode;
             }
@@ -98,6 +100,21 @@ internal static class SpeechWorker
                 await update(line);
         }
         catch (Exception error) when (error is IOException or JsonException or OperationCanceledException) { }
+    }
+
+    internal static int RunFromInput(string pipeName)
+    {
+        try
+        {
+            using var input = new StreamReader(Console.OpenStandardInput(), new UTF8Encoding(false, true));
+            var request = new char[128 * 1024 + 1];
+            int length = input.ReadBlock(request, 0, request.Length);
+            return length is > 0 and <= 128 * 1024 ? Run(new string(request, 0, length), pipeName) : -1;
+        }
+        catch (Exception error) when (error is IOException or DecoderFallbackException)
+        {
+            return -31;
+        }
     }
 
     internal static int Run(string request, string? pipeName)
