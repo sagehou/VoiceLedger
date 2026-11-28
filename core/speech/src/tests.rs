@@ -700,8 +700,15 @@ fn migration_preserves_the_version_one_transcript_database() {
             .0
             .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
             .unwrap(),
-        5
+        6
     );
+    let summary_count: i64 = migrated
+        .db
+        .query_row("SELECT count(*) FROM session_summaries", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(summary_count, 0);
 }
 
 #[test]
