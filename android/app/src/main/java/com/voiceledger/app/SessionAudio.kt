@@ -64,7 +64,7 @@ internal fun SessionAudio(
 ) {
     if (tracks == null || tracks.length() == 0) return
     val choices = (0 until tracks.length()).map(tracks::getJSONObject)
-    val track = choices.find { it.getString("source") == selected }
+    val track = choices.find { it.getString("id") == selected }
     val trackId = track?.getString("id")
     var menu by remember { mutableStateOf(false) }
     var at by remember(trackId) { mutableStateOf((track?.getLong("first_ns")?.div(SECOND_NS))?.toString().orEmpty()) }
@@ -99,7 +99,7 @@ internal fun SessionAudio(
             for (choice in choices) {
                 val source = choice.getString("source")
                 DropdownMenuItem(text = { Text(stringResource(trackLabel(source))) }, onClick = {
-                    onTrack(source)
+                    onTrack(choice.getString("id"))
                     menu = false
                 })
             }

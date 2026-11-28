@@ -29,7 +29,7 @@
 - Do not claim a hardware tier is supported based on emulator/unit tests alone.
 - Keep platform-specific code behind narrow interfaces. Avoid per-sample FFI calls; batch audio frames/chunks.
 - Every deviation requires an ADR with rationale, impact, migration, and rollback.
-- Do not silently broaden scope into summaries, cloud AI, team collaboration, or generic call recording.
+- Keep meeting summaries tied to saved session notes. Do not silently broaden scope into team collaboration or generic call recording.
 
 ## Delivery
 - **All authoritative compile/build validation runs in GitHub Actions.** Coding agents must not use local builds as acceptance evidence or spend time compiling locally; push focused commits and inspect the Actions result. Local editing, formatting, static reasoning, and non-build unit-test design are allowed, but build/test results must come from Actions.

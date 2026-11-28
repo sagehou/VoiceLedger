@@ -44,7 +44,9 @@ Both:
 - Benchmark only when no recording is active. Test runtime degradation with representative low-memory, thermal and backlog conditions.
 - If no model is safe or useful on a device, Recording-only is a valid outcome.
 
-## Gate G3 — Translation and speaker (progressive)
+## Gate G3 — Session notes, translation and speaker
+- Record or import a saved session with more than 40 final entries. Reopen it after restarting both native clients, browse the full chronological note, filter by track, edit a line and export it.
+- Generate a summary across multiple transcript batches from the selected service. Verify the send disclosure, persistence after reopening, editing, stale status after a transcript change and preservation of a manual summary when a new draft arrives. Exercise cancellation and provider failure with a saved note.
 - Evaluate the language directions selected for MVP; do not block initial recording/transcription on all six directions.
 - Use a modest representative set per direction initially (e.g. 10–20 sentences), then expand for release confidence and terminology coverage.
 - Translation references the exact source revision and becomes stale after source edits.
@@ -65,7 +67,7 @@ Both:
 - Provide extended recording soak evidence on representative Windows and Android devices; this is not an 8-hour test on every declared device.
 - Publish known limitations and untested configurations.
 - A feature may be deferred/unsupported with a clear UX state; optional translation directions or enhanced speaker accuracy must not block the entire MVP.
-- Do not claim MVP complete while core recording durability, basic local ASR on the supported tier, or required sync recovery is broken.
+- MVP release requires recording durability, local ASR on a supported tier, saved notes with editable meeting summary generation, and sync recovery on the selected provider.
 
 ## Reporting
 Every test has ID, status (not_run/pass/fail/blocked), build commit, environment, input/corpus hash, steps, expected/actual, metrics, evidence path, and unresolved risks. Synthetic tests do not replace real-device evidence.

@@ -4,7 +4,7 @@ use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use voiceledger_core::contracts::{
     Count, Language, LanguagePolicy, ModelRef, StableId, UtteranceKind, UtteranceRevision,
 };
@@ -15,6 +15,7 @@ use crate::translations::{self, TranslationLine};
 use crate::{Error, Result};
 
 pub(crate) const PATH: &str = "transcript-v1.sqlite3";
+const PAGE_SIZE: usize = 40;
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS utterances (
     id TEXT PRIMARY KEY,
@@ -48,7 +49,7 @@ impl Transcripts {
         )?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let version: i64 = tx.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        if !(0..=5).contains(&version) {
+        if !(0..=6).contains(&version) {
             return Err(Error::Storage);
         }
         if version == 0 {
@@ -65,7 +66,10 @@ impl Transcripts {
         }
         if version < 5 {
             tx.execute_batch(crate::sync_data::SCHEMA)?;
-            tx.execute_batch("PRAGMA user_version=5;")?;
+        }
+        if version < 6 {
+            tx.execute_batch(crate::summary::SCHEMA)?;
+            tx.execute_batch("PRAGMA user_version=6;")?;
         }
         tx.commit()?;
         Ok(Self { db })
@@ -224,7 +228,8 @@ impl Output for Writer<'_> {
 #[derive(Serialize)]
 pub struct Line {
     pub source: String,
-    pub start_ns: u64,
+    pub track_id: StableId,
+    pub start_ns: Count,
     pub utterance_id: StableId,
     pub revision_id: StableId,
     pub language: Language,
@@ -236,20 +241,68 @@ pub struct Line {
     pub(crate) external_draft: Option<String>,
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PageCursor {
+    start_ns: Count,
+    track_id: StableId,
+    utterance_id: StableId,
+}
+
+#[derive(Serialize)]
+pub(crate) struct Page {
+    lines: Vec<Line>,
+    next: Option<PageCursor>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum Selection<'a> {
+    Preview,
+    Recent,
+    Export,
+    Page {
+        after: Option<&'a PageCursor>,
+        track: Option<&'a StableId>,
+    },
+}
+
 pub fn selected(root: &Path, session: &StableId) -> Result<Vec<Line>> {
     let mut lines = Vec::new();
-    visit_selected(root, session, 40, false, |line| {
+    visit_selected(root, session, Selection::Preview, |line| {
         lines.push(line);
         Ok(())
     })?;
     Ok(lines)
 }
 
+pub(crate) fn page(
+    root: &Path,
+    session: &StableId,
+    after: Option<&PageCursor>,
+    track: Option<&StableId>,
+) -> Result<Page> {
+    let mut lines = Vec::new();
+    visit_selected(root, session, Selection::Page { after, track }, |line| {
+        lines.push(line);
+        Ok(())
+    })?;
+    let next = if lines.len() > PAGE_SIZE {
+        lines.truncate(PAGE_SIZE);
+        lines.last().map(|line| PageCursor {
+            start_ns: line.start_ns,
+            track_id: line.track_id.clone(),
+            utterance_id: line.utterance_id.clone(),
+        })
+    } else {
+        None
+    };
+    Ok(Page { lines, next })
+}
+
 pub(crate) fn visit_selected(
     root: &Path,
     session: &StableId,
-    limit: i64,
-    latest: bool,
+    selection: Selection<'_>,
     mut visit: impl FnMut(Line) -> Result<()>,
 ) -> Result<()> {
     match root.join(PATH).metadata() {
@@ -265,29 +318,44 @@ pub(crate) fn visit_selected(
     if version >= 5 && crate::sync_data::hidden(&db, "session", &session)? {
         return Ok(());
     }
-    let suffix = if latest && version >= 5 {
-        " AND NOT EXISTS(SELECT 1 FROM synced_tombstones t WHERE t.scope='utterance' AND t.entity_id=u.id)
-          ORDER BY u.start_ns DESC,u.track_id DESC LIMIT ?2"
-    } else if latest {
-        " ORDER BY u.start_ns DESC,u.track_id DESC LIMIT ?2"
-    } else if version >= 5 {
-        " AND NOT EXISTS(SELECT 1 FROM synced_tombstones t WHERE t.scope='utterance' AND t.entity_id=u.id)
-          ORDER BY (CASE WHEN ?2<0 THEN 0 ELSE EXISTS(SELECT 1 FROM sync_conflicts c WHERE c.utterance_id=u.id) END) DESC,
-            u.start_ns,u.track_id LIMIT ?2"
+    let (track, after, limit) = match selection {
+        Selection::Preview => (None, None, 40),
+        Selection::Recent => (None, None, 8),
+        Selection::Export => (None, None, -1),
+        Selection::Page { after, track } => (track, after, PAGE_SIZE as i64 + 1),
+    };
+    let visible = if version >= 5 {
+        " AND NOT EXISTS(SELECT 1 FROM synced_tombstones t WHERE t.scope='utterance' AND t.entity_id=u.id)"
     } else {
-        " ORDER BY u.start_ns,u.track_id LIMIT ?2"
+        ""
+    };
+    let order = match selection {
+        Selection::Recent => "u.start_ns DESC,u.track_id DESC,u.id DESC",
+        Selection::Preview if version >= 5 => {
+            "EXISTS(SELECT 1 FROM sync_conflicts c WHERE c.utterance_id=u.id) DESC,u.start_ns,u.track_id,u.id"
+        }
+        _ => "u.start_ns,u.track_id,u.id",
     };
     let mut query = db.prepare(&format!(
-        "SELECT u.track_id, u.start_ns, r.payload FROM utterances u JOIN revisions r ON r.id=u.selected_revision
-         WHERE u.session_id=?1{suffix}",
+        "SELECT u.track_id,u.start_ns,r.payload FROM utterances u JOIN revisions r ON r.id=u.selected_revision
+         WHERE u.session_id=?1{visible} AND (?3 IS NULL OR u.track_id=?3)
+           AND (?4 IS NULL OR (u.start_ns,u.track_id,u.id)>(?4,?5,?6))
+         ORDER BY {order} LIMIT ?2",
     ))?;
-    let rows = query.query_map(params![session, limit], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, i64>(1)?,
-            row.get::<_, String>(2)?,
-        ))
-    })?;
+    let filter = track.cloned().map(String::from);
+    let after_start = after.map(|cursor| i64::from(cursor.start_ns));
+    let after_track = after.map(|cursor| String::from(cursor.track_id.clone()));
+    let after_id = after.map(|cursor| String::from(cursor.utterance_id.clone()));
+    let rows = query.query_map(
+        params![session, limit, filter, after_start, after_track, after_id],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        },
+    )?;
     for row in rows {
         let (track, start_ns, payload) = row?;
         let source = crate::sync_data::source(&db, audio.as_ref(), &session, &track, version)?;
@@ -297,17 +365,18 @@ pub(crate) fn visit_selected(
         } else {
             None
         };
-        let speaker = if version >= 4 && !latest {
+        let speaker = if version >= 4 && !matches!(selection, Selection::Recent) {
             crate::library::speaker(&db, &value.utterance_id)?
         } else {
             None
         };
-        let conflicts = if version >= 5 && limit >= 0 && !latest {
+        let review = matches!(selection, Selection::Preview | Selection::Page { .. });
+        let conflicts = if version >= 5 && review {
             crate::sync_data::conflict(&db, &value.utterance_id)?
         } else {
             Vec::new()
         };
-        let external_draft = if limit >= 0 && !latest && conflicts.is_empty() {
+        let external_draft = if review && conflicts.is_empty() {
             db.query_row(
                 "SELECT json_extract(payload,'$.text') FROM revisions
                  WHERE utterance_id=?1 AND revision>?2 AND json_extract(payload,'$.model.runtime_version')=?3
@@ -320,7 +389,8 @@ pub(crate) fn visit_selected(
         };
         visit(Line {
             source,
-            start_ns: u64::try_from(start_ns).map_err(|_| Error::Storage)?,
+            start_ns: start_ns.try_into().map_err(|_| Error::Storage)?,
+            track_id: value.track_id,
             utterance_id: value.utterance_id,
             revision_id: value.id,
             language: value.language,

@@ -321,6 +321,255 @@ fn external_transcription_sends_one_saved_track_and_keeps_manual_text_selected()
 }
 
 #[test]
+fn session_note_pages_and_summary_cover_the_saved_transcript() {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    use serde_json::{Value, json};
+    use voiceledger_audio::Store;
+
+    let root = Directory::new();
+    let audio = Store::open(&root.0).unwrap();
+    let session = id(1);
+    let mic = id(2);
+    let loopback = id(3);
+    audio.execute_json(&serde_json::to_vec(&json!({
+        "op":"create_session","id":session,"created_at_ms":1,"clock":"synthetic","clock_origin":0,
+        "tracks":[{"id":mic,"source":"mic","endpoint_id":"fixture"},
+                  {"id":loopback,"source":"system_loopback","endpoint_id":"fixture"}]
+    })).unwrap(), &[]).unwrap();
+    let store = Transcripts::open(&root.0).unwrap();
+    let catalog = Catalog::bundled().unwrap();
+    let model = model_ref(&catalog.models()[0]).unwrap();
+    let mut writer = Writer {
+        transcripts: &store,
+        session: &session,
+        model: &model,
+        language: LanguagePolicy::En,
+        job: None,
+        translate: None,
+        publish_partial: &mut |_| {},
+        saved: 0,
+    };
+    for index in 0..85 {
+        let start = i64::from(index / 2) * 1_000_000_000;
+        let range = TimeRange {
+            start_ns: start.try_into().unwrap(),
+            end_ns: (start + 100_000_000).try_into().unwrap(),
+        };
+        writer
+            .finish(Final {
+                id: id(index + 100),
+                track_id: if index % 2 == 0 {
+                    mic.clone()
+                } else {
+                    loopback.clone()
+                },
+                range,
+                spans: vec![ChunkSpan {
+                    chunk_id: id(4),
+                    range,
+                }],
+                recognition: Recognition {
+                    language: Language::En,
+                    text: format!("Item {index:03} {}", "fixture ".repeat(46)),
+                },
+            })
+            .unwrap();
+    }
+    drop(store);
+    let request = |action| {
+        let input =
+            json!({"action":action,"recordings":root.0,"profiles":root.0,"adapters":root.0});
+        Request::decode(&serde_json::to_vec(&input).unwrap())
+            .unwrap()
+            .run(&|| false, &|| None, |_| {})
+    };
+    let read = |action| serde_json::from_slice::<Value>(&request(action).unwrap()).unwrap();
+    let note = || read(json!({"op":"inspect","session_id":session}));
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+    let generate = |approved| {
+        json!({
+            "op":"summarize","session_id":session,"approved":approved,
+            "settings":{"provider":"custom","base_url":base_url,"model_id":"fixture-chat"}
+        })
+    };
+    assert!(matches!(
+        request(generate(false)),
+        Err(Error::Blocked(Block::ApprovalRequired))
+    ));
+    assert!(matches!(
+        request(generate(true)),
+        Err(Error::Blocked(Block::RecordingActive))
+    ));
+    assert!(matches!(listener.accept(), Err(error) if error.kind() == io::ErrorKind::WouldBlock));
+    audio.execute_json(&serde_json::to_vec(&json!({
+        "op":"session_state","id":session,"state":6,"elapsed_ns":43_000_000_000_i64,"snapshot":{}
+    })).unwrap(), &[]).unwrap();
+
+    let mut cursor = Value::Null;
+    let mut count = 0;
+    for page_count in [40, 40, 5] {
+        let page = read(json!({"op":"transcript_page","session_id":session,"after":cursor}));
+        let lines = page["lines"].as_array().unwrap();
+        assert_eq!(lines.len(), page_count);
+        for line in lines {
+            assert!(
+                line["text"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with(&format!("Item {count:03} "))
+            );
+            count += 1;
+        }
+        cursor = page["next"].clone();
+    }
+    assert!(cursor.is_null());
+    let filtered = read(json!({"op":"transcript_page","session_id":session,"track_id":loopback}));
+    let filtered_tail = read(
+        json!({"op":"transcript_page","session_id":session,"track_id":loopback,"after":filtered["next"]}),
+    );
+    assert_eq!(filtered_tail["lines"].as_array().unwrap().len(), 2);
+    assert!(
+        filtered_tail["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|line| line["track_id"] == json!(loopback))
+    );
+
+    let server = thread::spawn(move || {
+        for round in 0..2 {
+            for stage in 0..3 {
+                let deadline = Instant::now() + Duration::from_secs(12);
+                let mut socket = loop {
+                    match listener.accept() {
+                        Ok((socket, _)) => break socket,
+                        Err(error)
+                            if error.kind() == io::ErrorKind::WouldBlock
+                                && Instant::now() < deadline =>
+                        {
+                            thread::sleep(Duration::from_millis(10));
+                        }
+                        Err(error) => {
+                            panic!("summary fixture did not receive the expected request: {error}")
+                        }
+                    }
+                };
+                socket.set_nonblocking(false).unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(4)))
+                    .unwrap();
+                let mut input = BufReader::new(&mut socket);
+                let mut line = String::new();
+                input.read_line(&mut line).unwrap();
+                assert_eq!(line, "POST /v1/chat/completions HTTP/1.1\r\n");
+                let mut length = 0;
+                loop {
+                    line.clear();
+                    assert_ne!(input.read_line(&mut line).unwrap(), 0);
+                    if line == "\r\n" {
+                        break;
+                    }
+                    let (name, value) = line.split_once(':').unwrap();
+                    if name.eq_ignore_ascii_case("content-length") {
+                        length = value.trim().parse().unwrap();
+                    }
+                }
+                assert!((1..32 * 1024).contains(&length));
+                let mut body = vec![0; length];
+                input.read_exact(&mut body).unwrap();
+                let request: Value = serde_json::from_slice(&body).unwrap();
+                assert_eq!(request["model"], "fixture-chat");
+                assert_eq!(request["messages"][1]["role"], "user");
+                assert_eq!(request["stream"], false);
+                assert!(request.get("tools").is_none());
+                let text = request["messages"][1]["content"].as_str().unwrap();
+                let reply = match stage {
+                    0 => {
+                        assert!(text.starts_with(if round == 0 {
+                            "Item 000 "
+                        } else {
+                            "Corrected opening"
+                        }));
+                        "Start of meeting"
+                    }
+                    1 => {
+                        assert!(text.contains("Item 084 "));
+                        "End of meeting"
+                    }
+                    _ => {
+                        assert_eq!(text, "Start of meeting\nEnd of meeting");
+                        if round == 0 {
+                            "Initial summary"
+                        } else {
+                            "Updated summary"
+                        }
+                    }
+                };
+                let response =
+                    json!({"choices":[{"message":{"content":reply},"finish_reason":"stop"}]})
+                        .to_string();
+                write!(
+                    socket,
+                    "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{response}",
+                    response.len()
+                )
+                .unwrap();
+            }
+        }
+    });
+    request(generate(true)).unwrap();
+    let initial = note();
+    assert_eq!(initial["summary"]["current"]["text"], "Initial summary");
+    assert_eq!(initial["summary"]["current"]["generated"], true);
+    let edit = |expected: &Value, draft: &Value, text: &str| json!({"op":"save_summary","session_id":session,"expected_revision_id":expected,"draft_id":draft,"text":text});
+    request(edit(
+        &initial["summary"]["current"]["id"],
+        &Value::Null,
+        "Manual summary",
+    ))
+    .unwrap();
+    assert!(matches!(
+        request(edit(
+            &initial["summary"]["current"]["id"],
+            &Value::Null,
+            "Competing edit"
+        )),
+        Err(Error::RevisionConflict)
+    ));
+    let line = &initial["lines"][0];
+    request(
+        json!({"op":"save_utterance","session_id":session,"utterance_id":line["utterance_id"],
+        "expected_revision_id":line["revision_id"],"text":"Corrected opening"}),
+    )
+    .unwrap();
+    assert_eq!(note()["summary"]["current"]["stale"], true);
+    request(generate(true)).unwrap();
+    server.join().unwrap();
+    let saved = note();
+    assert_eq!(saved["summary"]["current"]["text"], "Manual summary");
+    assert_eq!(saved["summary"]["draft"]["text"], "Updated summary");
+    assert_eq!(saved["summary"]["draft"]["stale"], false);
+    request(edit(
+        &saved["summary"]["current"]["id"],
+        &saved["summary"]["draft"]["id"],
+        "Reviewed summary",
+    ))
+    .unwrap();
+    let exported = read(json!({"op":"export","session_id":session,"format":"json"}));
+    assert_eq!(exported["summary"]["text"], "Reviewed summary");
+    assert_eq!(exported["summary"]["generated"], false);
+    assert_eq!(exported["lines"].as_array().unwrap().len(), 85);
+    assert!(note()["summary"]["draft"].is_null());
+}
+
+#[test]
 fn interrupted_jobs_resume_with_one_identity_and_atomic_final_progress() {
     let root = Directory::new();
     let catalog = Catalog::bundled().unwrap();
@@ -451,8 +700,15 @@ fn migration_preserves_the_version_one_transcript_database() {
             .0
             .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
             .unwrap(),
-        5
+        6
     );
+    let summary_count: i64 = migrated
+        .db
+        .query_row("SELECT count(*) FROM session_summaries", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(summary_count, 0);
 }
 
 #[test]

@@ -109,6 +109,9 @@ internal sealed class RecordingViewModel : INotifyPropertyChanged, IAsyncDisposa
     public bool CanPause => !busy && session?.State == SessionState.Recording;
     public bool CanResume => !busy && Active && session!.Tracks.Any(track => track.Core.State == TrackState.Paused);
     public bool CanStop => !busy && Active;
+    internal string? SavedNoteId => session is { JournalError: false, State: SessionState.Completed or SessionState.Interrupted }
+        ? session.Id.ToString() : null;
+    public bool CanOpenSavedNote => CanSelect && SavedNoteId is not null;
     public bool HasOutput => session is not null || historySelection is not null;
     public bool CanChooseHistory => CanSelect && playback is null;
     public bool CanPlay => CanChooseHistory && historySelection?.CommittedChunks > 0;

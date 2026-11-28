@@ -133,7 +133,7 @@ class RecordingService : Service() {
                         RecordingStatusStore.update { it.copy(saved = committed, elapsedNs = elapsed) }
                     }.use { manifest ->
                         sessionCreated = true
-                        saved = SavedAudio()
+                        saved = SavedAudio(sessionId = manifest.sessionId)
                         try {
                             manifest.prepare(recording.origin)
                             var speechStarted = false

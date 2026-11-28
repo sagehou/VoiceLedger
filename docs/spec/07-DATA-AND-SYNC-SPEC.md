@@ -10,6 +10,7 @@ Core entities:
 - Gap: track, time range, cause, recoverability.
 - UtteranceRevision: track, source chunk/range, time range, language, text, machine/manual revision.
 - TranslationRevision: source revision, target language, text, model/version, stale state.
+- Summary revision: session, ordered transcript revision fingerprint, text, timestamp and model provenance for generated text. Summary revisions are local and included in explicit note exports.
 - SpeakerAssignment: session speaker ID, interval, confidence, source model revision.
 - SpeakerProfile: explicit user-managed identity and encrypted voice samples/embeddings.
 - AiJob: input ranges, model/runtime, state, attempts and error.
@@ -20,7 +21,8 @@ Core entities:
 - Partial ASR is transient and not synced by default.
 - Final and manual revisions are distinct.
 - Machine reruns never overwrite manual edits or confirmed speaker names.
-- Translation binds to exact source revision; source edit marks it stale.
+- Translation binds to the exact source revision. A source edit marks it stale.
+- A summary becomes stale when its source transcript changes. The newest manual summary remains selected across generation runs. Users can review the newer generated draft.
 - Concurrent edits preserve branches and require user merge.
 - Speaker IDs are session-local until user explicitly maps them to a global profile.
 - Tombstones prevent old devices from silently resurrecting deleted entities.

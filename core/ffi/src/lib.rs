@@ -50,6 +50,8 @@ enum Error {
     SpeechExternalRateLimit = -43,
     SpeechExternalConnection = -44,
     SpeechExternalResponse = -45,
+    SpeechNoTranscript = -46,
+    SpeechSummaryInputLimit = -47,
     VaultRejected = -50,
     SyncConfiguration = -60,
     SyncAuthentication = -61,

@@ -20,7 +20,7 @@ use crate::{Error, Result, check_cancel};
 pub(crate) const PROTOCOL: &str = "external-audio-transcriptions-v1";
 const MAX_RESPONSE: u64 = 64 * 1024;
 
-#[derive(Serialize)]
+#[derive(Clone, Copy, Serialize)]
 pub(crate) struct Provider {
     id: &'static str,
     name: &'static str,
@@ -55,9 +55,25 @@ pub(crate) const PROVIDERS: [Provider; 4] = [
     },
 ];
 
+pub(crate) const SUMMARY_PROVIDERS: [Provider; 4] = [
+    Provider {
+        model_id: "gpt-4o-mini",
+        ..PROVIDERS[0]
+    },
+    Provider {
+        model_id: "llama-3.3-70b-versatile",
+        ..PROVIDERS[1]
+    },
+    Provider {
+        model_id: "Qwen/Qwen2.5-7B-Instruct",
+        ..PROVIDERS[2]
+    },
+    PROVIDERS[3],
+];
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Settings {
+pub(crate) struct Settings {
     provider: String,
     base_url: Option<String>,
     model_id: String,
@@ -101,8 +117,12 @@ impl Job {
             .into_iter()
             .find(|track| track.track_id == self.track_id)
             .ok_or(Error::NoAudio)?;
-        let mut client = Client::new(self.settings, self.language)?;
-        let provenance = client.provenance()?;
+        let service = Service::connect(self.settings, &PROVIDERS, "/audio/transcriptions")?;
+        let provenance = service.provenance(PROTOCOL)?;
+        let mut client = Client {
+            service,
+            language: self.language,
+        };
         let language = match self.language {
             Language::Zh => LanguagePolicy::Zh,
             Language::En => LanguagePolicy::En,
@@ -158,17 +178,21 @@ impl Job {
 }
 
 struct Client {
-    agent: Agent,
-    provider: &'static str,
-    endpoint: String,
-    model_id: String,
-    bearer: Option<HeaderValue>,
+    service: Service,
     language: Language,
 }
 
-impl Client {
-    fn new(settings: Settings, language: Language) -> Result<Self> {
-        let provider = PROVIDERS
+pub(crate) struct Service {
+    agent: Agent,
+    pub provider: &'static str,
+    endpoint: String,
+    pub model_id: String,
+    bearer: Option<HeaderValue>,
+}
+
+impl Service {
+    pub fn connect(settings: Settings, presets: &'static [Provider], path: &str) -> Result<Self> {
+        let provider = presets
             .iter()
             .find(|provider| provider.id == settings.provider)
             .ok_or(Error::ExternalConfiguration)?;
@@ -189,7 +213,7 @@ impl Client {
             (_, None) => provider.base_url,
         }
         .trim_end_matches('/');
-        let (endpoint, tls) = endpoint(base_url)?;
+        let (endpoint, tls) = endpoint(base_url, path)?;
         let mut config = Config::builder()
             .https_only(tls)
             .max_redirects(0)
@@ -213,25 +237,57 @@ impl Client {
             endpoint,
             model_id: model_id.to_owned(),
             bearer,
-            language,
         })
     }
 
-    fn provenance(&self) -> Result<ModelRef> {
+    pub fn provenance(&self, protocol: &str) -> Result<ModelRef> {
         let identity =
-            serde_json::to_vec(&(PROTOCOL, self.provider, &self.endpoint, &self.model_id))?;
+            serde_json::to_vec(&(protocol, self.provider, &self.endpoint, &self.model_id))?;
         Ok(ModelRef {
             model_id: format!("{}/{}", self.provider, self.model_id),
             model_version: "provider-managed".to_owned(),
-            runtime_version: PROTOCOL.to_owned(),
+            runtime_version: protocol.to_owned(),
             sha256: format!("{:x}", Sha256::digest(identity))
                 .try_into()
                 .map_err(|_| Error::Invalid)?,
         })
     }
+    pub fn post(
+        &self,
+        content_type: &str,
+        body: &[u8],
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Vec<u8>> {
+        let mut request = self
+            .agent
+            .post(self.endpoint.as_str())
+            .header("Accept", "application/json")
+            .header("Content-Type", content_type);
+        if let Some(value) = &self.bearer {
+            request = request.header("Authorization", value.clone());
+        }
+        check_cancel(cancelled)?;
+        let mut response = request.send(body).map_err(|_| Error::ExternalConnection)?;
+        match response.status() {
+            StatusCode::OK => {}
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
+                return Err(Error::ExternalAuthentication);
+            }
+            StatusCode::TOO_MANY_REQUESTS => return Err(Error::ExternalRateLimit),
+            _ => return Err(Error::ExternalResponse),
+        }
+        let bytes = response
+            .body_mut()
+            .with_config()
+            .limit(MAX_RESPONSE)
+            .read_to_vec()
+            .map_err(|_| Error::ExternalResponse)?;
+        check_cancel(cancelled)?;
+        Ok(bytes)
+    }
 }
 
-fn endpoint(base_url: &str) -> Result<(String, bool)> {
+fn endpoint(base_url: &str, path: &str) -> Result<(String, bool)> {
     if base_url.len() > 2048 || base_url.contains(['#', '?']) {
         return Err(Error::ExternalConfiguration);
     }
@@ -254,7 +310,7 @@ fn endpoint(base_url: &str) -> Result<(String, bool)> {
         }
         _ => return Err(Error::ExternalConfiguration),
     };
-    Ok((format!("{base_url}/audio/transcriptions"), tls))
+    Ok((format!("{base_url}{path}"), tls))
 }
 
 #[derive(Deserialize)]
@@ -280,8 +336,8 @@ impl Engine for Client {
             return Err(Error::ExternalResponse);
         }
         let mut body = Vec::with_capacity(waveform.len() + 1024);
-        field(&mut body, &boundary, "model", &self.model_id)?;
-        if self.provider != "siliconflow" {
+        field(&mut body, &boundary, "model", &self.service.model_id)?;
+        if self.service.provider != "siliconflow" {
             field(&mut body, &boundary, "language", self.language.code())?;
             field(&mut body, &boundary, "response_format", "json")?;
         }
@@ -292,36 +348,11 @@ impl Engine for Client {
         body.extend_from_slice(&waveform);
         write!(body, "\r\n--{boundary}--\r\n")?;
 
-        let mut request = self
-            .agent
-            .post(self.endpoint.as_str())
-            .header("Accept", "application/json")
-            .header(
-                "Content-Type",
-                format!("multipart/form-data; boundary={boundary}"),
-            );
-        if let Some(value) = &self.bearer {
-            request = request.header("Authorization", value.clone());
-        }
-        check_cancel(cancelled)?;
-        let mut response = request
-            .send(body.as_slice())
-            .map_err(|_| Error::ExternalConnection)?;
-        match response.status() {
-            StatusCode::OK => {}
-            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
-                return Err(Error::ExternalAuthentication);
-            }
-            StatusCode::TOO_MANY_REQUESTS => return Err(Error::ExternalRateLimit),
-            _ => return Err(Error::ExternalResponse),
-        }
-        let bytes = response
-            .body_mut()
-            .with_config()
-            .limit(MAX_RESPONSE)
-            .read_to_vec()
-            .map_err(|_| Error::ExternalResponse)?;
-        check_cancel(cancelled)?;
+        let bytes = self.service.post(
+            &format!("multipart/form-data; boundary={boundary}"),
+            &body,
+            cancelled,
+        )?;
         let parsed: TextResponse =
             serde_json::from_slice(&bytes).map_err(|_| Error::ExternalResponse)?;
         let text = parsed.text.trim();

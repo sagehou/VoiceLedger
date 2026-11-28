@@ -35,6 +35,8 @@ impl From<voiceledger_speech::Error> for Error {
             Speech::ExternalRateLimit => Self::SpeechExternalRateLimit,
             Speech::ExternalConnection => Self::SpeechExternalConnection,
             Speech::ExternalResponse => Self::SpeechExternalResponse,
+            Speech::NoTranscript => Self::SpeechNoTranscript,
+            Speech::SummaryInputLimit => Self::SpeechSummaryInputLimit,
         }
     }
 }

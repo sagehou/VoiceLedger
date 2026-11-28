@@ -50,6 +50,12 @@ public partial class MainWindow : Window
     private void StopPlayback(object sender, RoutedEventArgs e) => viewModel.StopPlayback();
     private void OpenSessions(object sender, RoutedEventArgs e) =>
         new ModelsWindow(() => !viewModel.Active && !viewModel.Busy, sessions: true) { Owner = this }.ShowDialog();
+    private void OpenSavedNote(object sender, RoutedEventArgs e)
+    {
+        if (viewModel.SavedNoteId is { } sessionId)
+            new ModelsWindow(() => viewModel.CanSelect, sessions: true, initialSession: sessionId) { Owner = this }.ShowDialog();
+    }
+
     private async void OpenModels(object sender, RoutedEventArgs e)
     {
         new ModelsWindow(() => !viewModel.Active && !viewModel.Busy) { Owner = this }.ShowDialog();

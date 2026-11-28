@@ -10,6 +10,7 @@ internal data class SavedAudio(
     val throughNs: Long = 0,
     val gaps: Int = 0,
     val unknownTail: Boolean = false,
+    val sessionId: String? = null,
 )
 
 internal data class RecoveryReport(

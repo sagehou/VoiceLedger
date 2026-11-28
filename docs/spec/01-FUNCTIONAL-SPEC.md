@@ -52,7 +52,7 @@ Requirements:
 - Provide session language policy: Auto or explicit language selection.
 - Model output includes utterance ID, track, start/end time, language, confidence where available, model/runtime version, and revision.
 - Partial text is ephemeral and replaceable; do not sync or export partial by default.
-- Final text is persisted. Audio persistence status is separate: pending, committed, missing.
+- Each selected final revision persists in the session note. The note shows the complete saved transcript in chronological pages, with source track and time. Audio persistence uses its own pending, committed and missing states.
 - Human edits create manual revisions and remain authoritative over machine reruns.
 - Rerun creates a new machine candidate and never silently overwrites manual edits.
 - Windows Both mode retains source track on each utterance. Combined timeline is a presentation view only.
@@ -88,11 +88,17 @@ Requirements:
 - Runtime governor pauses translation/speaker first, then reduces partial cadence, defers ASR, and unloads AI if needed. Recording is never stopped merely to preserve AI.
 - Never upgrade to a heavier model during active recording.
 
-## 9. History, playback, search, export
+## 9. Session notes, playback, search and export
+
+A saved session opens to its summary and transcript. Users can open their note from the recording screen after Stop or return from Sessions after restart. Playback, track selection, transcript edits and translations use the same saved session.
+
+- **Summary** is an editable part of the note. Users can write one locally or explicitly generate one with OpenAI, Groq, SiliconFlow or a custom OpenAI-compatible Base URL.
+- The send dialog displays the service and discloses that saved transcript text is sent. Generation uses all selected final and manual transcript revisions in order, with bounded batches for long input. The provider receives the text for key points, decisions and action items.
+- The summary records the transcript revision fingerprint. A changed transcript marks the summary outdated. Regeneration keeps a manual summary selected and makes the new result available as a draft for review.
 - History sorted by creation time; show duration, device, tracks, transcript status, sync status, and audio availability.
 - Search local titles, final text, manual edits, confirmed names. Pending AI content is clearly excluded.
 - Playback selects track and time range; source labels remain visible.
-- Export UTF-8 Markdown/TXT and structured JSON; export audio per track. SRT/VTT only after timing gate passes.
+- Export the note and its current summary as UTF-8 Markdown, TXT or structured JSON. Export audio per track. SRT/VTT follows timing qualification.
 - Exported plaintext is outside automatic sync encryption and must be disclosed.
 
 ## 10. Sync settings

@@ -37,7 +37,7 @@ internal sealed class SessionAudioPanel : StackPanel, IDisposable
 
     internal event Action<string?>? TrackChanged;
 
-    internal SessionAudioPanel(string session, JsonElement savedTracks, Func<bool> canPlay)
+    internal SessionAudioPanel(string session, JsonElement savedTracks, Func<bool> canPlay, string? selectedTrack)
     {
         this.session = session;
         this.canPlay = canPlay;
@@ -63,7 +63,8 @@ internal sealed class SessionAudioPanel : StackPanel, IDisposable
         play.Click += async (_, _) => await PlayAsync();
         stop.Click += (_, _) => Stop();
         export.Click += async (_, _) => await ExportAsync();
-        tracks.SelectedIndex = 0;
+        tracks.SelectedItem = tracks.Items.OfType<ComboBoxItem>()
+            .FirstOrDefault(item => item.Tag is Track track && track.Id == selectedTrack) ?? tracks.Items[0];
     }
 
     private Track? Selected => (tracks.SelectedItem as ComboBoxItem)?.Tag as Track;
@@ -73,7 +74,7 @@ internal sealed class SessionAudioPanel : StackPanel, IDisposable
         int version = ++selectionVersion;
         Stop();
         Track? selected = Selected;
-        TrackChanged?.Invoke(selected?.Source);
+        TrackChanged?.Invoke(selected?.Id);
         timeline.ItemsSource = null;
         timeline.Visibility = selected is null ? Visibility.Collapsed : Visibility.Visible;
         position.Visibility = play.Visibility = stop.Visibility = export.Visibility =

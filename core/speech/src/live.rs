@@ -75,7 +75,7 @@ struct Transcript {
 
 pub(super) fn transcript(root: &Path, session: &StableId, worker_active: bool) -> Result<Vec<u8>> {
     let mut lines = Vec::new();
-    transcript::visit_selected(root, session, 8, true, |line| {
+    transcript::visit_selected(root, session, transcript::Selection::Recent, |line| {
         lines.push(line);
         Ok(())
     })?;

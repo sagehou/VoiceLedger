@@ -102,6 +102,10 @@ class MainActivity : ComponentActivity() {
                                 }
                             },
                             openModels = { startActivity(Intent(this@MainActivity, ModelsActivity::class.java)) },
+                            openNote = { sessionId ->
+                                startActivity(Intent(this@MainActivity, ModelsActivity::class.java)
+                                    .putExtra("sessions", true).putExtra("session_id", sessionId))
+                            },
                             openSessions = {
                                 startActivity(Intent(this@MainActivity, ModelsActivity::class.java).putExtra("sessions", true))
                             },
@@ -187,6 +191,7 @@ private fun RecordingScreen(
     resume: () -> Unit,
     openModels: () -> Unit,
     openSessions: () -> Unit,
+    openNote: (String) -> Unit,
     openSyncPrivacy: () -> Unit,
 ) {
     var transcribe by rememberSaveable { mutableStateOf(false) }
@@ -261,6 +266,9 @@ private fun RecordingScreen(
                     Text(stringResource(R.string.stop_recording))
                 }
             }
+        }
+        if (idle) status.saved?.sessionId?.let { sessionId ->
+            Button(onClick = { openNote(sessionId) }) { Text(stringResource(R.string.note_open_saved)) }
         }
         LiveTranscript(speech)
         Button(onClick = openSessions) { Text(stringResource(R.string.sessions)) }

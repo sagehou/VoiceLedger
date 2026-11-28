@@ -9,6 +9,7 @@
 - Android screen-off microphone capture via user-started foreground service.
 - Chinese, English and Japanese transcription target.
 - Optional user-selected translation.
+- Saved session notes with a durable transcript and editable summary. [Decision](../adr/0005-session-notes-and-summaries.md)
 - Speaker diarization plus user-confirmed name mapping.
 - Local-first recording and data.
 - No required VoiceLedger server.

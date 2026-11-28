@@ -5,7 +5,7 @@ Assume WebDAV/S3 storage is untrusted and may read, replace, replay, reorder, or
 
 ## Data classes
 - Original audio: sensitive personal/meeting data.
-- Transcript and translation: sensitive content.
+- Transcript, translation and session summary: sensitive content.
 - Speaker embedding/profile: identity-linked biometric-like data; separate opt-in.
 - Device profile/benchmark: potentially identifying metadata; keep local unless user explicitly exports.
 - Credentials/recovery keys: secrets; never log or sync in plaintext.
@@ -23,7 +23,7 @@ Assume WebDAV/S3 storage is untrusted and may read, replace, replay, reorder, or
 - Local at-rest encryption must be separately specified; E2EE upload alone does not encrypt local database or files.
 
 ## Operational boundaries
-- No external inference or translation provider by default.
+- Provider requests originate from an explicit send action that displays the service address and the type of data sent. Summary generation sends saved transcript text. Provider API keys are used in memory for the current request.
 - No telemetry containing content or stable device fingerprint.
 - Device revocation cannot erase already copied plaintext or old keys; document key rotation and vault migration semantics.
 - Deletion uses tombstones; remote physical purge is not promised in MVP.
