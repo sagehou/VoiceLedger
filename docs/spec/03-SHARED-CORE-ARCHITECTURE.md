@@ -11,7 +11,7 @@ Build one shared business core, with Rust as the preferred implementation candid
 - Domain entities and stable IDs.
 - Session and track state machines.
 - Chunk manifest and recovery reconciliation rules.
-- Utterance/translation/speaker revision semantics.
+- Utterance, translation, session summary and speaker revision semantics.
 - Hardware capability normalization and model recommendation scoring.
 - AI job scheduling policy and resource governor policy.
 - Model catalog validation and benchmark result interpretation.

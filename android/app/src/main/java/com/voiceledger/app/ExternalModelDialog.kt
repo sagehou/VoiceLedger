@@ -28,15 +28,16 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 @Composable
-internal fun ExternalTranscriptionDialog(
+internal fun ExternalModelDialog(
     sessionId: String,
-    tracks: List<JSONObject>,
     presets: JSONArray,
-    sourceLanguage: String,
     enabled: Boolean,
     onDismiss: () -> Unit,
     onSend: (JSONObject) -> Unit,
+    tracks: List<JSONObject>? = null,
+    sourceLanguage: String = "auto",
 ) {
+    val summary = tracks == null
     val providers = remember(presets) {
         List(presets.length()) { presets.getJSONObject(it) }.associateBy { it.getString("id") }
     }
@@ -47,8 +48,8 @@ internal fun ExternalTranscriptionDialog(
     var model by remember(providerId) { mutableStateOf(provider.getString("model_id")) }
     var key by remember(providerId) { mutableStateOf("") }
     var language by remember { mutableStateOf(sourceLanguage.takeUnless { it == "auto" }) }
-    var trackId by remember { mutableStateOf(tracks.first().getString("id")) }
-    val trackLabels = tracks.associate { track ->
+    var trackId by remember { mutableStateOf(tracks?.firstOrNull()?.getString("id")) }
+    val trackLabels = tracks.orEmpty().associate { track ->
         track.getString("id") to stringResource(
             if (track.getString("source") == "mic") R.string.model_mic else R.string.model_loopback,
         )
@@ -63,14 +64,14 @@ internal fun ExternalTranscriptionDialog(
     )
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(stringResource(R.string.external_title)) },
+        title = { Text(stringResource(if (summary) R.string.summary_generate else R.string.external_title)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Column(
                     Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    ExternalChoice(stringResource(R.string.external_track), trackId, trackLabels) { trackId = it }
+                    if (!summary) ExternalChoice(stringResource(R.string.external_track), trackId, trackLabels) { trackId = it }
                     ExternalChoice(stringResource(R.string.external_provider), providerId, providerLabels) { providerId = it }
                     OutlinedTextField(
                         value = baseUrl,
@@ -93,7 +94,7 @@ internal fun ExternalTranscriptionDialog(
                         label = { Text(stringResource(R.string.external_model)) },
                         singleLine = true,
                     )
-                    ExternalChoice(stringResource(R.string.external_language), language, languages) { language = it }
+                    if (!summary) ExternalChoice(stringResource(R.string.external_language), language, languages) { language = it }
                     OutlinedTextField(
                         value = key,
                         onValueChange = { if (it.length <= 4096) key = it },
@@ -104,12 +105,13 @@ internal fun ExternalTranscriptionDialog(
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                     )
                 }
-                Text(stringResource(R.string.external_disclosure), style = MaterialTheme.typography.bodySmall)
+                Text(stringResource(if (summary) R.string.summary_disclosure else R.string.external_disclosure),
+                    style = MaterialTheme.typography.bodySmall)
             }
         },
         confirmButton = {
             TextButton(
-                enabled = enabled && language != null && baseUrl.isNotBlank() && model.isNotBlank()
+                enabled = enabled && (summary || (language != null && trackId != null)) && baseUrl.isNotBlank() && model.isNotBlank()
                     && (custom || key.isNotBlank()),
                 onClick = {
                     val settings = JSONObject()
@@ -118,10 +120,12 @@ internal fun ExternalTranscriptionDialog(
                         .put("model_id", model.trim())
                         .put("api_key", key)
                     key = ""
-                    onSend(JSONObject().put("op", "transcribe_external").put("session_id", sessionId)
-                        .put("track_id", trackId).put("language", language).put("approved", true).put("settings", settings))
+                    val action = JSONObject().put("op", if (summary) "summarize" else "transcribe_external")
+                        .put("session_id", sessionId).put("approved", true).put("settings", settings)
+                    if (!summary) action.put("track_id", trackId).put("language", language)
+                    onSend(action)
                 },
-            ) { Text(stringResource(R.string.external_send)) }
+            ) { Text(stringResource(if (summary) R.string.summary_send else R.string.external_send)) }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.cancel_speech)) } },
     )

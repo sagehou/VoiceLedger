@@ -6,7 +6,7 @@
 - Model file size is not runtime RAM.
 - A model is recommended for real-time use only after local benchmark evidence.
 - Never benchmark or upgrade models during active recording.
-- Never silently fall back to external/cloud inference.
+- External processing starts on the user's send action. Meeting summary generation uses the selected text service and finalized transcript while recording is idle.
 
 ## Initial candidates
 | Capability | Candidate | Notes |

@@ -22,6 +22,7 @@ internal fun recoverLibrary(directory: File): Pair<SavedAudio?, RecoveryReport?>
                 throughNs = it.getLong("last_ns"),
                 gaps = it.getInt("loss_intervals"),
                 unknownTail = it.getBoolean("interrupted_tail"),
+                sessionId = it.getString("session_id"),
             )
         }
         val recovery = RecoveryReport(
@@ -50,7 +51,7 @@ internal class RecordingManifest(
     private var streamOpen = false
     private var pausedFromNs: Long? = null
     private var lastPacketEndNs = 0L
-    private var saved = SavedAudio()
+    private var saved = SavedAudio(sessionId = sessionId)
 
     fun prepare(origin: Long) {
         write(

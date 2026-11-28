@@ -3,7 +3,7 @@
 ## Windows information architecture
 1. **Recording** — primary start/stop surface, source selectors, per-track meters/status, duration, disk reserve, audio commit indicator, AI state, transcript lag.
 2. **Sessions** — searchable history, session status, track availability, transcript/translation completeness, sync state.
-3. **Session detail** — timeline, track filter, playback, transcript revisions, speaker assignments, translations, export/delete.
+3. **Session note** — summary, chronological transcript, translation, source track, playback, edits and export.
 4. **Models & device** — hardware profile, model catalog, download/install/remove, benchmark history, recommendation and mode override.
 5. **People** — local speaker profiles, consent, sample management, matching review.
 6. **Sync & privacy** — WebDAV/S3 config, test, vault setup/join, key recovery, sync scope, device list.
@@ -14,7 +14,7 @@ WPF uses native navigation and a persistent recording status surface. Recording 
 ## Android information architecture
 1. **Record** — prominent Start/Stop, source status, elapsed recording time, persistent FGS notification, AI status.
 2. **Sessions** — local history and sync state.
-3. **Session detail** — timeline, playback, transcript edit, translation and speaker correction.
+3. **Session note** — summary, chronological transcript, translation, playback and corrections.
 4. **Models** — device capability and model recommendation.
 5. **Settings** — sync, storage, language, privacy, diagnostic export.
 
@@ -38,9 +38,12 @@ Android recording service must not depend on Activity lifetime. Navigation away 
 - Pause/Resume preserves time gaps and starts new chunks.
 - Mark button inserts a timestamped marker.
 - Stop asks for confirmation only if there is an unresolved destructive choice; normal Stop is immediate and idempotent.
-- After Stop, show audio saved/partial/missing separately from AI pending/completed and sync pending/completed.
+- After Stop, show audio saved/partial/missing separately from AI and sync status. **Open recording note** opens the saved session.
 
-## Transcript interaction
+## Session note interaction
+- The note puts the saved summary and transcript first. Playback and model actions expand on demand.
+- Browse the finalized transcript in chronological pages and use the track picker to focus on a source. Each entry keeps its timestamp.
+- **Create summary** opens an editor. **Generate with external model** opens the service picker, which displays the external-send disclosure above the send action. An updated generated draft is reviewed before it replaces a manual summary.
 - Partial lines are visually distinct and not editable.
 - Final line can be edited; save creates a manual revision.
 - Rerun ASR opens a comparison or revision history; user explicitly accepts replacement.

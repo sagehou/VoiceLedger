@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use voiceledger_audio::{CommittedReader, FinishedSession, SavedSession};
 use voiceledger_core::contracts::{Authorship, SpeakerAssignment, StableId, UtteranceKind};
 
-use crate::transcript::{PATH, Transcripts, timestamp, visit_selected};
+use crate::transcript::{PATH, Selection, Transcripts, timestamp, visit_selected};
 use crate::translations::{MAX_TEXT, selected_source};
 use crate::{Error, Result};
 
@@ -374,6 +374,7 @@ pub(crate) fn export(
     const LIMIT: usize = 32 * 1024 * 1024;
     let mut output = Vec::new();
     let name = title(root, &session.id)?;
+    let summary = crate::summary::read(root, &session.id)?.current;
     match format {
         ExportFormat::Text => writeln!(output, "VoiceLedger transcript")?,
         ExportFormat::Markdown => writeln!(output, "# VoiceLedger transcript")?,
@@ -382,6 +383,10 @@ pub(crate) fn export(
             serde_json::to_writer(&mut output, session)?;
             write!(output, ",\"title\":")?;
             serde_json::to_writer(&mut output, &name)?;
+            if let Some(summary) = &summary {
+                write!(output, ",\"summary\":")?;
+                serde_json::to_writer(&mut output, summary)?;
+            }
             write!(output, ",\"lines\":[")?;
         }
     }
@@ -391,8 +396,18 @@ pub(crate) fn export(
     {
         write_text(&mut output, name, format)?;
     }
+    if let Some(summary) = summary.filter(|_| !matches!(format, ExportFormat::Json)) {
+        let caption = if summary.stale {
+            "Summary · Outdated transcript"
+        } else {
+            "Summary"
+        };
+        writeln!(output, "\n{caption}")?;
+        write_text(&mut output, &summary.text, format)?;
+        writeln!(output, "\nTranscript")?;
+    }
     let mut first = true;
-    visit_selected(root, &session.id, -1, false, |line| {
+    visit_selected(root, &session.id, Selection::Export, |line| {
         if matches!(format, ExportFormat::Json) {
             if !first {
                 output.push(b',');

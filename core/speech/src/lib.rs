@@ -4,6 +4,7 @@ mod library;
 mod live;
 mod pipeline;
 mod remote;
+mod summary;
 mod sync_data;
 mod sync_request;
 mod transcript;
@@ -57,6 +58,8 @@ pub enum Error {
     ExternalRateLimit,
     ExternalConnection,
     ExternalResponse,
+    NoTranscript,
+    SummaryInputLimit,
     Deferred(Reason),
 }
 
@@ -137,6 +140,11 @@ enum Action {
     History {
         query: Option<String>,
     },
+    TranscriptPage {
+        session_id: StableId,
+        after: Option<transcript::PageCursor>,
+        track_id: Option<StableId>,
+    },
     Export {
         session_id: StableId,
         format: library::ExportFormat,
@@ -185,6 +193,8 @@ enum Action {
         approved: bool,
     },
     SaveTranslation(translations::ManualEdit),
+    Summarize(summary::Generate),
+    SaveSummary(summary::Edit),
 }
 
 impl Request {
@@ -199,6 +209,7 @@ impl Request {
                 | Action::LiveTranscript { .. }
                 | Action::Inspect { .. }
                 | Action::History { .. }
+                | Action::TranscriptPage { .. }
                 | Action::Export { .. }
                 | Action::TrackTimeline { .. }
                 | Action::Playback { .. }
@@ -224,6 +235,21 @@ impl Request {
         }
         let reader = audio_reader(&self.recordings)?;
         match &self.action {
+            Action::TranscriptPage {
+                session_id,
+                after,
+                track_id,
+            } => {
+                if sync_data::finished(&self.recordings, reader.as_ref(), session_id)?.is_none() {
+                    return Err(Error::NoTranscript);
+                }
+                return Ok(serde_json::to_vec(&transcript::page(
+                    &self.recordings,
+                    session_id,
+                    after.as_ref(),
+                    track_id.as_ref(),
+                )?)?);
+            }
             Action::LiveTranscript { session_id } => {
                 return live::transcript(
                     &self.recordings,
@@ -342,6 +368,11 @@ impl Request {
                 .map(|item| transcript::has_translation_source(recordings, &item.id))
                 .transpose()?
                 .unwrap_or(false);
+            let summary = session
+                .as_ref()
+                .map(|session| summary::read(recordings, &session.id))
+                .transpose()?
+                .unwrap_or_default();
             let models: Vec<_> = catalog
                 .models()
                 .iter()
@@ -384,6 +415,8 @@ impl Request {
                 title,
                 text_only,
                 external_transcription_providers: &remote::PROVIDERS,
+                summary_providers: &remote::SUMMARY_PROVIDERS,
+                summary,
             })?);
         }
         check_cancel(cancelled)?;
@@ -399,6 +432,9 @@ impl Request {
                 approved: false,
                 ..
             } | Action::TranscribeExternal(remote::Job {
+                approved: false,
+                ..
+            }) | Action::Summarize(summary::Generate {
                 approved: false,
                 ..
             }) | Action::Translate {
@@ -500,6 +536,23 @@ impl Request {
                 Transcripts::open(&self.recordings)?.save_speaker(edit)?;
                 return processed(1);
             }
+            Action::Summarize(job) => {
+                sync_data::finished(&self.recordings, reader.as_ref(), &job.session_id)?
+                    .ok_or(Error::NoTranscript)?;
+                job.run(
+                    &self.recordings,
+                    reader.as_ref(),
+                    cancelled,
+                    resource_sample,
+                )?;
+                return processed(1);
+            }
+            Action::SaveSummary(edit) => {
+                sync_data::finished(&self.recordings, reader.as_ref(), &edit.session_id)?
+                    .ok_or(Error::NoTranscript)?;
+                edit.save(&Transcripts::open(&self.recordings)?)?;
+                return processed(1);
+            }
             Action::SaveTranslation(edit) => {
                 Transcripts::open(&self.recordings)?.save_manual_translation(edit)?;
                 return processed(1);
@@ -513,6 +566,7 @@ impl Request {
             | Action::TranscribeExternal(_)
             | Action::Inspect { .. }
             | Action::History { .. }
+            | Action::TranscriptPage { .. }
             | Action::Export { .. }
             | Action::TrackTimeline { .. }
             | Action::Playback { .. }
@@ -522,6 +576,8 @@ impl Request {
             | Action::Transcribe { model_id, .. }
             | Action::Translate { model_id, .. } => model_id,
             Action::SaveTranslation(_)
+            | Action::Summarize(_)
+            | Action::SaveSummary(_)
             | Action::SaveUtterance(_)
             | Action::ResolveConflict { .. }
             | Action::RenameSession(_)
@@ -921,6 +977,8 @@ struct Inspection<'a> {
     title: Option<String>,
     text_only: bool,
     external_transcription_providers: &'static [remote::Provider],
+    summary_providers: &'static [remote::Provider],
+    summary: summary::View,
 }
 
 const WORKER_LOCK: &str = "speech-worker.lock";

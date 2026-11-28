@@ -6,17 +6,18 @@ using System.Windows.Controls;
 
 namespace VoiceLedger;
 
-internal sealed class ExternalTranscriptionWindow : Window
+internal sealed class ExternalModelWindow : Window
 {
     private readonly StackPanel fields = new() { Margin = new Thickness(18) };
 
     internal object? Request { get; private set; }
 
-    internal ExternalTranscriptionWindow(Window owner, string sessionId, JsonElement savedTracks,
-        JsonElement presets, int sourceLanguage)
+    internal ExternalModelWindow(Window owner, string sessionId, JsonElement presets,
+        JsonElement? savedTracks = null, int sourceLanguage = 0)
     {
+        bool summary = savedTracks is null;
         Owner = owner;
-        Title = "External transcription";
+        Title = summary ? "Generate summary" : "External transcription";
         Width = 460;
         SizeToContent = SizeToContent.Height;
         MaxHeight = SystemParameters.WorkArea.Height - 32;
@@ -25,7 +26,7 @@ internal sealed class ExternalTranscriptionWindow : Window
 
         var tracks = new ComboBox
         {
-            ItemsSource = savedTracks.EnumerateArray()
+            ItemsSource = savedTracks?.EnumerateArray()
                 .Where(track => track.GetProperty("committed_chunks").GetInt64() > 0)
                 .Select(track => new Track(Read(track, "id"),
                     Read(track, "source") == "mic" ? "Microphone" : "System loopback")).ToArray(),
@@ -48,21 +49,23 @@ internal sealed class ExternalTranscriptionWindow : Window
         };
         var credential = new PasswordBox { MaxLength = 4096 };
 
-        AddField("Saved track", tracks);
+        if (!summary) AddField("Saved track", tracks);
         AddField("Provider", providers);
         AddField("Base URL", baseUrl);
         AddField("Model ID", model);
-        AddField("Audio language", language);
+        if (!summary) AddField("Audio language", language);
         var keyLabel = AddField("API key", credential);
 
         fields.Children.Add(new TextBlock
         {
-            Text = "Audio from the selected track will be sent to the service above. Check its data handling and billing terms.",
+            Text = summary
+                ? "Saved transcript text will be sent to the service above, in parts for long sessions. Check its data handling and billing terms."
+                : "Audio from the selected track will be sent to the service above. Check its data handling and billing terms.",
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 16, 0, 10),
         });
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
-        var send = new Button { Content = "Send audio for transcription", Padding = new Thickness(9, 5, 9, 5) };
+        var send = new Button { Content = summary ? "Send text and generate" : "Send audio for transcription", Padding = new Thickness(9, 5, 9, 5) };
         var cancel = new Button { Content = "Cancel", IsCancel = true, Padding = new Thickness(9, 5, 9, 5), Margin = new Thickness(8, 0, 0, 0) };
         buttons.Children.Add(send);
         buttons.Children.Add(cancel);
@@ -71,7 +74,7 @@ internal sealed class ExternalTranscriptionWindow : Window
         void Refresh()
         {
             using var password = credential.SecurePassword;
-            send.IsEnabled = tracks.SelectedItem is Track && language.SelectedIndex >= 0
+            send.IsEnabled = (summary || (tracks.SelectedItem is Track && language.SelectedIndex >= 0))
                 && providers.SelectedItem is Provider provider
                 && !string.IsNullOrWhiteSpace(model.Text)
                 && !string.IsNullOrWhiteSpace(baseUrl.Text)
@@ -99,18 +102,21 @@ internal sealed class ExternalTranscriptionWindow : Window
         credential.PasswordChanged += (_, _) => Refresh();
         send.Click += (_, _) =>
         {
-            if (!send.IsEnabled || providers.SelectedItem is not Provider provider || tracks.SelectedItem is not Track track)
-                return;
-            Request = new
+            if (!send.IsEnabled || providers.SelectedItem is not Provider provider) return;
+            var settings = new
             {
-                op = "transcribe_external", session_id = sessionId, track_id = track.Id,
-                language = SpeechWorker.LanguageCode(language.SelectedIndex + 1), approved = true,
-                settings = new
-                {
-                    provider = provider.Id, base_url = provider.Id == "custom" ? baseUrl.Text.Trim() : null,
-                    model_id = model.Text.Trim(), api_key = credential.Password,
-                },
+                provider = provider.Id, base_url = provider.Id == "custom" ? baseUrl.Text.Trim() : null,
+                model_id = model.Text.Trim(), api_key = credential.Password,
             };
+            if (summary)
+                Request = new { op = "summarize", session_id = sessionId, approved = true, settings };
+            else if (tracks.SelectedItem is Track track)
+                Request = new
+                {
+                    op = "transcribe_external", session_id = sessionId, track_id = track.Id,
+                    language = SpeechWorker.LanguageCode(language.SelectedIndex + 1), approved = true, settings,
+                };
+            else return;
             credential.Clear();
             DialogResult = true;
         };

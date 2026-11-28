@@ -9,10 +9,13 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -27,9 +30,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -59,7 +64,7 @@ class ModelsActivity : ComponentActivity() {
     private var preparing: Job? = null
     private var playback: Job? = null
     private var working by mutableStateOf(false)
-    private var externalRequest by mutableStateOf(false)
+    private var requestOperation by mutableStateOf<String?>(null)
     private var downloadModelId by mutableStateOf<String?>(null)
     private var downloadedBytes by mutableStateOf<Long?>(null)
     private var partial by mutableStateOf<String?>(null)
@@ -70,7 +75,7 @@ class ModelsActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         val sessions = intent.getBooleanExtra("sessions", false)
         setContent {
-            var selectedSession by remember { mutableStateOf<String?>(null) }
+            var selectedSession by rememberSaveable { mutableStateOf(intent.getStringExtra("session_id")) }
             var report by remember(selectedSession) { mutableStateOf<JSONObject?>(null) }
             var inspection by remember(selectedSession) { mutableStateOf<JSONObject?>(null) }
             var unavailable by remember(selectedSession) { mutableStateOf(false) }
@@ -81,6 +86,14 @@ class ModelsActivity : ComponentActivity() {
             var rename by remember(selectedSession) { mutableStateOf(false) }
             var externalDialog by remember(selectedSession) { mutableStateOf(false) }
             var trackFilter by remember(selectedSession) { mutableStateOf<String?>(null) }
+            var after by remember(selectedSession) { mutableStateOf<String?>(null) }
+            val priorPages = remember(selectedSession) { mutableStateListOf<String?>() }
+            var notePage by remember(selectedSession) { mutableStateOf<JSONObject?>(null) }
+            var pageLoading by remember(selectedSession) { mutableStateOf(true) }
+            var showModels by remember(selectedSession) { mutableStateOf(false) }
+            var showAudio by remember(selectedSession) { mutableStateOf(false) }
+            val scroll = rememberScrollState()
+            val scope = rememberCoroutineScope()
             var search by remember { mutableStateOf("") }
             var requestedSearch by remember { mutableStateOf("") }
             var history by remember { mutableStateOf<JSONArray?>(null) }
@@ -117,6 +130,18 @@ class ModelsActivity : ComponentActivity() {
                 unavailable = loaded == null
                 loadedRevision = reload
             }
+            LaunchedEffect(selectedSession, trackFilter, after, reload) {
+                val sessionId = selectedSession
+                if (!sessions || sessionId == null) return@LaunchedEffect
+                pageLoading = true
+                notePage = withContext(Dispatchers.IO) {
+                    val action = JSONObject().put("op", "transcript_page").put("session_id", sessionId)
+                        .put("after", after?.let(::JSONObject) ?: JSONObject.NULL)
+                        .put("track_id", trackFilter ?: JSONObject.NULL)
+                    runCatching { JSONObject(NativeCore.speechRequest(query(action)).decodeToString()) }.getOrNull()
+                }
+                pageLoading = false
+            }
             LaunchedEffect(working) {
                 while (working) {
                     delay(700)
@@ -126,11 +151,13 @@ class ModelsActivity : ComponentActivity() {
             MaterialTheme {
                 Surface(Modifier.fillMaxSize()) {
                     Column(
-                        Modifier.safeDrawingPadding().verticalScroll(rememberScrollState()).padding(24.dp),
+                        Modifier.safeDrawingPadding().verticalScroll(scroll).padding(24.dp),
                         verticalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
-                        Text(stringResource(if (sessions) R.string.sessions else R.string.models),
-                            style = MaterialTheme.typography.headlineLarge)
+                        if (!sessions || selectedSession == null) {
+                            Text(stringResource(if (sessions) R.string.sessions else R.string.models),
+                                style = MaterialTheme.typography.headlineLarge)
+                        }
                         if (sessions && selectedSession == null) {
                             OutlinedTextField(
                                 value = search, onValueChange = { if (it.length <= 64) search = it },
@@ -152,7 +179,10 @@ class ModelsActivity : ComponentActivity() {
                                     val time = DateFormat.getDateTimeInstance().format(Date(item.getLong("created_at_ms")))
                                     val duration = DateUtils.formatElapsedTime(item.getLong("elapsed_ns") / 1_000_000_000)
                                     val state = stringResource(if (item.getBoolean("interrupted")) R.string.session_interrupted else R.string.session_completed)
-                                    Button(onClick = { selectedSession = item.getString("id") }) {
+                                    Button(onClick = {
+                                        selectedSession = item.getString("id")
+                                        scope.launch { scroll.scrollTo(0) }
+                                    }) {
                                         val label = if (item.optBoolean("text_only"))
                                             stringResource(R.string.session_synced_row, time, duration)
                                         else stringResource(R.string.session_row, time, duration, state,
@@ -165,39 +195,57 @@ class ModelsActivity : ComponentActivity() {
                             return@Column
                         }
                         if (sessions) {
-                            Button(enabled = !working, onClick = {
-                                selectedSession = null
-                                edit = null
-                                downloadModelId = null
-                                result = null
-                            }) {
-                                Text(stringResource(R.string.back_to_sessions))
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                TextButton(enabled = !working, onClick = {
+                                    selectedSession = null
+                                    edit = null
+                                    downloadModelId = null
+                                    result = null
+                                    scope.launch { scroll.scrollTo(0) }
+                                }) { Text(stringResource(R.string.back_to_sessions)) }
+                                TextButton(enabled = !working, onClick = { reload++ }) {
+                                    Text(stringResource(R.string.note_refresh))
+                                }
                             }
                         }
                         val status = if (downloadModelId == null) {
-                            result?.let { resultText(it, externalRequest) } ?: inspection?.optJSONObject("job")?.let(::jobStatus)
+                            result?.let { resultText(it, requestOperation) } ?: inspection?.optJSONObject("job")?.let(::jobStatus)
                         } else null
                         status?.let { Text(stringResource(it)) }
                         if (working && downloadModelId == null) {
-                            Text(stringResource(if (externalRequest) R.string.external_working else R.string.speech_working))
+                            Text(stringResource(when (requestOperation) {
+                                "summarize" -> R.string.summary_working
+                                "transcribe_external" -> R.string.external_working
+                                else -> R.string.speech_working
+                            }))
                             partial?.let { Text(it) }
                             Button(onClick = { finishRequest(-4) }) { Text(stringResource(R.string.cancel_speech)) }
                         }
                         val candidates = report?.getJSONArray("candidates")
                         if (candidates == null) {
-                            Text(stringResource(if (unavailable) R.string.models_unavailable else R.string.models_loading))
+                            Text(stringResource(when {
+                                sessions && unavailable -> R.string.note_unavailable
+                                sessions -> R.string.note_loading
+                                unavailable -> R.string.models_unavailable
+                                else -> R.string.models_loading
+                            }))
                         } else {
                             val session = inspection?.optJSONObject("session")
                             val sessionId = session?.getString("id")
                             val textOnly = inspection?.optBoolean("text_only") == true
                             val idle = recording.phase == RecordingPhase.Idle
+                            if (sessions && sessionId == null) {
+                                Text(stringResource(R.string.note_unavailable))
+                                return@Column
+                            }
                             if (session != null) {
+                                val title = inspection?.takeUnless { it.isNull("title") }?.getString("title").orEmpty()
+                                if (sessions) Text(title.ifEmpty { stringResource(R.string.session_note) },
+                                    style = MaterialTheme.typography.headlineLarge)
                                 val date = Date(session.getLong("created_at_ms"))
                                 Text(DateFormat.getDateTimeInstance().format(date))
                                 if (textOnly) Text(stringResource(R.string.session_text_only))
                                 if (sessions && sessionId != null) {
-                                    val title = inspection?.takeUnless { it.isNull("title") }?.getString("title").orEmpty()
-                                    if (title.isNotEmpty()) Text(title, style = MaterialTheme.typography.titleLarge)
                                     Button(enabled = !working, onClick = { rename = true }) {
                                         Text(stringResource(R.string.session_rename))
                                     }
@@ -211,9 +259,41 @@ class ModelsActivity : ComponentActivity() {
                                             }
                                         }
                                     }
+                                    val summary = inspection?.optJSONObject("summary")
+                                    val hasText = (inspection?.optJSONArray("lines")?.length() ?: 0) > 0
+                                    if (hasText || summary?.optJSONObject("current") != null) {
+                                        ExportTranscript(!working) { format ->
+                                            withContext(Dispatchers.IO) {
+                                                NativeCore.speechRequest(query(JSONObject().put("op", "export")
+                                                    .put("session_id", sessionId).put("format", format)))
+                                            }
+                                        }
+                                    }
+                                    SummarySection(
+                                        sessionId, summary, inspection?.optJSONArray("summary_providers"),
+                                        hasText, idle && !working && loadedRevision == reload,
+                                        startRequest = ::startRequest, save = ::saveRevision,
+                                        onSaved = { result = null; reload++ },
+                                    )
                                     val tracks = inspection?.optJSONArray("tracks")
-                                    SessionAudio(tracks, trackFilter,
-                                        onTrack = { trackFilter = it },
+                                    if (tracks != null && tracks.length() > 0) {
+                                        TextButton(onClick = {
+                                            showAudio = !showAudio
+                                            if (!showAudio && trackFilter != null) {
+                                                trackFilter = null
+                                                after = null
+                                                priorPages.clear()
+                                            }
+                                        }) {
+                                            Text(stringResource(if (showAudio) R.string.note_hide_audio else R.string.note_show_audio))
+                                        }
+                                    }
+                                    if (showAudio) SessionAudio(tracks, trackFilter,
+                                        onTrack = {
+                                            trackFilter = it
+                                            after = null
+                                            priorPages.clear()
+                                        },
                                         onStop = { playback?.cancel() },
                                         onPlay = { track, at, finished ->
                                             playback?.cancel()
@@ -246,28 +326,34 @@ class ModelsActivity : ComponentActivity() {
                                         tracks?.optJSONObject(index)?.takeIf { it.optLong("committed_chunks") > 0 }
                                     }
                                     val providers = inspection?.optJSONArray("external_transcription_providers")
-                                    if (savedTracks.isNotEmpty() && providers != null && providers.length() > 0) {
+                                    if (showModels && savedTracks.isNotEmpty() && providers != null && providers.length() > 0) {
                                         val enabled = loadedRevision == reload && idle && !working
                                         Button(enabled = enabled, onClick = { externalDialog = true }) {
                                             Text(stringResource(R.string.external_open))
                                         }
                                         if (externalDialog) {
-                                            ExternalTranscriptionDialog(
-                                                sessionId, savedTracks, providers, language, enabled,
+                                            ExternalModelDialog(
+                                                sessionId, providers, enabled,
                                                 onDismiss = { externalDialog = false },
                                                 onSend = {
                                                     externalDialog = false
                                                     startRequest(it)
                                                 },
+                                                tracks = savedTracks, sourceLanguage = language,
                                             )
                                         }
                                     }
                                 }
-                                if (!textOnly) LanguagePicker(language, !working) { language = it }
+                                if (sessions && !textOnly) {
+                                    TextButton(enabled = !working, onClick = { showModels = !showModels }) {
+                                        Text(stringResource(if (showModels) R.string.note_hide_models else R.string.note_show_models))
+                                    }
+                                }
+                                if (!textOnly && (!sessions || showModels)) LanguagePicker(language, !working) { language = it }
                             }
                             val choices = inspection?.getJSONArray("models")
                             val hasEnglish = inspection?.optBoolean("has_translation_source") == true
-                            for (index in 0 until candidates.length()) {
+                            if (!sessions || showModels) for (index in 0 until candidates.length()) {
                                 val details = candidates.getJSONObject(index)
                                 val model = details.getJSONObject("model")
                                 val translation = model.has("translation")
@@ -296,69 +382,108 @@ class ModelsActivity : ComponentActivity() {
                                     startRequest(action)
                                 }
                             }
-                            val lines = inspection?.optJSONArray("lines")
-                            if (sessions && sessionId != null && (lines?.length() ?: 0) > 0) {
-                                ExportTranscript(!working) { format ->
-                                    withContext(Dispatchers.IO) {
-                                        NativeCore.speechRequest(query(JSONObject().put("op", "export")
-                                            .put("session_id", sessionId).put("format", format)))
+                            val lines = if (sessions) notePage?.optJSONArray("lines") else inspection?.optJSONArray("lines")
+                            if (sessions) {
+                                Text(stringResource(R.string.transcript), style = MaterialTheme.typography.titleLarge)
+                                when {
+                                    pageLoading -> Text(stringResource(R.string.note_loading_transcript))
+                                    notePage == null -> {
+                                        Text(stringResource(R.string.note_load_failed))
+                                        Button(onClick = { reload++ }) { Text(stringResource(R.string.note_reload_transcript)) }
+                                    }
+                                    lines?.length() == 0 -> {
+                                        Text(stringResource(if (trackFilter == null) R.string.note_empty_transcript else R.string.note_empty_track))
+                                        if (!textOnly && !showModels) Button(onClick = {
+                                            showModels = true
+                                            scope.launch { scroll.scrollTo(0) }
+                                        }) { Text(stringResource(R.string.note_choose_model)) }
                                     }
                                 }
                             }
                             for (index in 0 until (lines?.length() ?: 0)) {
                                 val line = lines?.getJSONObject(index) ?: continue
-                                if (trackFilter != null && trackFilter != line.getString("source")) continue
                                 val source = if (line.getString("source") == "mic") R.string.model_mic else R.string.model_loopback
                                 val detected = stringResource(detectedLanguage(line.getString("language")))
-                                Text(stringResource(R.string.model_line, stringResource(source),
-                                    line.getLong("start_ns") / 1_000_000_000.0, detected))
-                                Text(line.getString("text"))
-                                if (sessionId != null) {
-                                    val conflicts = line.getJSONArray("conflicts")
-                                    val needsReview = conflicts.length() > 1
-                                    if (needsReview) {
-                                        Text(stringResource(R.string.sync_conflicting_revisions), style = MaterialTheme.typography.titleMedium)
-                                        for (version in 0 until conflicts.length()) {
-                                            val conflict = conflicts.getJSONObject(version)
-                                            val author = stringResource(if (conflict.getBoolean("manual")) R.string.sync_manual else R.string.sync_machine)
-                                            val lang = stringResource(detectedLanguage(conflict.getString("language")))
-                                            Text(stringResource(R.string.sync_revision_author, author, lang))
-                                            Text(conflict.getString("text"))
+                                val time = DateUtils.formatElapsedTime(line.getLong("start_ns") / 1_000_000_000)
+                                val speakerName = line.optJSONObject("speaker")?.takeUnless { it.isNull("name") }?.getString("name")
+                                val caption = stringResource(R.string.note_line, time, stringResource(source), detected)
+                                var showEdits by remember(line.getString("utterance_id")) { mutableStateOf(false) }
+                                val conflicts = line.getJSONArray("conflicts")
+                                val needsReview = conflicts.length() > 1
+                                val actionsVisible = !sessions || showEdits
+                                Column(Modifier.fillMaxWidth().padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Text(if (speakerName.isNullOrBlank()) caption else "$caption · $speakerName",
+                                        style = MaterialTheme.typography.labelMedium)
+                                    SelectionContainer {
+                                        Text(line.getString("text"), style = MaterialTheme.typography.bodyLarge)
+                                    }
+                                    val revision = line.optJSONObject("translation")
+                                    if (revision != null) {
+                                        val author = stringResource(if (revision.getString("authorship") == "manual")
+                                            R.string.manual_translation else R.string.machine_translation)
+                                        Text(stringResource(if (revision.getBoolean("stale"))
+                                            R.string.translation_stale else R.string.translation_label, author),
+                                            style = MaterialTheme.typography.labelMedium)
+                                        SelectionContainer { Text(revision.getString("text")) }
+                                    }
+                                    if (sessions) TextButton(onClick = { showEdits = !showEdits }) {
+                                        Text(stringResource(when {
+                                            showEdits -> R.string.note_hide_edits
+                                            needsReview -> R.string.sync_resolve_conflict
+                                            else -> R.string.note_show_edits
+                                        }))
+                                    }
+                                    if (actionsVisible && sessionId != null) {
+                                        if (needsReview) {
+                                            for (version in 0 until conflicts.length()) {
+                                                val conflict = conflicts.getJSONObject(version)
+                                                val author = stringResource(if (conflict.getBoolean("manual")) R.string.sync_manual else R.string.sync_machine)
+                                                val lang = stringResource(detectedLanguage(conflict.getString("language")))
+                                                Text(stringResource(R.string.sync_revision_author, author, lang))
+                                                Text(conflict.getString("text"))
+                                            }
+                                        }
+                                        TextButton(enabled = idle && !working, onClick = {
+                                            editKind = if (needsReview) RevisionEditor.Conflict else RevisionEditor.Transcript
+                                            edit = line
+                                        }) {
+                                            Text(stringResource(if (needsReview) R.string.sync_resolve_conflict else R.string.edit_transcript))
+                                        }
+                                        if (sessions && !needsReview && !line.isNull("external_draft")) {
+                                            TextButton(enabled = idle && !working, onClick = {
+                                                editKind = RevisionEditor.ExternalDraft
+                                                edit = line
+                                            }) { Text(stringResource(R.string.external_review_draft)) }
+                                        }
+                                        if (line.getString("language") == "en") {
+                                            TextButton(enabled = idle && !working, onClick = {
+                                                editKind = RevisionEditor.Translation
+                                                edit = line
+                                            }) { Text(stringResource(if (revision == null) R.string.add_translation else R.string.edit_translation)) }
+                                        }
+                                        if (sessions) {
+                                            TextButton(enabled = idle && !working, onClick = {
+                                                editKind = RevisionEditor.Speaker
+                                                edit = line
+                                            }) { Text(stringResource(R.string.session_edit_speaker)) }
                                         }
                                     }
-                                    Button(enabled = idle && !working, onClick = {
-                                        editKind = if (needsReview) RevisionEditor.Conflict else RevisionEditor.Transcript
-                                        edit = line
-                                    }) {
-                                        Text(stringResource(if (needsReview) R.string.sync_resolve_conflict else R.string.edit_transcript))
-                                    }
-                                    if (sessions && !needsReview && !line.isNull("external_draft")) {
-                                        Button(enabled = idle && !working, onClick = {
-                                            editKind = RevisionEditor.ExternalDraft
-                                            edit = line
-                                        }) { Text(stringResource(R.string.external_review_draft)) }
-                                    }
                                 }
-                                val revision = line.optJSONObject("translation")
-                                if (revision != null) {
-                                    val author = stringResource(if (revision.getString("authorship") == "manual")
-                                        R.string.manual_translation else R.string.machine_translation)
-                                    Text(stringResource(if (revision.getBoolean("stale"))
-                                        R.string.translation_stale else R.string.translation_label, author))
-                                    Text(revision.getString("text"))
-                                }
-                                if (sessionId != null && line.getString("language") == "en") {
-                                    Button(enabled = idle && !working, onClick = { editKind = RevisionEditor.Translation; edit = line }) {
-                                        Text(stringResource(if (revision == null) R.string.add_translation else R.string.edit_translation))
-                                    }
-                                }
-                                if (sessions && sessionId != null) {
-                                    val speaker = line.optJSONObject("speaker")
-                                    val name = speaker?.takeUnless { it.isNull("name") }?.getString("name")
-                                    Text(name ?: stringResource(R.string.session_unknown_speaker))
-                                    Button(enabled = idle && !working, onClick = { editKind = RevisionEditor.Speaker; edit = line }) {
-                                        Text(stringResource(R.string.session_edit_speaker))
-                                    }
+                            }
+                            if (sessions && !pageLoading && notePage != null) {
+                                val next = notePage?.optJSONObject("next")?.toString()
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    if (priorPages.isNotEmpty()) TextButton(onClick = {
+                                        after = priorPages.removeAt(priorPages.lastIndex)
+                                        notePage = null
+                                        scope.launch { scroll.scrollTo(0) }
+                                    }) { Text(stringResource(R.string.note_previous_page)) }
+                                    if (next != null) TextButton(onClick = {
+                                        priorPages.add(after)
+                                        after = next
+                                        notePage = null
+                                        scope.launch { scroll.scrollTo(0) }
+                                    }) { Text(stringResource(R.string.note_next_page)) }
                                 }
                             }
                             edit?.let { line ->
@@ -398,7 +523,7 @@ class ModelsActivity : ComponentActivity() {
                                                 edit = null
                                                 downloadModelId = null
                                                 result = code
-                                                externalRequest = false
+                                                requestOperation = null
                                                 reload++
                                             }
                                         }
@@ -421,8 +546,8 @@ class ModelsActivity : ComponentActivity() {
     private fun startRequest(action: JSONObject) {
         if (working || RecordingStatusStore.state.value.phase != RecordingPhase.Idle) return
         val operation = action.getString("op")
-        val external = operation == "transcribe_external"
-        externalRequest = external
+        val external = operation == "transcribe_external" || operation == "summarize"
+        requestOperation = operation
         downloadModelId = if (operation == "install") action.getString("model_id") else null
         downloadedBytes = null
         working = true
@@ -482,6 +607,80 @@ class ModelsActivity : ComponentActivity() {
 }
 
 @Composable
+private fun SummarySection(
+    sessionId: String,
+    summary: JSONObject?,
+    presets: JSONArray?,
+    hasText: Boolean,
+    enabled: Boolean,
+    startRequest: (JSONObject) -> Unit,
+    save: suspend (JSONObject) -> Int,
+    onSaved: () -> Unit,
+) {
+    val current = summary?.optJSONObject("current")
+    val draft = summary?.optJSONObject("draft")
+    var editor by remember(sessionId) { mutableStateOf<Int?>(null) }
+    var generate by remember(sessionId) { mutableStateOf(false) }
+    val canGenerate = hasText && presets != null && presets.length() > 0
+    Text(stringResource(R.string.note_summary), style = MaterialTheme.typography.titleLarge)
+    if (current == null) {
+        Text(stringResource(R.string.summary_empty))
+        Button(enabled = enabled, onClick = { editor = R.string.summary_create }) {
+            Text(stringResource(R.string.summary_create))
+        }
+    } else {
+        if (current.optBoolean("stale")) Text(stringResource(R.string.summary_stale))
+        SelectionContainer {
+            Text(current.getString("text"), style = MaterialTheme.typography.bodyLarge)
+        }
+        TextButton(enabled = enabled, onClick = { editor = R.string.summary_edit }) {
+            Text(stringResource(R.string.summary_edit))
+        }
+        if (canGenerate) TextButton(enabled = enabled, onClick = { generate = true }) {
+            Text(stringResource(R.string.summary_generate))
+        }
+    }
+    if (draft != null) {
+        if (draft.optBoolean("stale")) Text(stringResource(R.string.summary_stale_draft))
+        else TextButton(enabled = enabled, onClick = { editor = R.string.summary_review }) {
+            Text(stringResource(R.string.summary_review))
+        }
+    }
+    editor?.let { label ->
+        val reviewed = draft.takeIf { label == R.string.summary_review }
+        TextRevisionEditor(
+            (reviewed ?: current)?.getString("text").orEmpty(), label, enabled,
+            field = R.string.note_summary, maxLength = 8192, allowBlank = false,
+            onDismiss = { editor = null },
+            alternate = if (current == null && canGenerate) {
+                { editor = null; generate = true }
+            } else null,
+            operation = "save_summary",
+        ) { text ->
+            val action = JSONObject().put("op", "save_summary").put("session_id", sessionId)
+                .put("expected_revision_id", current?.getString("id") ?: JSONObject.NULL).put("text", text)
+            if (reviewed != null) action.put("draft_id", reviewed.getString("id"))
+            save(action).also { code ->
+                if (code == 0) {
+                    editor = null
+                    onSaved()
+                }
+            }
+        }
+    }
+    if (generate && presets != null) {
+        ExternalModelDialog(
+            sessionId, presets, enabled,
+            onDismiss = { generate = false },
+            onSend = {
+                generate = false
+                startRequest(it)
+            },
+        )
+    }
+}
+
+@Composable
 private fun ExportTranscript(enabled: Boolean, prepare: suspend (String) -> ByteArray) {
     val app = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -516,7 +715,7 @@ private fun ExportTranscript(enabled: Boolean, prepare: suspend (String) -> Byte
         }
     }
     Button(onClick = { expanded = true }, enabled = enabled && !exporting) {
-        Text(stringResource(R.string.export_transcript))
+        Text(stringResource(R.string.export_note))
     }
     DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
         for ((label, format, extension) in listOf(
@@ -542,7 +741,7 @@ private fun ExportTranscript(enabled: Boolean, prepare: suspend (String) -> Byte
                     scope.launch {
                         try {
                             data = prepare(format)
-                            picker.launch("VoiceLedger-transcript.$extension")
+                            picker.launch("VoiceLedger-note.$extension")
                         } catch (_: Exception) {
                             data?.fill(0)
                             data = null
@@ -550,7 +749,7 @@ private fun ExportTranscript(enabled: Boolean, prepare: suspend (String) -> Byte
                             exporting = false
                         }
                     }
-                }) { Text(stringResource(R.string.export_transcript)) }
+                }) { Text(stringResource(R.string.export_note)) }
             },
             dismissButton = { TextButton(onClick = { selected = null }) { Text(stringResource(R.string.cancel_speech)) } },
         )
@@ -581,6 +780,8 @@ private fun TextRevisionEditor(
     maxLength: Int,
     allowBlank: Boolean,
     onDismiss: () -> Unit,
+    alternate: (() -> Unit)? = null,
+    operation: String? = null,
     save: suspend (String) -> Int,
 ) {
     val scope = rememberCoroutineScope()
@@ -596,9 +797,15 @@ private fun TextRevisionEditor(
                     value = text,
                     onValueChange = { if (it.length <= maxLength && it.encodeToByteArray().size <= 8192) text = it },
                     label = { Text(stringResource(field)) }, singleLine = allowBlank,
+                    maxLines = if (allowBlank) 1 else 12,
                     readOnly = saving,
                 )
-                error?.let { Text(stringResource(resultText(it))) }
+                if (alternate != null) {
+                    TextButton(enabled = enabled && !saving && text.isBlank(), onClick = alternate) {
+                        Text(stringResource(R.string.summary_generate))
+                    }
+                }
+                error?.let { Text(stringResource(resultText(it, operation))) }
             }
         },
         confirmButton = {
@@ -708,8 +915,12 @@ internal fun LanguagePicker(policy: String, enabled: Boolean, selected: (String)
     }
 }
 
-private fun resultText(code: Int, external: Boolean = false): Int = when (code) {
-    0 -> if (external) R.string.external_complete else R.string.speech_complete
+private fun resultText(code: Int, operation: String? = null): Int = when (code) {
+    0 -> when (operation) {
+        "summarize" -> R.string.summary_generated
+        "transcribe_external" -> R.string.external_complete
+        else -> R.string.speech_complete
+    }
     -4 -> R.string.speech_cancelled
     -32 -> R.string.speech_no_audio
     -33 -> R.string.speech_not_installed
@@ -717,18 +928,29 @@ private fun resultText(code: Int, external: Boolean = false): Int = when (code) 
     -35 -> R.string.speech_transfer
     -36 -> R.string.speech_integrity
     -37 -> R.string.speech_busy
-    -38 -> if (external) R.string.external_deferred else R.string.speech_deferred
-    -39 -> R.string.translation_conflict
+    -38 -> when (operation) {
+        "summarize" -> R.string.summary_deferred
+        "transcribe_external" -> R.string.external_deferred
+        else -> R.string.speech_deferred
+    }
+    -39 -> if (operation == "summarize" || operation == "save_summary") R.string.summary_conflict else R.string.translation_conflict
     -40 -> R.string.translation_limit
     -41 -> R.string.external_configuration
     -42 -> R.string.external_authentication
     -43 -> R.string.external_rate_limit
     -44 -> R.string.external_connection
-    -45 -> R.string.external_response
-    else -> if (external) R.string.external_failed else R.string.speech_failed
+    -45 -> if (operation == "summarize") R.string.summary_response else R.string.external_response
+    -46 -> R.string.note_empty_transcript
+    -47 -> R.string.summary_input_limit
+    else -> when (operation) {
+        "summarize", "save_summary" -> R.string.summary_failed
+        "transcribe_external" -> R.string.external_failed
+        else -> R.string.speech_failed
+    }
 }
 
 private fun jobStatus(job: JSONObject): Int? = when (job.optString("state")) {
+    "running" -> R.string.note_transcription_finishing
     "deferred" -> if (job.optString("reason") == "worker_interrupted") R.string.speech_interrupted else R.string.speech_deferred
     "failed" -> R.string.speech_retry
     else -> null

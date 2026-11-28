@@ -1,0 +1,7 @@
+# Make saved notes and meeting summaries part of MVP
+
+Live captions show recent speech. Users need a stable place to revisit the whole conversation and keep the outcome. The MVP requires a saved session note with chronological, editable transcript pages and a meeting summary that can be written locally or generated through a service selected by the user.
+
+Each generation uses the selected final and manual transcript revisions across the session. The dialog identifies the destination and type of data sent. The speech worker uses the existing direct provider transport with bounded text batches and keeps the final result only after all requests succeed. It records model provenance and an ordered revision fingerprint so the note can show when the transcript changed. A manual summary stays selected when the user generates a new draft. The initial release retains summary revisions on the originating device and includes the selected summary in explicit note exports.
+
+The shared SQLite migration to v6 adds a separate summary revision table. Existing recordings and transcript revisions become available in the note without conversion. A rollout can be reverted using a build that still reads schema v6. Preserve a database backup before downgrading to a v5-only build. The additive table can remain in the database when its version marker is explicitly restored to v5 while the app is stopped. [Session note requirements](../spec/01-FUNCTIONAL-SPEC.md) · [External transcription decision](0004-on-demand-external-transcription.md)
