@@ -414,7 +414,7 @@ pub(crate) fn export(
             }
             serde_json::to_writer(&mut output, &line)?;
         } else {
-            let seconds = line.start_ns / 1_000_000_000;
+            let seconds = line.start_ns.get() / 1_000_000_000;
             let (hours, minutes, seconds) = (seconds / 3600, (seconds / 60) % 60, seconds % 60);
             let source = if line.source == "mic" {
                 "Microphone"

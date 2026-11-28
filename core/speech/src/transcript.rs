@@ -229,7 +229,7 @@ impl Output for Writer<'_> {
 pub struct Line {
     pub source: String,
     pub track_id: StableId,
-    pub start_ns: u64,
+    pub start_ns: Count,
     pub utterance_id: StableId,
     pub revision_id: StableId,
     pub language: Language,
@@ -244,7 +244,7 @@ pub struct Line {
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PageCursor {
-    start_ns: u64,
+    start_ns: Count,
     track_id: StableId,
     utterance_id: StableId,
 }
@@ -343,7 +343,7 @@ pub(crate) fn visit_selected(
          ORDER BY {order} LIMIT ?2",
     ))?;
     let filter = track.cloned().map(String::from);
-    let after_start = after.map(|cursor| cursor.start_ns);
+    let after_start = after.map(|cursor| i64::from(cursor.start_ns));
     let after_track = after.map(|cursor| String::from(cursor.track_id.clone()));
     let after_id = after.map(|cursor| String::from(cursor.utterance_id.clone()));
     let rows = query.query_map(
@@ -389,7 +389,7 @@ pub(crate) fn visit_selected(
         };
         visit(Line {
             source,
-            start_ns: u64::try_from(start_ns).map_err(|_| Error::Storage)?,
+            start_ns: start_ns.try_into().map_err(|_| Error::Storage)?,
             track_id: value.track_id,
             utterance_id: value.utterance_id,
             revision_id: value.id,
